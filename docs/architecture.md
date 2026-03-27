@@ -85,8 +85,11 @@ ger_rag/
 │   └── cache.py            # CacheLayer: インメモリキャッシュ + displacement + write-behind
 ├── graph/
 │   └── cooccurrence.py     # CooccurrenceGraph: 共起グラフ管理
+├── ingest/
+│   └── loader.py           # ファイル取り込み（md/txt/csv、チャンク分割）
 └── server/
-    └── app.py              # FastAPIアプリ + lifespan管理
+    ├── app.py              # FastAPIアプリ + lifespan管理
+    └── mcp_server.py       # MCPサーバー（AIエージェント外部長期記憶）
 ```
 
 ## データフロー
@@ -134,6 +137,28 @@ ger_rag/
 - ノード状態更新は**last-write-wins**（ロックなし）
 - SQLite WALモードで読み書き並行可能
 - write-behindは単一asyncioタスクで実行
+
+## MCPサーバー (AIエージェント外部長期記憶)
+
+`ger_rag/server/mcp_server.py` はGER-RAGをMCPプロトコルで公開し、AIエージェントの長期記憶として機能させる。
+
+```
+MCPクライアント (Claude Code等)
+  │
+  ├─ remember(content, source, tags)  → 記憶を登録
+  ├─ recall(query, top_k)             → 重力変位付き検索
+  ├─ explore(query, diversity)        → 創発的探索（高温度）
+  ├─ reflect(aspect)                  → 記憶状態の自己分析
+  └─ ingest(path, pattern)            → ファイル/ディレクトリ一括取り込み
+  │
+  ▼
+GEREngine (FastAPIと同じエンジンを直接利用)
+```
+
+- **双方向記憶**: 検索だけでなく、エージェント自身の思考や会話圧縮も保存可能
+- **トランスポート**: stdio（Claude Code/Desktop）または SSE（リモートクライアント）
+- **リソース**: `memory://stats`, `memory://hot` で記憶状態を公開
+- **プロンプト**: `context-recall`, `save-context`, `explore-connections`
 
 ## Embeddingモデルのキャッシュ
 
