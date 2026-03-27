@@ -6,6 +6,7 @@ from typing import Any
 
 import aiosqlite
 import msgpack
+import numpy as np
 
 from ger_rag.core.types import CooccurrenceEdge, NodeState
 from ger_rag.store.base import StoreBase
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     mass        REAL DEFAULT 1.0,
     temperature REAL DEFAULT 0.0,
     last_access REAL,
-    sim_history BLOB
+    sim_history BLOB,
+    displacement BLOB
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -51,6 +53,11 @@ class SqliteStore(StoreBase):
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.execute("PRAGMA synchronous = NORMAL")
         await self._conn.executescript(SCHEMA)
+        # Migrate: add displacement column if missing (pre-Phase2 DBs)
+        try:
+            await self._conn.execute("SELECT displacement FROM nodes LIMIT 1")
+        except aiosqlite.OperationalError:
+            await self._conn.execute("ALTER TABLE nodes ADD COLUMN displacement BLOB")
         await self._conn.commit()
 
     @staticmethod
@@ -183,6 +190,24 @@ class SqliteStore(StoreBase):
             )
         return edges
 
+    async def save_displacements(self, displacements: dict[str, np.ndarray]) -> None:
+        assert self._conn is not None
+        await self._conn.executemany(
+            "UPDATE nodes SET displacement = ? WHERE id = ?",
+            [(disp.tobytes(), node_id) for node_id, disp in displacements.items()],
+        )
+        await self._conn.commit()
+
+    async def load_displacements(self) -> dict[str, np.ndarray]:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, displacement FROM nodes WHERE displacement IS NOT NULL"
+        )
+        result = {}
+        async for row in cursor:
+            result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
+        return result
+
     async def reset_dynamic_state(self) -> tuple[int, int]:
         assert self._conn is not None
         cursor = await self._conn.execute("SELECT COUNT(*) FROM nodes")
@@ -194,7 +219,7 @@ class SqliteStore(StoreBase):
         edges_count = row[0] if row else 0
 
         await self._conn.execute(
-            "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, sim_history = NULL"
+            "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, sim_history = NULL, displacement = NULL"
         )
         await self._conn.execute("DELETE FROM edges")
         await self._conn.commit()

@@ -2,7 +2,7 @@
 
 ## システム構成
 
-GER-RAGは**固定embedding空間 + 動的スコアリング層**による検索システムである。embeddingモデルの意味的保証を壊さず、クエリ履歴に基づいて検索結果を動的に変化させる。
+GER-RAGは**二重座標系**による創発的検索システムである。原始embedding空間は不変のまま、共起した文書同士が**重力で引き寄せ合う仮想座標空間**で検索を行う。使い込むほど意外なつながりが発見される。
 
 ```
 クエリ入力
@@ -11,42 +11,78 @@ GER-RAGは**固定embedding空間 + 動的スコアリング層**による検索
 [RURI-v3 Embedding] ──→ クエリベクトル (768次元, L2正規化済)
   │                      ※キャッシュ済みならローカルから即座にロード
   ▼
-[FAISS IndexFlatIP] ──→ Top-K候補 (コサイン類似度)
+[FAISS IndexFlatIP] ──→ 広い候補取得 (top-K × 3, 原始embedding)
   │
   ▼
-[動的スコアリング層]
+[仮想座標での再計算]
+  │  virtual_pos = normalize(original_emb + displacement)
+  │  gravity_sim = dot(query, virtual_pos)
+  │
   ├─ mass_boost   = α * log(1 + mass)
-  ├─ decay        = exp(-δ * (now - last_access))
-  ├─ temp_noise   = Normal(0, temperature)
-  └─ graph_boost  = ρ * Σ(w_ij * sim(q, x_j))
+  └─ decay        = exp(-δ * (now - last_access))
   │
   ▼
-final_score = raw_score * decay + mass_boost + temp_noise + graph_boost
-  │ (負スコアは除外)
+final_score = gravity_sim * decay + mass_boost
+  │ (負スコアは除外、top-Kに絞る)
   ▼
-[状態更新] ──→ mass増加, temperature再計算, 共起グラフ更新
-  │
+[重力更新] ──→ 共起ペア間に万有引力 → displacement蓄積
+  │            mass増加, temperature再計算, 共起グラフ更新
   ▼
 [Write-behind] ──→ 非同期でSQLiteにフラッシュ
 ```
+
+## 二重座標系
+
+```
+┌──────────────────────────────────────────────────┐
+│  原始embedding空間 (immutable)                    │
+│  ・RURI-v3の出力そのまま、FAISSに格納              │
+│  ・広い候補取得 (top-K * 3) に使用                 │
+│  ・変更されない（意味的保証を維持）                  │
+└──────────────────────────────────────────────────┘
+                    ↓ 候補取得
+┌──────────────────────────────────────────────────┐
+│  仮想座標空間 (mutable, gravity-driven)            │
+│  ・virtual_pos = normalize(original + displacement)│
+│  ・共起した文書同士が重力で引き寄せ合う              │
+│  ・massが大きいノードほど強い引力                    │
+│  ・最終ランキングの類似度計算に使用                   │
+│  ・クエリのたびに更新される                          │
+└──────────────────────────────────────────────────┘
+```
+
+## 重力モデル
+
+共起したノードペア (i, j) に万有引力が働く：
+
+```
+direction_ij = normalize(original_emb[j] - virtual_pos[i])
+force_ij     = G * mass[i] * mass[j] / (distance_ij² + ε)
+displacement[i] += η_g * force_ij * direction_ij
+```
+
+- 変位は `max_displacement_norm` (0.3) でクランプ（暴走防止）
+- 変位は時間とともに減衰（未アクセスノードは原始位置に回帰）
+- temperatureによる座標揺らぎで探索的な検索を促進
 
 ## モジュール構成
 
 ```
 ger_rag/
-├── config.py               # GERConfig: 全ハイパーパラメータ
+├── config.py               # GERConfig: 全ハイパーパラメータ（重力パラメータ含む）
 ├── core/
-│   ├── engine.py           # GEREngine: 全操作の統合レイヤー
+│   ├── engine.py           # GEREngine: 二段階検索 + 重力更新
+│   ├── gravity.py          # 重力計算（force, displacement更新, decay, clamp）
 │   ├── scorer.py           # スコアリング関数群 (純粋関数)
 │   └── types.py            # Pydanticモデル (リクエスト/レスポンス/内部型)
 ├── embedding/
 │   └── ruri.py             # RuriEmbedder: RURI-v3ラッパー (ローカルキャッシュ自動検出)
 ├── index/
-│   └── faiss_index.py      # FaissIndex: FAISS IndexFlatIPラッパー
+│   └── faiss_index.py      # FaissIndex: FAISS IndexFlatIPラッパー + ベクトル逆引き
 ├── store/
 │   ├── base.py             # StoreBase: 抽象ストアインターフェース
-│   ├── sqlite_store.py     # SqliteStore: SQLite WAL実装 (content_hashによる重複チェック)
-│   └── cache.py            # CacheLayer: インメモリキャッシュ + write-behind
+│   ├── sqlite_store.py     # SqliteStore: SQLite WAL実装 (displacement永続化含む)
+│   └── cache.py            # CacheLayer: インメモリキャッシュ + displacement + write-behind
 ├── graph/
 │   └── cooccurrence.py     # CooccurrenceGraph: 共起グラフ管理
 └── server/
@@ -61,23 +97,25 @@ ger_rag/
 2. content SHA-256ハッシュで重複チェック（重複はembedding生成前にスキップ）
 3. RURI-v3で embedding生成 (「検索文書: 」プレフィックス付き)
 4. L2正規化後、FAISSインデックスに追加
-5. NodeState初期化 (mass=1.0, temperature=0.0)
+5. NodeState初期化 (mass=1.0, temperature=0.0, displacement=zero)
 6. SQLiteにドキュメント + 状態を永続化
 
 ### クエリ時
 
 1. `POST /query` でクエリ受信
 2. RURI-v3でクエリembedding生成 (「検索クエリ: 」プレフィックス付き)
-3. FAISS検索でTop-K候補取得
-4. 各候補に動的スコアリング適用
-5. 負スコアを除外、final_scoreでソート
-6. **レスポンス返却後**に状態更新 (mass, temperature, 共起グラフ)
-7. ダーティ状態はwrite-behindタスクで非同期にSQLiteへフラッシュ
+3. FAISS検索で広い候補取得 (top-K × candidate_multiplier)
+4. 各候補の仮想座標を計算 (original_emb + displacement)
+5. 仮想座標でのcosine similarity × decay + mass_boostで最終スコア
+6. 負スコアを除外、top-Kに絞って返却
+7. **返却後**に重力更新: 共起ペアにforce適用 → displacement蓄積
+8. mass, temperature, 共起グラフも更新
+9. ダーティ状態（displacement含む）はwrite-behindで非同期にSQLiteへフラッシュ
 
 ## ストレージ戦略
 
 ```
-起動時:   SQLite → インメモリキャッシュにロード + FAISSインデックスロード
+起動時:   SQLite → インメモリキャッシュ（node状態 + displacement）にロード + FAISSインデックスロード
 稼働時:   キャッシュから読み取り → 変更はdirtyセットに記録
 定期的:   write-behindタスクがdirty状態をバッチでSQLiteにフラッシュ (5秒間隔)
 停止時:   write-behind停止 → 全dirty状態フラッシュ → FAISSインデックス保存 → 接続クローズ
@@ -86,7 +124,9 @@ ger_rag/
 
 ### SQLiteスキーマ
 
-`documents`テーブルには`content_hash`カラム（SHA-256）とUNIQUEインデックスがあり、同一contentの重複登録をDB層でも防止する。
+- `documents`: content_hash (SHA-256) + UNIQUEインデックスで重複防止
+- `nodes`: displacement BLOB カラム（768次元 float32、3KB/ノード）
+- 既存DBは起動時に `ALTER TABLE nodes ADD COLUMN displacement BLOB` で自動マイグレーション
 
 ## 並行性モデル
 
@@ -97,13 +137,18 @@ ger_rag/
 
 ## Embeddingモデルのキャッシュ
 
-`RuriEmbedder`は起動時にHuggingFaceキャッシュ（`~/.cache/huggingface/`）を検査し、モデルがキャッシュ済みであれば`local_files_only=True`でロードする。これによりオフライン環境でも動作し、起動時のHuggingFace APIへのHTTPリクエストが抑制される。
+`RuriEmbedder`は起動時にHuggingFaceキャッシュ（`~/.cache/huggingface/`）を検査し、モデルがキャッシュ済みであれば`local_files_only=True`でロードする。オフライン環境でも動作。
 
-## 3D可視化
+## Cosmic 3D可視化
 
-`scripts/visualize_3d.py`はFAISSインデックスからembeddingを直接読み取り、PCAまたはUMAPで3次元に次元削減し、動的状態をインタラクティブなPlotly HTMLとして出力する。
+`scripts/visualize_3d.py`はFAISSインデックスとSQLiteから直接データを読み取り、原始座標と仮想座標（重力変位後）をインタラクティブなPlotly HTMLとして出力する。
 
-- ノードサイズ: mass（質量）
-- 透明度: decay（時間減衰）
-- 色: source別（tweet/like/note_tweet）+ temperature（高温でオレンジ寄り）
-- エッジ: 共起グラフの接続
+宇宙空間に浮かぶ恒星としてドキュメントを表現：
+
+| 視覚要素 | 対応する動的状態 | 恒星アナロジー |
+|---------|---------------|--------------|
+| サイズ | Mass (質量) | 赤色巨星（大きい）vs 矮星（小さい） |
+| 色温度 | Temperature | M赤 → K橙 → G黄 → F白 → A/B青白 |
+| 明るさ | Decay × Mass | 最近アクセスされた高質量ノードが最も明るい |
+| フィラメント | 共起エッジ | 宇宙の大規模構造 |
+| `--compare`モード | 原始 vs 仮想座標の並列比較 | 重力による星団の再配置を観察 |

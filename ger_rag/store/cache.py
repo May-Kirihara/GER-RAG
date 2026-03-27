@@ -4,6 +4,8 @@ import asyncio
 import logging
 import time
 
+import numpy as np
+
 from ger_rag.core.types import CooccurrenceEdge, NodeState
 from ger_rag.store.base import StoreBase
 
@@ -14,8 +16,10 @@ class CacheLayer:
     def __init__(self, flush_interval: float = 5.0, flush_threshold: int = 100):
         self.node_cache: dict[str, NodeState] = {}
         self.graph_cache: dict[str, dict[str, float]] = {}
+        self.displacement_cache: dict[str, np.ndarray] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
+        self.dirty_displacements: set[str] = set()
         self._flush_interval = flush_interval
         self._flush_threshold = flush_threshold
         self._write_behind_task: asyncio.Task | None = None
@@ -32,6 +36,15 @@ class CacheLayer:
 
     def get_all_nodes(self) -> list[NodeState]:
         return list(self.node_cache.values())
+
+    # --- Displacement ---
+
+    def get_displacement(self, node_id: str) -> np.ndarray | None:
+        return self.displacement_cache.get(node_id)
+
+    def set_displacement(self, node_id: str, displacement: np.ndarray) -> None:
+        self.displacement_cache[node_id] = displacement
+        self.dirty_displacements.add(node_id)
 
     # --- Graph edges ---
 
@@ -78,7 +91,12 @@ class CacheLayer:
             self.graph_cache.setdefault(e.src, {})[e.dst] = e.weight
             self.graph_cache.setdefault(e.dst, {})[e.src] = e.weight
 
-        logger.info("Cache loaded: %d nodes, %d edges", len(self.node_cache), len(edges))
+        self.displacement_cache = await store.load_displacements()
+
+        logger.info(
+            "Cache loaded: %d nodes, %d edges, %d displacements",
+            len(self.node_cache), len(edges), len(self.displacement_cache),
+        )
 
     # --- Flush to store ---
 
@@ -92,6 +110,16 @@ class CacheLayer:
             if dirty_states:
                 await store.save_node_states(dirty_states)
             self.dirty_nodes.clear()
+
+        if self.dirty_displacements:
+            dirty_disp = {
+                nid: self.displacement_cache[nid]
+                for nid in self.dirty_displacements
+                if nid in self.displacement_cache
+            }
+            if dirty_disp:
+                await store.save_displacements(dirty_disp)
+            self.dirty_displacements.clear()
 
         if self.dirty_edges:
             dirty_edge_list: list[CooccurrenceEdge] = []
@@ -139,3 +167,5 @@ class CacheLayer:
         self.dirty_nodes.update(self.node_cache.keys())
         self.graph_cache.clear()
         self.dirty_edges.clear()
+        self.displacement_cache.clear()
+        self.dirty_displacements.clear()

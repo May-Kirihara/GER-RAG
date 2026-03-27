@@ -66,6 +66,7 @@ class NodeResponse(BaseModel):
     temperature: float
     last_access: float
     sim_history: list[float]
+    displacement_norm: float = 0.0
 
 
 class GraphResponse(BaseModel):

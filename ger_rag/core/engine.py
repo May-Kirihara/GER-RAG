@@ -8,9 +8,13 @@ import uuid
 import numpy as np
 
 from ger_rag.config import GERConfig
+from ger_rag.core.gravity import (
+    apply_displacement_decay,
+    compute_virtual_position,
+    update_displacements_for_cooccurrence,
+)
 from ger_rag.core.scorer import (
     compute_decay,
-    compute_final_score,
     compute_mass_boost,
     compute_temp_noise,
 )
@@ -50,9 +54,10 @@ class GEREngine:
         self.faiss_index.load(self.config.faiss_index_path)
         self.cache.start_write_behind(self.store)
         logger.info(
-            "Engine started: %d nodes cached, %d vectors indexed",
+            "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
             self.faiss_index.size,
+            len(self.cache.displacement_cache),
         )
 
     async def shutdown(self) -> None:
@@ -67,7 +72,6 @@ class GEREngine:
     async def index_documents(
         self, documents: list[dict],
     ) -> list[str]:
-        # Deduplicate by content hash
         hashes = [
             hashlib.sha256(d["content"].encode("utf-8")).hexdigest()
             for d in documents
@@ -87,11 +91,9 @@ class GEREngine:
 
         contents = [d["content"] for d in docs_to_index]
         metadatas = [d.get("metadata") for d in docs_to_index]
-
         ids = [str(uuid.uuid4()) for _ in docs_to_index]
 
         vectors = self.embedder.encode_documents(contents)
-
         self.faiss_index.add(vectors, ids)
 
         now = time.time()
@@ -99,7 +101,6 @@ class GEREngine:
         for i, doc_id in enumerate(ids):
             state = NodeState(id=doc_id, last_access=now)
             self.cache.set_node(state, dirty=True)
-
             docs_for_store.append({
                 "id": doc_id,
                 "content": contents[i],
@@ -112,23 +113,30 @@ class GEREngine:
         logger.info("Indexed %d documents", len(ids))
         return ids
 
-    # --- US2: Query ---
+    # --- US2: Query (Gravitational Displacement) ---
 
     async def query(self, text: str, top_k: int | None = None) -> list[QueryResultItem]:
         k = top_k or self.config.top_k
         query_vec = self.embedder.encode_query(text)
 
-        candidates = self.faiss_index.search(query_vec, k)
+        # Step 1: FAISS broad candidate retrieval (original embeddings)
+        candidate_k = k * self.config.candidate_multiplier
+        candidates = self.faiss_index.search(query_vec, candidate_k)
         if not candidates:
             return []
 
         candidate_ids = [cid for cid, _ in candidates]
-        raw_scores: dict[str, float] = {cid: score for cid, score in candidates}
+        raw_scores = {cid: score for cid, score in candidates}
 
+        # Step 2: Get original embeddings for candidates
+        original_embs = self.faiss_index.get_vectors(candidate_ids)
+
+        # Step 3: Compute virtual positions and gravity-based similarity
         now = time.time()
+        query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
         results: list[QueryResultItem] = []
 
-        for node_id, raw_score in candidates:
+        for node_id in candidate_ids:
             state = self.cache.get_node(node_id)
             if state is None:
                 states = await self.store.get_node_states([node_id])
@@ -136,12 +144,23 @@ class GEREngine:
             if state is None:
                 continue
 
+            original_emb = original_embs.get(node_id)
+            if original_emb is None:
+                continue
+
+            displacement = self.cache.get_displacement(node_id)
+            virtual_pos = compute_virtual_position(
+                original_emb, displacement, state.temperature
+            )
+
+            # Gravity-based similarity (cosine sim in virtual space)
+            gravity_sim = float(np.dot(query_vec_flat, virtual_pos))
+
+            # Dynamic scoring components
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
             decay = compute_decay(state.last_access, now, self.config.delta)
-            temp_noise = compute_temp_noise(state.temperature)
-            graph_boost = self.graph.compute_graph_boost(node_id, raw_scores)
 
-            final = compute_final_score(raw_score, mass_boost, decay, temp_noise, graph_boost)
+            final = gravity_sim * decay + mass_boost
 
             if final <= 0.0:
                 continue
@@ -155,27 +174,35 @@ class GEREngine:
                     id=node_id,
                     content=doc["content"],
                     metadata=doc.get("metadata"),
-                    raw_score=raw_score,
+                    raw_score=raw_scores.get(node_id, 0.0),
                     final_score=final,
                 )
             )
 
+        # Step 4: Sort and take top-K
         results.sort(key=lambda r: r.final_score, reverse=True)
+        results = results[:k]
 
-        self._update_state_after_query(candidates, now)
+        # Step 5: Post-query state update (async, non-blocking to response)
+        result_ids = [r.id for r in results]
+        self._update_state_after_query(result_ids, raw_scores, original_embs, now)
 
         return results
 
     def _update_state_after_query(
         self,
-        candidates: list[tuple[str, float]],
+        result_ids: list[str],
+        raw_scores: dict[str, float],
+        original_embs: dict[str, np.ndarray],
         now: float,
     ) -> None:
-        result_ids = []
-        for node_id, raw_score in candidates:
+        masses = {}
+        for node_id in result_ids:
             state = self.cache.get_node(node_id)
             if state is None:
                 continue
+
+            raw_score = raw_scores.get(node_id, 0.0)
 
             # Mass update with logistic saturation
             state.mass += self.config.eta * raw_score * (1.0 - state.mass / self.config.m_max)
@@ -194,11 +221,47 @@ class GEREngine:
 
             state.last_access = now
             self.cache.set_node(state, dirty=True)
-            result_ids.append(node_id)
+            masses[node_id] = state.mass
 
-        # Co-occurrence update
+        # Co-occurrence graph update
         if result_ids:
             self.graph.update_cooccurrence(result_ids)
+
+        # Gravitational displacement update
+        if len(result_ids) >= 2:
+            current_displacements = {}
+            for nid in result_ids:
+                if nid not in original_embs:
+                    continue
+                cached = self.cache.get_displacement(nid)
+                if cached is not None:
+                    current_displacements[nid] = cached
+                else:
+                    current_displacements[nid] = np.zeros(self.config.embedding_dim, dtype=np.float32)
+
+            # Apply decay to existing displacements
+            for nid in current_displacements:
+                state = self.cache.get_node(nid)
+                if state is not None:
+                    current_displacements[nid] = apply_displacement_decay(
+                        current_displacements[nid],
+                        self.config.displacement_decay,
+                        state.last_access,
+                        now,
+                        self.config.displacement_age_delta,
+                    )
+
+            # Compute gravitational forces and update displacements
+            updated = update_displacements_for_cooccurrence(
+                [nid for nid in result_ids if nid in original_embs],
+                original_embs,
+                current_displacements,
+                masses,
+                self.config,
+            )
+
+            for nid, disp in updated.items():
+                self.cache.set_displacement(nid, disp)
 
     # --- US3: Node State Inspection ---
 
@@ -208,6 +271,12 @@ class GEREngine:
             return state
         states = await self.store.get_node_states([node_id])
         return states.get(node_id)
+
+    def get_displacement_norm(self, node_id: str) -> float:
+        disp = self.cache.get_displacement(node_id)
+        if disp is None:
+            return 0.0
+        return float(np.linalg.norm(disp))
 
     # --- US4: Graph Inspection ---
 

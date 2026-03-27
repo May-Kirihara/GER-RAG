@@ -27,6 +27,15 @@ class GERConfig:
     prune_threshold: float = 0.5  # Edge removal threshold
     max_degree: int = 20      # Per-node edge cap
 
+    # Gravitational displacement
+    gravity_G: float = 0.01            # Gravitational constant
+    gravity_eta: float = 0.005         # Displacement learning rate
+    gravity_epsilon: float = 1e-6      # Zero-division guard
+    displacement_decay: float = 0.995  # Per-step displacement decay
+    displacement_age_delta: float = 0.005  # Access-age based decay rate
+    max_displacement_norm: float = 0.3 # Max L2 norm of displacement vector
+    candidate_multiplier: int = 3      # FAISS retrieves top_k * this
+
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 
