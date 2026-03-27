@@ -79,33 +79,43 @@ uv pip install -e ".[gpu]"
 サーバー停止後に実行する（DB + FAISSファイルを直接読む）。
 
 ```bash
-# PCA（高速）
-.venv/bin/python scripts/visualize_3d.py --open
+# 仮想座標ビュー（重力変位後の宇宙空間）
+.venv/bin/python scripts/visualize_3d.py --sample 3000 --open
+
+# 原始座標 vs 仮想座標の並列比較
+.venv/bin/python scripts/visualize_3d.py --compare --sample 3000 --open
 
 # UMAP（局所構造をよく保存、遅め）
-.venv/bin/python scripts/visualize_3d.py --method umap --open
+.venv/bin/python scripts/visualize_3d.py --method umap --sample 3000 --open
 
-# 大規模データ時はサンプリング
-.venv/bin/python scripts/visualize_3d.py --sample 3000 --open
+# 全件（ブラウザが重い場合あり）
+.venv/bin/python scripts/visualize_3d.py --compare --open
 ```
 
-出力は`ger_rag_3d.html`（Plotlyインタラクティブ）。ブラウザでドラッグ回転、ホバーでノード詳細表示。
+出力はPlotly HTMLファイル。ブラウザでドラッグ回転、ホバーでノード詳細（質量、温度、スペクトル型、変位量）表示。
 
-### 視覚エンコーディング
+### 視覚エンコーディング（Cosmic View）
 
-| 表現 | 動的状態 | 変化 |
-|------|---------|------|
-| ノードサイズ | Mass | 検索されるほど大きくなる |
-| 透明度 | Decay | 長期未アクセスで薄くなる |
-| オレンジ色寄り | Temperature | 検索文脈が変動的なノード |
-| 色分け | Source | 青=tweet, 赤=like, 緑=note_tweet |
-| 線 | 共起エッジ | 一緒に検索されるドキュメント間の関係 |
+ドキュメントを宇宙空間の恒星として表現する。
+
+| 視覚要素 | 動的状態 | 恒星アナロジー |
+|---------|---------|--------------|
+| サイズ | Mass (質量) | 赤色巨星（大きい）vs 矮星（小さい） |
+| 色温度 | Temperature | M赤 → K橙 → G黄 → F白 → A/B青白 |
+| 明るさ | Decay × Mass | 最近アクセスされた高質量ノードが最も明るい |
+| フィラメント | 共起エッジ | 宇宙の大規模構造 |
+
+恒星分類の例：
+- **赤色巨星**: 高mass + 低temperature — 安定して頻繁に検索されるドキュメント
+- **青色超巨星**: 高mass + 高temperature — 多様な文脈で活発に検索される不安定なドキュメント
+- **赤色矮星**: 低mass + 低temperature — まだあまり検索されていないドキュメント
+- **ダスト**: 未検索ノード — ほぼ見えない背景
 
 ### 動的変化を確認する手順
 
 1. サーバー起動 → `load_csv.py` → `test_queries.py --mode stress --rounds 10` → サーバー停止
-2. `visualize_3d.py --open` で確認
-3. サーバー再起動 → 追加クエリ実行 → サーバー停止 → 再度可視化 → 変化を比較
+2. `visualize_3d.py --compare --sample 3000 --open` で Before/After 比較
+3. サーバー再起動 → 追加クエリ実行 → サーバー停止 → 再度可視化 → 星の移動・色変化を観察
 
 ## 永続化ファイル
 
@@ -140,15 +150,26 @@ rm ger_rag.db ger_rag.faiss ger_rag.faiss.ids
 
 ### チューニングの指針
 
+### スコアリング・質量
+
 | パラメータ | 影響 | 上げると | 下げると |
 |-----------|------|---------|---------|
 | alpha (0.05) | mass boostの重み | 頻出ドキュメントをより強く優先 | 類似度ベースに近づく |
 | delta (0.01) | 時間減衰の速さ | 古いアクセスが早く忘れられる | 長期間アクセスが維持される |
 | gamma (0.5) | temperatureの感度 | ノイズが大きくなり探索的に | 安定的な検索結果 |
-| rho (0.1) | 共起グラフの影響度 | 関連ドキュメントのブーストが強い | 共起の影響が弱い |
 | eta (0.05) | mass増加速度 | 少ないクエリで重要度が上がる | ゆっくり重要度が蓄積 |
 | edge_threshold (5) | エッジ形成の閾値 | 強い共起のみエッジ化 | 弱い共起でもエッジ化 |
 | top_k (10) | 返却件数 | 多くの結果を返す | 上位のみに絞る |
+
+### 重力変位
+
+| パラメータ | 影響 | 上げると | 下げると |
+|-----------|------|---------|---------|
+| gravity_G (0.01) | 万有引力定数 | 急速に引き寄せ合う（創発的） | 穏やかな変位（安定） |
+| gravity_eta (0.005) | 変位の学習率 | 1回のクエリでの変位が大きい | 段階的に変位 |
+| displacement_decay (0.995) | 変位の定期減衰 | 変位が長く維持される | 早く元に戻る |
+| max_displacement_norm (0.3) | 変位の上限 | 遠くまで移動可能（探索的） | 原始位置から離れにくい（安全） |
+| candidate_multiplier (3) | FAISS候補倍率 | 広い候補から選べる（多様性↑） | 高速だが候補が狭い |
 
 ## トラブルシューティング
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+import numpy as np
+
 from ger_rag.core.types import CooccurrenceEdge, NodeState
 
 
@@ -47,6 +49,16 @@ class StoreBase(ABC):
     @abstractmethod
     async def get_all_edges(self) -> list[CooccurrenceEdge]:
         """Get all edges."""
+        ...
+
+    @abstractmethod
+    async def save_displacements(self, displacements: dict[str, np.ndarray]) -> None:
+        """Batch save displacement vectors."""
+        ...
+
+    @abstractmethod
+    async def load_displacements(self) -> dict[str, np.ndarray]:
+        """Load all displacement vectors."""
         ...
 
     @abstractmethod

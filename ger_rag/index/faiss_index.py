@@ -50,6 +50,21 @@ class FaissIndex:
             with open(id_map_path) as f:
                 self._id_map = [line.strip() for line in f if line.strip()]
 
+    def get_vectors(self, ids: list[str]) -> dict[str, np.ndarray]:
+        """Retrieve original embedding vectors by IDs."""
+        if self._index.ntotal == 0:
+            return {}
+        id_to_idx = {nid: i for i, nid in enumerate(self._id_map)}
+        indices_needed = [(node_id, id_to_idx[node_id]) for node_id in ids if node_id in id_to_idx]
+        if not indices_needed:
+            return {}
+        # Read full matrix once
+        all_vecs = faiss.rev_swig_ptr(
+            self._index.get_xb(), self._index.ntotal * self._dimension
+        )
+        all_vecs = np.array(all_vecs).reshape(self._index.ntotal, self._dimension)
+        return {node_id: all_vecs[idx].copy().astype(np.float32) for node_id, idx in indices_needed}
+
     def reset(self) -> None:
         self._index = faiss.IndexFlatIP(self._dimension)
         self._id_map = []

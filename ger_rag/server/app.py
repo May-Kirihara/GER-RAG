@@ -102,6 +102,7 @@ async def get_node(node_id: str):
         temperature=state.temperature,
         last_access=state.last_access,
         sim_history=state.sim_history,
+        displacement_norm=engine.get_displacement_norm(node_id),
     )
 
 
