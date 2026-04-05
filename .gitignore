@@ -213,7 +213,9 @@ __marimo__/
 *.faiss
 data/
 
+eval_output
 input/documents.csv
 .mcp.json
 .specify
 .claude
+ger_rag_3d.html
