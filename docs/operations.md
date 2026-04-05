@@ -171,6 +171,74 @@ rm ger_rag.db ger_rag.faiss ger_rag.faiss.ids
 | max_displacement_norm (0.3) | 変位の上限 | 遠くまで移動可能（探索的） | 原始位置から離れにくい（安全） |
 | candidate_multiplier (3) | FAISS候補倍率 | 広い候補から選べる（多様性↑） | 高速だが候補が狭い |
 
+## MCPサーバー
+
+### 起動
+
+```bash
+# stdio (Claude Code / Claude Desktop)
+.venv/bin/python -m ger_rag.server.mcp_server
+
+# SSE (リモートクライアント)
+.venv/bin/python -m ger_rag.server.mcp_server --transport sse --port 8001
+```
+
+### コーディングエージェントMCP設定
+#### Claude Code
+`~/.claude.json` もしくはプロジェクト内 '.mcp.json' に追加:
+
+```json
+{
+  "mcpServers": {
+    "ger-rag-memory": {
+      "command": "/path/to/GER-RAG/.venv/bin/python",
+      "args": ["-m", "ger_rag.server.mcp_server"],
+      "cwd": "/path/to/GER-RAG"
+    }
+  }
+}
+```
+#### OpenCode
+`~/config/opencode/opencode.json` に追加:
+
+```json
+{
+  "mcp": {
+    "ger-rag-memory": {
+        "type": "local",
+        "command": [
+        "/mnt/holyland/Project/GER-RAG/.venv/bin/python",
+        "-m",
+        "ger_rag.server.mcp_server"
+        ]
+    }
+  }
+}
+```
+
+### MCPツール一覧
+
+| ツール | 用途 |
+|--------|------|
+| `remember` | テキストを記憶に登録（source: agent/user/system/compaction） |
+| `recall` | 重力変位付き検索（source_filterでフィルタ可能） |
+| `explore` | 温度を上げた創発的探索（diversity: 0.0〜1.0） |
+| `reflect` | 記憶状態の分析（summary/hot_topics/connections/dormant） |
+| `ingest` | ファイル/ディレクトリ一括取り込み（md/txt/csv対応） |
+
+### MCPリソース
+
+| URI | 内容 |
+|-----|------|
+| `memory://stats` | 記憶全体の統計（総数、アクティブ数、エッジ数、source分布） |
+| `memory://hot` | 高massノード上位10件 |
+
+### 注意事項
+
+- MCPサーバーとFastAPIサーバーは同時に起動できない（同じDB/FAISSファイルを使用するため）
+- MCPサーバー起動時にembeddingモデルがロードされる（初回起動時は数十秒かかる）
+- `ingest` でディレクトリを取り込む場合、`--recursive` でサブディレクトリも対象にできる
+
 ## トラブルシューティング
 
 ### クエリのスコアが初回だけ極端に低い

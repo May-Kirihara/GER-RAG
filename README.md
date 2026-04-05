@@ -54,6 +54,23 @@ curl -X POST http://localhost:8000/query \
   -d '{"text": "プログラミングについて", "top_k": 5}'
 ```
 
+## MCPサーバー (AIエージェント長期記憶)
+
+GER-RAGをMCPプロトコルで公開し、AIエージェントの**外部長期記憶**として使う。
+
+```bash
+# Claude Code / Claude Desktop (stdio)
+.venv/bin/python -m ger_rag.server.mcp_server
+```
+
+| ツール | 用途 |
+|--------|------|
+| `remember` | 思考・発見・ユーザー指示・コンテキスト圧縮を記憶に登録 |
+| `recall` | 重力変位付き検索（使い込むほど関連記憶が浮上しやすくなる） |
+| `explore` | 温度を上げた創発的探索（予想外のつながりを発見） |
+| `reflect` | 記憶の自己分析（「最近何をよく考えてる？」） |
+| `ingest` | ファイル/ディレクトリの一括取り込み（md, txt, csv） |
+
 ## Cosmic 3D可視化
 
 ドキュメントを宇宙空間の恒星として表現。使い込むほど星の配置が変わる。
@@ -115,7 +132,7 @@ final_score = gravity_sim * decay + mass_boost
 | ベクトル検索 | FAISS IndexFlatIP |
 | 重力計算 | NumPy (gravity.py) |
 | ストレージ | SQLite (WAL) + インメモリキャッシュ |
-| API | FastAPI |
+| API | FastAPI (REST) + MCP Server (エージェント長期記憶) |
 | 可視化 | Plotly + PCA/UMAP (Cosmic View) |
 | パッケージ管理 | uv |
 
@@ -132,6 +149,7 @@ final_score = gravity_sim * decay + mass_boost
 
 - [Phase 2 評価レポート](docs/research/evaluation-report.md) - Static RAG比較、セッション適応性、ベンチマーク
 - [Gravitational Displacement 設計書](docs/research/gravitational-displacement-design.md) - 重力座標変位の設計
+- [MCP Server 設計書](docs/research/mcp-server-design.md) - AIエージェントの外部長期記憶としてのMCPサーバー設計
 
 ### 設計ドキュメント
 

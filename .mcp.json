@@ -1,0 +1,9 @@
+{                                                                                                                                                    
+    "mcpServers": {                                                                                                                                    
+      "ger-rag-memory": {                                                                                                                              
+        "command": "/mnt/holyland/Project/GER-RAG/.venv/bin/python",     
+        "args": ["-m", "ger_rag.server.mcp_server"],   
+        "cwd": "/mnt/holyland/Project/GER-RAG"                   
+      }                                                                                                                                                
+    }                                         
+  }
