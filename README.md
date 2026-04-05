@@ -162,6 +162,45 @@ Expose GER-RAG via MCP protocol as an AI agent's **external long-term memory**.
 .venv/bin/python -m ger_rag.server.mcp_server --transport sse --port 8001
 ```
 
+### Registration
+
+#### Claude Code
+
+Copy `.mcp.json.example` to `.mcp.json` and edit the paths:
+
+```json
+{
+  "mcpServers": {
+    "ger-rag-memory": {
+      "command": "/path/to/GER-RAG/.venv/bin/python",
+      "args": ["-m", "ger_rag.server.mcp_server"],
+      "cwd": "/path/to/GER-RAG"
+    }
+  }
+}
+```
+
+#### OpenCode
+
+Add the following to your `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "ger-rag-memory": {
+      "type": "local",
+      "command": [
+        "/path/to/GER-RAG/.venv/bin/python",
+        "-m",
+        "ger_rag.server.mcp_server"
+      ]
+    }
+  }
+}
+```
+
+### Tools
+
 | Tool | Purpose |
 |------|---------|
 | `remember` | Store thoughts, discoveries, user preferences, troubleshooting, context compaction |

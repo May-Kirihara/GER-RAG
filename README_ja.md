@@ -150,6 +150,45 @@ GER-RAGをMCPプロトコルで公開し、AIエージェントの**外部長期
 .venv/bin/python -m ger_rag.server.mcp_server --transport sse --port 8001
 ```
 
+### 登録方法
+
+#### Claude Code
+
+`.mcp.json.example` を `.mcp.json` にコピーしてパスを編集:
+
+```json
+{
+  "mcpServers": {
+    "ger-rag-memory": {
+      "command": "/path/to/GER-RAG/.venv/bin/python",
+      "args": ["-m", "ger_rag.server.mcp_server"],
+      "cwd": "/path/to/GER-RAG"
+    }
+  }
+}
+```
+
+#### OpenCode
+
+`opencode.json` に以下を追加:
+
+```json
+{
+  "mcp": {
+    "ger-rag-memory": {
+      "type": "local",
+      "command": [
+        "/path/to/GER-RAG/.venv/bin/python",
+        "-m",
+        "ger_rag.server.mcp_server"
+      ]
+    }
+  }
+}
+```
+
+### ツール一覧
+
 | ツール | 用途 |
 |--------|------|
 | `remember` | 思考・発見・ユーザー指示・トラブルシューティング・コンテキスト圧縮を記録 |
