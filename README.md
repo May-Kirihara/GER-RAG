@@ -27,49 +27,79 @@ uv pip install plotly umap-learn  # 可視化（任意）
 .venv/bin/uvicorn ger_rag.server.app:app --host 0.0.0.0 --port 8000
 ```
 
-### データ投入 → クエリ → 可視化
+### データ投入
+
+#### ファイル・ディレクトリの一括取り込み（load_files.py）
 
 ```bash
-# 1. ドキュメント投入
-.venv/bin/python scripts/load_csv.py
+# 指定ディレクトリ以下のmdを再帰的に取り込み
+.venv/bin/python scripts/load_files.py ~/path/to/your/documents/ --recursive
 
-# 2. 大量クエリで重力を蓄積
+# 中身を確認してから投入（dry-run）
+.venv/bin/python scripts/load_files.py ~/path/to/your/documents/ -r --dry-run
+
+# 特定のファイルだけ
+.venv/bin/python scripts/load_files.py ~/path/to/your/documents/meeting_notes.md
+
+# txtとmd混在
+.venv/bin/python scripts/load_files.py ~/path/to/your/documents/ --pattern "*.md,*.txt" -r
+
+# sourceラベル付き（後でrecallのsource_filterで絞れる）
+.venv/bin/python scripts/load_files.py ~/path/to/your/documents/ --source book -r
+
+# チャンクサイズを大きめに（長い章を保持）
+.venv/bin/python scripts/load_files.py ~/documents/ --chunk-size 3000 -r
+```
+
+#### CSV取り込み（load_csv.py）
+
+```bash
+.venv/bin/python scripts/load_csv.py                       # 全件投入
+.venv/bin/python scripts/load_csv.py --limit 100            # テスト用に100件だけ
+```
+
+#### MCP ingestツール経由
+
+MCPクライアント（Claude Code等）から直接取り込み:
+
+```
+ingest(path="docs/architecture.md")                         # 単一ファイル
+ingest(path="notes/", pattern="*.md", recursive=true)       # ディレクトリ
+ingest(path="data/articles.csv")                            # CSV
+```
+
+#### REST API経由
+
+FastAPIサーバー起動中に任意のJSONで投入:
+
+```bash
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"documents": [
+    {"content": "Pythonは汎用プログラミング言語です。"},
+    {"content": "機械学習はAIの一分野です。", "metadata": {"source": "manual", "tags": ["AI"]}}
+  ]}'
+```
+
+### クエリ → 可視化
+
+```bash
+# 大量クエリで重力を蓄積
 .venv/bin/python scripts/test_queries.py --mode stress --rounds 10
 
-# 3. サーバー停止後、宇宙空間を可視化
+# サーバー停止後、宇宙空間を可視化
 .venv/bin/python scripts/visualize_3d.py --compare --sample 3000 --open
 ```
 
-### API経由の操作
+### 対応フォーマット
 
-```bash
-# ドキュメント登録
-curl -X POST http://localhost:8000/index \
-  -H "Content-Type: application/json" \
-  -d '{"documents": [{"content": "Pythonは汎用プログラミング言語です。"}]}'
-
-# 検索（重力変位を反映した結果が返る）
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"text": "プログラミングについて", "top_k": 5}'
-```
-
-## MCPサーバー (AIエージェント長期記憶)
-
-GER-RAGをMCPプロトコルで公開し、AIエージェントの**外部長期記憶**として使う。
-
-```bash
-# Claude Code / Claude Desktop (stdio)
-.venv/bin/python -m ger_rag.server.mcp_server
-```
-
-| ツール | 用途 |
-|--------|------|
-| `remember` | 思考・発見・ユーザー指示・コンテキスト圧縮を記憶に登録 |
-| `recall` | 重力変位付き検索（使い込むほど関連記憶が浮上しやすくなる） |
-| `explore` | 温度を上げた創発的探索（予想外のつながりを発見） |
-| `reflect` | 記憶の自己分析（「最近何をよく考えてる？」） |
-| `ingest` | ファイル/ディレクトリの一括取り込み（md, txt, csv） |
+| 形式 | 分割方式 | 備考 |
+|------|---------|------|
+| `.md` | `##` 見出し単位 → 長い場合はさらにチャンク分割 | `#` はタイトルとしてメタデータに |
+| `.txt` | 段落（空行）単位 → チャンク分割 | |
+| `.csv` | 行単位、`content`/`text`/`body`列を自動検出 | 他の列はメタデータに |
+| REST API | 任意のJSONで直接投入 | metadata付きで自由な構造 |
+| MCP `remember` | エージェント発言・コンパクティング等 | source/tags/contextをメタデータに |
 
 ## Cosmic 3D可視化
 
@@ -132,9 +162,32 @@ final_score = gravity_sim * decay + mass_boost
 | ベクトル検索 | FAISS IndexFlatIP |
 | 重力計算 | NumPy (gravity.py) |
 | ストレージ | SQLite (WAL) + インメモリキャッシュ |
-| API | FastAPI (REST) + MCP Server (エージェント長期記憶) |
+| API | FastAPI |
 | 可視化 | Plotly + PCA/UMAP (Cosmic View) |
 | パッケージ管理 | uv |
+
+## データディレクトリ
+
+GER-RAGのデータ（DB、FAISSインデックス）はプラットフォームごとの固定ディレクトリに保存される。どのディレクトリからサーバーやMCPを起動しても同じデータを参照する。
+
+| OS | データディレクトリ | 設定ファイル |
+|----|-----------------|------------|
+| Linux | `~/.local/share/ger-rag/` | `~/.config/ger-rag/config.json` |
+| macOS | `~/.local/share/ger-rag/` | `~/.config/ger-rag/config.json` |
+| Windows | `%LOCALAPPDATA%\ger-rag\` | `%APPDATA%\ger-rag\config.json` |
+
+### カスタマイズ
+
+```bash
+# 環境変数（一時的）
+export GER_RAG_DATA_DIR=/path/to/data
+
+# 設定ファイル（永続的）— ~/.config/ger-rag/config.json
+{"data_dir": "/path/to/data"}
+
+# 設定ファイルの場所も変更可能
+export GER_RAG_CONFIG=/path/to/config.json
+```
 
 ## ドキュメント
 
@@ -149,7 +202,6 @@ final_score = gravity_sim * decay + mass_boost
 
 - [Phase 2 評価レポート](docs/research/evaluation-report.md) - Static RAG比較、セッション適応性、ベンチマーク
 - [Gravitational Displacement 設計書](docs/research/gravitational-displacement-design.md) - 重力座標変位の設計
-- [MCP Server 設計書](docs/research/mcp-server-design.md) - AIエージェントの外部長期記憶としてのMCPサーバー設計
 
 ### 設計ドキュメント
 

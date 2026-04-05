@@ -1,4 +1,66 @@
-from dataclasses import dataclass
+import json
+import os
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Config file locations (checked in order):
+#   1. GER_RAG_CONFIG env var
+#   2. ~/.config/ger-rag/config.json  (Linux/macOS)
+#      %APPDATA%/ger-rag/config.json  (Windows)
+_CONFIG_FILE_PATHS = []
+
+_env_config = os.environ.get("GER_RAG_CONFIG")
+if _env_config:
+    _CONFIG_FILE_PATHS.append(Path(_env_config))
+
+if sys.platform == "win32":
+    _appdata = os.environ.get("APPDATA", "")
+    if _appdata:
+        _CONFIG_FILE_PATHS.append(Path(_appdata) / "ger-rag" / "config.json")
+else:
+    _xdg = os.environ.get("XDG_CONFIG_HOME", "")
+    _config_base = Path(_xdg) if _xdg else Path.home() / ".config"
+    _CONFIG_FILE_PATHS.append(_config_base / "ger-rag" / "config.json")
+
+
+def _load_config_file() -> dict:
+    """Load config overrides from JSON config file."""
+    for path in _CONFIG_FILE_PATHS:
+        if path.is_file():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+    return {}
+
+
+def _default_data_dir() -> str:
+    """Resolve data directory.
+
+    Priority:
+      1. GER_RAG_DATA_DIR env var
+      2. "data_dir" in config file
+      3. Platform default:
+         - Linux/macOS: ~/.local/share/ger-rag/
+         - Windows:     %LOCALAPPDATA%/ger-rag/
+    """
+    env = os.environ.get("GER_RAG_DATA_DIR")
+    if env:
+        p = Path(env)
+    else:
+        file_conf = _load_config_file()
+        if "data_dir" in file_conf:
+            p = Path(file_conf["data_dir"])
+        elif sys.platform == "win32":
+            local = os.environ.get("LOCALAPPDATA", "")
+            p = Path(local) / "ger-rag" if local else Path.home() / "ger-rag"
+        else:
+            xdg = os.environ.get("XDG_DATA_HOME", "")
+            base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+            p = base / "ger-rag"
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
 
 
 @dataclass
@@ -39,10 +101,17 @@ class GERConfig:
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
 
-    # Storage
-    db_path: str = "ger_rag.db"
-    faiss_index_path: str = "ger_rag.faiss"
+    # Storage — resolved to fixed data directory
+    data_dir: str = field(default_factory=_default_data_dir)
+    db_path: str = ""
+    faiss_index_path: str = ""
 
     # Write-behind
     flush_interval_seconds: float = 5.0
     flush_threshold: int = 100
+
+    def __post_init__(self):
+        if not self.db_path:
+            self.db_path = os.path.join(self.data_dir, "ger_rag.db")
+        if not self.faiss_index_path:
+            self.faiss_index_path = os.path.join(self.data_dir, "ger_rag.faiss")

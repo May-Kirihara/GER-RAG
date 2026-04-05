@@ -6,40 +6,23 @@
 
 目的は検索精度の最適化ではなく、**セレンディピティと創発** — 使い込むほど予想外のつながりが発見される検索体験。
 
-## 現在の状態 (Phase 2 + MCP実装済み)
+## 現在の状態 (Phase 2 実装済み)
 
 ### 実装済み機能
 
-**REST API (FastAPI)**
-
-| 機能 | エンドポイント | 状態 |
-|------|-------------|------|
+| 機能 | エンドポイント / スクリプト | 状態 |
+|------|--------------------------|------|
 | ドキュメント登録 | POST /index | 完了 (SHA-256重複チェック付き) |
 | 重力変位付き検索 | POST /query | 完了 (二段階: FAISS候補→仮想座標再計算) |
 | ノード状態確認 | GET /node/{id} | 完了 (displacement_norm含む) |
 | 共起グラフ確認 | GET /graph | 完了 |
 | 状態リセット | POST /reset | 完了 (displacement含む) |
-
-**MCPサーバー（AIエージェント外部長期記憶）**
-
-| ツール | 機能 | 状態 |
-|--------|------|------|
-| remember | テキスト記憶登録（source: agent/user/system/compaction） | 完了 |
-| recall | 重力変位付き検索（source_filterフィルタ対応） | 完了 |
-| explore | 創発的探索（diversity制御で温度/候補範囲を動的変更） | 完了 |
-| reflect | 記憶状態分析（summary/hot_topics/connections/dormant） | 完了 |
-| ingest | ファイル/ディレクトリ一括取り込み（md/txt/csv） | 完了 |
-
-**スクリプト**
-
-| スクリプト | 機能 | 状態 |
-|-----------|------|------|
-| scripts/load_csv.py | CSV投入（チャンク分割、DM除外、重複スキップ） | 完了 |
-| scripts/test_queries.py | テストクエリ（basic/full/stress 3モード） | 完了 |
-| scripts/visualize_3d.py | Cosmic 3D可視化（恒星表現、原始/仮想座標比較） | 完了 |
-| scripts/benchmark.py | ベンチマーク（SC-001〜SC-007） | 完了 |
-| scripts/eval_export.py | 評価データ書き出し（LLM-as-judge用） | 完了 |
-| scripts/eval_compute.py | 評価メトリクス算出（nDCG, MRR, Precision） | 完了 |
+| CSV投入 | scripts/load_csv.py | 完了 |
+| テストクエリ | scripts/test_queries.py | 完了 (basic/full/stress 3モード) |
+| Cosmic 3D可視化 | scripts/visualize_3d.py | 完了 (恒星表現、原始/仮想座標比較) |
+| ベンチマーク | scripts/benchmark.py | 完了 (SC-001〜SC-007) |
+| 評価エクスポート | scripts/eval_export.py | 完了 (LLM-as-judge用) |
+| 評価メトリクス算出 | scripts/eval_compute.py | 完了 (nDCG, MRR, Precision) |
 
 ### 技術スタック
 
@@ -52,8 +35,6 @@
 | キャッシュ | インメモリdict + write-behind | displacement_cacheを含む |
 | API | FastAPI + uvicorn | 非同期、自動ドキュメント生成 |
 | 可視化 | Plotly + PCA/UMAP | 恒星色温度表現、原始/仮想座標比較 |
-| MCPサーバー | mcp SDK (FastMCP) | AIエージェント外部長期記憶、stdio/SSE対応 |
-| ファイル取り込み | ger_rag.ingest | md/txt/csv、セクション分割、チャンク分割 |
 | パッケージ管理 | uv | 高速、Python環境構築 |
 
 ### 設計判断の記録
@@ -68,20 +49,15 @@
 | 並行性 | Last-write-wins（ロックなし） | シングルインスタンス前提 |
 | 重複チェック | content SHA-256ハッシュ | embedding生成前にスキップ |
 | モデルキャッシュ | ローカルキャッシュ自動検出 | HuggingFace API通信を完全抑制 |
-| MCPツール設計 | 5ツール（remember/recall/explore/reflect/ingest） | 双方向記憶（読み書き）+ 創発探索 |
-| MCPトランスポート | stdio（デフォルト）+ SSEオプション | Claude Code直接接続 + リモート対応 |
-| ファイル取り込み | ingest/loader.pyに集約 | md見出し分割、txt段落分割、csvカラム自動検出 |
 
 ## コードの読み方
 
 ### エントリポイント
 
-1. **FastAPI起動**: `server/app.py` の `lifespan()` → 全コンポーネント初期化
-2. **MCP起動**: `server/mcp_server.py` の `get_engine()` → 遅延初期化（初回ツール呼び出し時）
-3. **クエリ処理**: `engine.query()` → FAISS広め取得 → `gravity.compute_virtual_position()` → 仮想座標sim → top-K選出
-4. **重力更新**: `engine._update_state_after_query()` → `gravity.update_displacements_for_cooccurrence()` → `cache.set_displacement()`
-5. **MCP remember**: `mcp_server.remember()` → `engine.index_documents()` にmetadata(source, tags, context)付きで委譲
-6. **MCP explore**: 一時的にconfig.gamma/candidate_multiplierを変更 → `engine.query()` → config復元
+1. **サーバー起動**: `server/app.py` の `lifespan()` → 全コンポーネント初期化（displacement含む）
+2. **クエリ処理**: `engine.query()` → FAISS広め取得 → `gravity.compute_virtual_position()` → 仮想座標sim → top-K選出
+3. **重力更新**: `engine._update_state_after_query()` → `gravity.update_displacements_for_cooccurrence()` → `cache.set_displacement()`
+4. **重複チェック**: `engine.index_documents()` → `store.find_existing_hashes()`
 
 ### 主要クラスの役割
 
@@ -186,8 +162,7 @@ GER-RAG/
 │   ├── index/                # ベクトルインデックス (get_vectors逆引き対応)
 │   ├── store/                # 永続化 (displacement BLOB、自動マイグレーション)
 │   ├── graph/                # 共起グラフ
-│   ├── ingest/               # ファイル取り込み (md/txt/csv)
-│   └── server/               # FastAPI + MCPサーバー
+│   └── server/               # FastAPI
 ├── scripts/
 │   ├── load_csv.py           # CSV投入
 │   ├── test_queries.py       # テストクエリ (basic/full/stress)
