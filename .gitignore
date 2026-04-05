@@ -212,3 +212,6 @@ __marimo__/
 *.db-shm
 *.faiss
 data/
+
+input/documents.csv
+.mcp.json
