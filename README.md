@@ -179,9 +179,9 @@ Contents:
 - Usage patterns (context compaction, context restoration, decision logging, troubleshooting, user preference tracking, creative exploration)
 - Source classification (agent / user / compaction / system)
 
-## Cosmic 3D Visualization
+## Embedding Space Visualization
 
-Documents rendered as stars in a cosmic space. The constellation changes as you use the system.
+Each embedded document is rendered as a star in cosmic space. The constellation shifts as you use the system.
 
 ```bash
 # Virtual coordinate view (post-gravitational displacement)
@@ -290,7 +290,3 @@ export GER_RAG_CONFIG=/path/to/config.json
 - [Data Model](specs/001-ger-rag-core/data-model.md) - Entity definitions, hyperparameters
 - [API Contract](specs/001-ger-rag-core/contracts/api.md) - API design specification
 - [Original Design](plan.md) - GER-RAG concept and mathematical foundations
-
-## License
-
-Private
