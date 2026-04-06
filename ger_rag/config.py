@@ -1,8 +1,12 @@
 import json
+import logging
+import math
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Config file locations (checked in order):
 #   1. GER_RAG_CONFIG env var
@@ -29,7 +33,9 @@ def _load_config_file() -> dict:
     for path in _CONFIG_FILE_PATHS:
         if path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8"))
+                logger.info("Loaded config from %s", path)
+                return data
             except (json.JSONDecodeError, OSError):
                 pass
     return {}
@@ -77,7 +83,6 @@ class GERConfig:
     alpha: float = 0.05       # Mass boost scaling
     delta: float = 0.01       # Temporal decay rate
     gamma: float = 0.5        # Temperature scaling
-    rho: float = 0.1          # Graph propagation weight
 
     # Mass update
     eta: float = 0.05         # Mass growth rate
@@ -96,7 +101,16 @@ class GERConfig:
     displacement_decay: float = 0.995  # Per-step displacement decay
     displacement_age_delta: float = 0.005  # Access-age based decay rate
     max_displacement_norm: float = 0.3 # Max L2 norm of displacement vector
-    candidate_multiplier: int = 3      # FAISS retrieves top_k * this
+
+    # Gravity wave propagation
+    wave_initial_k: int = 3            # Initial FAISS top-k for seed nodes
+    wave_max_depth: int = 2            # Maximum recursion depth
+    wave_base_k: int = 2              # Minimum neighbors per node
+    wave_mass_scale: float = 2.0       # Mass-to-top-k scaling factor
+    wave_max_node_k: int = 10          # Maximum neighbors per node
+    wave_attenuation: float = 0.3      # Force decay per depth level
+    wave_mass_attenuation_factor: float = 0.5  # Mass-based attenuation reduction
+    wave_boost_weight: float = 0.05    # Wave force weight in final score
 
     # Similarity history
     sim_buffer_size: int = 20  # Ring buffer size
@@ -115,3 +129,21 @@ class GERConfig:
             self.db_path = os.path.join(self.data_dir, "ger_rag.db")
         if not self.faiss_index_path:
             self.faiss_index_path = os.path.join(self.data_dir, "ger_rag.faiss")
+
+    @classmethod
+    def from_config_file(cls) -> "GERConfig":
+        """Create GERConfig with overrides from config.json."""
+        file_conf = _load_config_file()
+        valid_fields = {f.name for f in fields(cls)}
+        overrides = {k: v for k, v in file_conf.items() if k in valid_fields}
+        return cls(**overrides)
+
+    def compute_node_top_k(self, mass: float) -> int:
+        """Compute per-node top-k based on mass."""
+        k = self.wave_base_k + int(self.wave_mass_scale * math.log(1.0 + mass))
+        return min(k, self.wave_max_node_k)
+
+    def compute_effective_attenuation(self, mass: float) -> float:
+        """Compute effective attenuation (high mass = slower decay = farther reach)."""
+        mass_factor = math.log(1.0 + mass) / math.log(1.0 + self.m_max)
+        return self.wave_attenuation * (1.0 - self.wave_mass_attenuation_factor * mass_factor)

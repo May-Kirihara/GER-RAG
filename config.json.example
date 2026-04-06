@@ -1,0 +1,31 @@
+{
+  "_comment": "GER-RAG configuration. Copy to ~/.config/ger-rag/config.json (Linux/macOS) or %APPDATA%/ger-rag/config.json (Windows)",
+
+  "model_name": "cl-nagoya/ruri-v3-310m",
+  "embedding_dim": 768,
+  "top_k": 10,
+
+  "alpha": 0.05,
+  "delta": 0.01,
+  "gamma": 0.5,
+  "eta": 0.05,
+  "m_max": 50.0,
+
+  "gravity_G": 0.01,
+  "gravity_eta": 0.005,
+  "displacement_decay": 0.995,
+  "max_displacement_norm": 0.3,
+
+  "wave_initial_k": 3,
+  "wave_max_depth": 2,
+  "wave_base_k": 2,
+  "wave_mass_scale": 2.0,
+  "wave_max_node_k": 10,
+  "wave_attenuation": 0.3,
+  "wave_mass_attenuation_factor": 0.5,
+  "wave_boost_weight": 0.05,
+
+  "edge_threshold": 5,
+  "edge_decay": 0.97,
+  "max_degree": 20
+}

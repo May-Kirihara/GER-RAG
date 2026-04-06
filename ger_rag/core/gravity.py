@@ -6,11 +6,19 @@ proportional to their mass and inversely proportional to distance squared.
 
 from __future__ import annotations
 
+import logging
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+if TYPE_CHECKING:
+    from ger_rag.index.faiss_index import FaissIndex
+    from ger_rag.store.cache import CacheLayer
+
 from ger_rag.config import GERConfig
+
+logger = logging.getLogger(__name__)
 
 
 def compute_virtual_position(
@@ -133,3 +141,88 @@ def clamp_displacement(displacement: np.ndarray, max_norm: float) -> np.ndarray:
     if norm > max_norm:
         return (displacement * (max_norm / norm)).astype(np.float32)
     return displacement
+
+
+# -----------------------------------------------------------------------
+# Gravity Wave Propagation
+# -----------------------------------------------------------------------
+
+def propagate_gravity_wave(
+    query_vector: np.ndarray,
+    faiss_index: "FaissIndex",
+    cache: "CacheLayer",
+    config: GERConfig,
+    wave_k: int | None = None,
+    wave_depth: int | None = None,
+) -> dict[str, float]:
+    """Propagate gravity wave recursively through embedding space.
+
+    Starting from FAISS top-k seed nodes, recursively expand each node's
+    neighbors. Mass determines how many neighbors each node attracts.
+    Force attenuates with depth.
+
+    Args:
+        query_vector: Query embedding (1D or 2D)
+        faiss_index: FAISS index for neighbor searches
+        cache: Cache layer for node state access
+        config: GER configuration
+        wave_k: Override initial top-k (default: config.wave_initial_k)
+        wave_depth: Override max depth (default: config.wave_max_depth)
+
+    Returns:
+        Dict mapping node_id -> total accumulated force
+    """
+    initial_k = wave_k if wave_k is not None else config.wave_initial_k
+    max_depth = wave_depth if wave_depth is not None else config.wave_max_depth
+
+    qv = query_vector[0] if query_vector.ndim == 2 else query_vector
+
+    # Step 1: Seed nodes from query
+    seeds = faiss_index.search(qv.reshape(1, -1), initial_k)
+    if not seeds:
+        return {}
+
+    # node_id -> total accumulated force
+    reached: dict[str, float] = {}
+    # Current frontier: [(node_id, force)]
+    frontier: list[tuple[str, float]] = [(nid, 1.0) for nid, _ in seeds]
+
+    for nid, force in frontier:
+        reached[nid] = max(reached.get(nid, 0.0), force)
+
+    # Step 2: Recursive expansion
+    for depth in range(1, max_depth + 1):
+        next_frontier: list[tuple[str, float]] = []
+
+        for node_id, parent_force in frontier:
+            # Get node mass to determine top-k and attenuation
+            state = cache.get_node(node_id)
+            mass = state.mass if state else 1.0
+
+            node_k = config.compute_node_top_k(mass)
+            attenuation = config.compute_effective_attenuation(mass)
+            child_force = parent_force * attenuation
+
+            # Skip if force is negligible
+            if child_force < 0.001:
+                continue
+
+            # Find neighbors of this node
+            neighbors = faiss_index.search_by_id(node_id, node_k + 1)  # +1 to exclude self
+
+            for neighbor_id, _ in neighbors:
+                if neighbor_id == node_id:
+                    continue
+
+                # Accumulate force (sum from multiple paths)
+                old_force = reached.get(neighbor_id, 0.0)
+                new_force = old_force + child_force
+                reached[neighbor_id] = new_force
+
+                # Only expand nodes that are newly reached or significantly boosted
+                if old_force == 0.0:
+                    next_frontier.append((neighbor_id, child_force))
+
+        frontier = next_frontier
+
+    return reached

@@ -11,12 +11,12 @@ from ger_rag.config import GERConfig
 from ger_rag.core.gravity import (
     apply_displacement_decay,
     compute_virtual_position,
+    propagate_gravity_wave,
     update_displacements_for_cooccurrence,
 )
 from ger_rag.core.scorer import (
     compute_decay,
     compute_mass_boost,
-    compute_temp_noise,
 )
 from ger_rag.core.types import (
     CooccurrenceEdge,
@@ -113,30 +113,37 @@ class GEREngine:
         logger.info("Indexed %d documents", len(ids))
         return ids
 
-    # --- US2: Query (Gravitational Displacement) ---
+    # --- US2: Query (Gravity Wave Propagation) ---
 
-    async def query(self, text: str, top_k: int | None = None) -> list[QueryResultItem]:
+    async def query(
+        self,
+        text: str,
+        top_k: int | None = None,
+        wave_depth: int | None = None,
+        wave_k: int | None = None,
+    ) -> list[QueryResultItem]:
         k = top_k or self.config.top_k
         query_vec = self.embedder.encode_query(text)
 
-        # Step 1: FAISS broad candidate retrieval (original embeddings)
-        candidate_k = k * self.config.candidate_multiplier
-        candidates = self.faiss_index.search(query_vec, candidate_k)
-        if not candidates:
+        # Step 1: Gravity wave propagation — recursive neighbor expansion
+        reached = propagate_gravity_wave(
+            query_vec, self.faiss_index, self.cache, self.config,
+            wave_k=wave_k, wave_depth=wave_depth,
+        )
+
+        if not reached:
             return []
 
-        candidate_ids = [cid for cid, _ in candidates]
-        raw_scores = {cid: score for cid, score in candidates}
+        # Step 2: Get original embeddings for all reached nodes
+        reached_ids = list(reached.keys())
+        original_embs = self.faiss_index.get_vectors(reached_ids)
 
-        # Step 2: Get original embeddings for candidates
-        original_embs = self.faiss_index.get_vectors(candidate_ids)
-
-        # Step 3: Compute virtual positions and gravity-based similarity
+        # Step 3: Score all reached nodes with virtual coordinates + wave boost
         now = time.time()
         query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
         results: list[QueryResultItem] = []
 
-        for node_id in candidate_ids:
+        for node_id in reached_ids:
             state = self.cache.get_node(node_id)
             if state is None:
                 states = await self.store.get_node_states([node_id])
@@ -153,14 +160,12 @@ class GEREngine:
                 original_emb, displacement, state.temperature
             )
 
-            # Gravity-based similarity (cosine sim in virtual space)
             gravity_sim = float(np.dot(query_vec_flat, virtual_pos))
-
-            # Dynamic scoring components
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
             decay = compute_decay(state.last_access, now, self.config.delta)
+            wave_boost = self.config.wave_boost_weight * reached[node_id]
 
-            final = gravity_sim * decay + mass_boost
+            final = gravity_sim * decay + mass_boost + wave_boost
 
             if final <= 0.0:
                 continue
@@ -174,7 +179,7 @@ class GEREngine:
                     id=node_id,
                     content=doc["content"],
                     metadata=doc.get("metadata"),
-                    raw_score=raw_scores.get(node_id, 0.0),
+                    raw_score=gravity_sim,
                     final_score=final,
                 )
             )
@@ -183,16 +188,16 @@ class GEREngine:
         results.sort(key=lambda r: r.final_score, reverse=True)
         results = results[:k]
 
-        # Step 5: Post-query state update (async, non-blocking to response)
+        # Step 5: Post-query state update
         result_ids = [r.id for r in results]
-        self._update_state_after_query(result_ids, raw_scores, original_embs, now)
+        self._update_state_after_query(result_ids, reached, original_embs, now)
 
         return results
 
     def _update_state_after_query(
         self,
         result_ids: list[str],
-        raw_scores: dict[str, float],
+        reached: dict[str, float],
         original_embs: dict[str, np.ndarray],
         now: float,
     ) -> None:
@@ -202,13 +207,13 @@ class GEREngine:
             if state is None:
                 continue
 
-            raw_score = raw_scores.get(node_id, 0.0)
+            raw_force = reached.get(node_id, 0.0)
 
             # Mass update with logistic saturation
-            state.mass += self.config.eta * raw_score * (1.0 - state.mass / self.config.m_max)
+            state.mass += self.config.eta * raw_force * (1.0 - state.mass / self.config.m_max)
 
-            # Sim history ring buffer
-            state.sim_history.append(raw_score)
+            # Sim history ring buffer (use force as proxy for relevance)
+            state.sim_history.append(raw_force)
             if len(state.sim_history) > self.config.sim_buffer_size:
                 state.sim_history = state.sim_history[-self.config.sim_buffer_size:]
 
@@ -239,7 +244,6 @@ class GEREngine:
                 else:
                     current_displacements[nid] = np.zeros(self.config.embedding_dim, dtype=np.float32)
 
-            # Apply decay to existing displacements
             for nid in current_displacements:
                 state = self.cache.get_node(nid)
                 if state is not None:
@@ -251,7 +255,6 @@ class GEREngine:
                         self.config.displacement_age_delta,
                     )
 
-            # Compute gravitational forces and update displacements
             updated = update_displacements_for_cooccurrence(
                 [nid for nid in result_ids if nid in original_embs],
                 original_embs,

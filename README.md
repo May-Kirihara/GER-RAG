@@ -320,6 +320,7 @@ export GER_RAG_CONFIG=/path/to/config.json
 - [Phase 2 Evaluation Report](docs/research/evaluation-report.md) - Static RAG comparison, session adaptivity, benchmarks
 - [Gravitational Displacement Design](docs/research/gravitational-displacement-design.md) - Gravity coordinate displacement design
 - [MCP Server Design](docs/research/mcp-server-design.md) - AI agent external long-term memory MCP design
+- [Gravity Wave Propagation Design](docs/research/gravity-wave-propagation-design.md) - Recursive gravity field propagation with mass-scaled reach
 
 ### Design Documents
 

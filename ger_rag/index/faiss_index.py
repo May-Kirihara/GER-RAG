@@ -50,6 +50,14 @@ class FaissIndex:
             with open(id_map_path) as f:
                 self._id_map = [line.strip() for line in f if line.strip()]
 
+    def search_by_id(self, node_id: str, top_k: int) -> list[tuple[str, float]]:
+        """Search nearest neighbors of a specific node's embedding."""
+        vecs = self.get_vectors([node_id])
+        vec = vecs.get(node_id)
+        if vec is None:
+            return []
+        return self.search(vec.reshape(1, -1), top_k)
+
     def get_vectors(self, ids: list[str]) -> dict[str, np.ndarray]:
         """Retrieve original embedding vectors by IDs."""
         if self._index.ntotal == 0:
