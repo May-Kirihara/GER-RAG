@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 
 import aiosqlite
@@ -27,7 +28,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     temperature REAL DEFAULT 0.0,
     last_access REAL,
     sim_history BLOB,
-    displacement BLOB
+    displacement BLOB,
+    velocity BLOB,
+    return_count REAL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -53,11 +56,12 @@ class SqliteStore(StoreBase):
         await self._conn.execute("PRAGMA journal_mode = WAL")
         await self._conn.execute("PRAGMA synchronous = NORMAL")
         await self._conn.executescript(SCHEMA)
-        # Migrate: add displacement column if missing (pre-Phase2 DBs)
-        try:
-            await self._conn.execute("SELECT displacement FROM nodes LIMIT 1")
-        except aiosqlite.OperationalError:
-            await self._conn.execute("ALTER TABLE nodes ADD COLUMN displacement BLOB")
+        # Migrate: add columns if missing (older DBs)
+        for col, col_type in [("displacement", "BLOB"), ("velocity", "BLOB"), ("return_count", "REAL DEFAULT 0.0")]:
+            try:
+                await self._conn.execute(f"SELECT {col} FROM nodes LIMIT 1")
+            except aiosqlite.OperationalError:
+                await self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {col} {col_type}")
         await self._conn.commit()
 
     @staticmethod
@@ -109,9 +113,9 @@ class SqliteStore(StoreBase):
     async def save_node_states(self, states: list[NodeState]) -> None:
         assert self._conn is not None
         await self._conn.executemany(
-            "INSERT OR REPLACE INTO nodes (id, mass, temperature, last_access, sim_history) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO nodes (id, mass, temperature, last_access, sim_history, return_count) VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (s.id, s.mass, s.temperature, s.last_access, msgpack.packb(s.sim_history))
+                (s.id, s.mass, s.temperature, s.last_access, msgpack.packb(s.sim_history), s.return_count)
                 for s in states
             ],
         )
@@ -123,7 +127,7 @@ class SqliteStore(StoreBase):
             return {}
         placeholders = ",".join("?" for _ in ids)
         cursor = await self._conn.execute(
-            f"SELECT id, mass, temperature, last_access, sim_history FROM nodes WHERE id IN ({placeholders})",
+            f"SELECT id, mass, temperature, last_access, sim_history, return_count FROM nodes WHERE id IN ({placeholders})",
             ids,
         )
         result = {}
@@ -131,17 +135,18 @@ class SqliteStore(StoreBase):
             sim_history = msgpack.unpackb(row[4]) if row[4] else []
             result[row[0]] = NodeState(
                 id=row[0],
-                mass=row[1],
-                temperature=row[2],
-                last_access=row[3],
+                mass=row[1] or 1.0,
+                temperature=row[2] or 0.0,
+                last_access=row[3] or time.time(),
                 sim_history=sim_history,
+                return_count=row[5] or 0.0,
             )
         return result
 
     async def get_all_node_states(self) -> list[NodeState]:
         assert self._conn is not None
         cursor = await self._conn.execute(
-            "SELECT id, mass, temperature, last_access, sim_history FROM nodes"
+            "SELECT id, mass, temperature, last_access, sim_history, return_count FROM nodes"
         )
         states = []
         async for row in cursor:
@@ -149,10 +154,11 @@ class SqliteStore(StoreBase):
             states.append(
                 NodeState(
                     id=row[0],
-                    mass=row[1],
-                    temperature=row[2],
-                    last_access=row[3],
+                    mass=row[1] or 1.0,
+                    temperature=row[2] or 0.0,
+                    last_access=row[3] or time.time(),
                     sim_history=sim_history,
+                    return_count=row[5] or 0.0,
                 )
             )
         return states
@@ -208,6 +214,24 @@ class SqliteStore(StoreBase):
             result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
         return result
 
+    async def save_velocities(self, velocities: dict[str, np.ndarray]) -> None:
+        assert self._conn is not None
+        await self._conn.executemany(
+            "UPDATE nodes SET velocity = ? WHERE id = ?",
+            [(vel.tobytes(), node_id) for node_id, vel in velocities.items()],
+        )
+        await self._conn.commit()
+
+    async def load_velocities(self) -> dict[str, np.ndarray]:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT id, velocity FROM nodes WHERE velocity IS NOT NULL"
+        )
+        result = {}
+        async for row in cursor:
+            result[row[0]] = np.frombuffer(row[1], dtype=np.float32).copy()
+        return result
+
     async def reset_dynamic_state(self) -> tuple[int, int]:
         assert self._conn is not None
         cursor = await self._conn.execute("SELECT COUNT(*) FROM nodes")
@@ -219,7 +243,8 @@ class SqliteStore(StoreBase):
         edges_count = row[0] if row else 0
 
         await self._conn.execute(
-            "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, sim_history = NULL, displacement = NULL"
+            "UPDATE nodes SET mass = 1.0, temperature = 0.0, last_access = NULL, "
+            "sim_history = NULL, displacement = NULL, velocity = NULL, return_count = 0.0"
         )
         await self._conn.execute("DELETE FROM edges")
         await self._conn.commit()

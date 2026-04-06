@@ -12,6 +12,7 @@ class NodeState(BaseModel):
     temperature: float = 0.0
     last_access: float = Field(default_factory=time.time)
     sim_history: list[float] = Field(default_factory=list)
+    return_count: float = 0.0
 
 
 class CooccurrenceEdge(BaseModel):
@@ -45,6 +46,8 @@ class IndexResponse(BaseModel):
 class QueryRequest(BaseModel):
     text: str = Field(..., min_length=1)
     top_k: int = Field(default=10, ge=1, le=100)
+    wave_depth: int | None = Field(default=None, ge=0, le=5, description="Override wave recursion depth")
+    wave_k: int | None = Field(default=None, ge=1, le=20, description="Override wave initial top-k")
 
 
 class QueryResultItem(BaseModel):

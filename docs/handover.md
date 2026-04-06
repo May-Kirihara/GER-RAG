@@ -6,7 +6,7 @@
 
 目的は検索精度の最適化ではなく、**セレンディピティと創発** — 使い込むほど予想外のつながりが発見される検索体験。
 
-## 現在の状態 (Phase 2 実装済み)
+## 現在の状態 (Phase 3 + MCP + 軌道力学 実装済み)
 
 ### 実装済み機能
 
@@ -49,26 +49,38 @@
 | 並行性 | Last-write-wins（ロックなし） | シングルインスタンス前提 |
 | 重複チェック | content SHA-256ハッシュ | embedding生成前にスキップ |
 | モデルキャッシュ | ローカルキャッシュ自動検出 | HuggingFace API通信を完全抑制 |
+| 軌道力学 | 加速度→速度→位置の3段階物理 | 慣性による公転・彗星軌道、摩擦で減衰 |
+| アンカー引力 | Hooke's law (F=-k*d) で原始位置に復元 | 脱出防止、銀河の暗黒物質ハローに相当 |
+| 重力半径 | min_sim = 1 - G*mass/(2*a_min) | 質量から物理的に導出、周囲に星がなければ引き込まない |
+| 重力波伝播 | 再帰的近傍展開、mass依存top-k | 深さ優先の探索、高massハブは広い重力圏 |
+| 二層分離 | シミュレーション層 + プレゼンテーション層 | 全到達ノードの物理更新、LLMにはtop-5のみ |
+| 創発性指標 | Rank Shift Rate, Serendipity Index | nDCGでは測れない創発的変化を定量化 |
+| 共起ブラックホール | 共起クラスタ重心にBH形成 | 銀河束縛、edge_decayで自然消滅 |
+| 返却飽和 | saturation = 1/(1+return_count*rate) | 同じ結果の繰り返しを防止、脳の馴化 |
+| 温度脱出 | escape = 1/(1+temp*scale) | 高温ノードがBH束縛から脱出、探索促進 |
 
 ## コードの読み方
 
 ### エントリポイント
 
-1. **サーバー起動**: `server/app.py` の `lifespan()` → 全コンポーネント初期化（displacement含む）
-2. **クエリ処理**: `engine.query()` → FAISS広め取得 → `gravity.compute_virtual_position()` → 仮想座標sim → top-K選出
-3. **重力更新**: `engine._update_state_after_query()` → `gravity.update_displacements_for_cooccurrence()` → `cache.set_displacement()`
-4. **重複チェック**: `engine.index_documents()` → `store.find_existing_hashes()`
+1. **サーバー起動**: `server/app.py` の `lifespan()` → 全コンポーネント初期化（displacement + velocity含む）
+2. **MCP起動**: `server/mcp_server.py` の `get_engine()` → 遅延初期化
+3. **クエリ処理**: `engine.query()` → `gravity.propagate_gravity_wave()` → 仮想座標スコアリング → top-5返却
+4. **軌道力学**: `engine._update_simulation()` → `gravity.update_orbital_state()` (加速度→速度→位置の3段階)
+5. **アンカー引力**: `gravity.compute_acceleration()` 内で `a -= k * displacement` (原始位置への復元)
+6. **MCP remember**: `mcp_server.remember()` → `engine.index_documents()`
+7. **MCP explore**: diversity制御で wave_depth/wave_k/gamma を一時変更
 
 ### 主要クラスの役割
 
 | クラス | ファイル | 責務 |
 |-------|---------|------|
-| GEREngine | core/engine.py | 二段階検索 + 重力更新オーケストレーション |
-| gravity.py | core/gravity.py | 重力計算（force, displacement更新, decay, clamp, virtual_pos） |
+| GEREngine | core/engine.py | wave探索 + 二層分離 + 軌道力学オーケストレーション |
+| gravity.py | core/gravity.py | 軌道力学（加速度, 速度, wave伝播, アンカー, 重力半径, virtual_pos） |
 | RuriEmbedder | embedding/ruri.py | テキスト→ベクトル変換（ローカルキャッシュ自動検出） |
-| FaissIndex | index/faiss_index.py | ベクトル近傍探索 + get_vectors()原始embedding逆引き |
-| CacheLayer | store/cache.py | インメモリ状態管理 + displacement_cache + write-behind |
-| SqliteStore | store/sqlite_store.py | 永続化（displacement BLOB含む、自動マイグレーション対応） |
+| FaissIndex | index/faiss_index.py | ベクトル近傍探索 + search_by_id() + get_vectors() |
+| CacheLayer | store/cache.py | インメモリ状態管理 + displacement/velocity_cache + write-behind |
+| SqliteStore | store/sqlite_store.py | 永続化（displacement + velocity BLOB、自動マイグレーション） |
 | CooccurrenceGraph | graph/cooccurrence.py | 共起エッジの形成・減衰・剪定 |
 
 ### gravity.py は純粋関数
@@ -76,11 +88,22 @@
 `core/gravity.py` の全関数は副作用なしの純粋関数。ユニットテストが書きやすい。
 
 ```python
-compute_virtual_position()    # original + displacement → L2正規化
-compute_gravitational_force() # 万有引力ベクトル計算
-update_displacements_for_cooccurrence()  # 共起ペア全体の変位更新
-apply_displacement_decay()    # 時間ベース減衰
-clamp_displacement()          # ノルム上限クランプ
+# 軌道力学（メインパス）
+compute_acceleration()         # 近傍引力 + アンカー復元力 + BH引力(飽和+温度脱出) → 加速度
+compute_bh_acceleration()      # 共起クラスタBHへの引力（saturation + thermal escape適用）
+update_velocity()              # v += a*dt, 摩擦適用, クランプ
+update_orbital_state()         # 全ノードの3段階物理ステップ（acceleration→velocity→displacement）
+
+# 座標・クランプ
+compute_virtual_position()     # original + displacement + temp_noise → L2正規化
+clamp_vector()                 # ベクトルのL2ノルム上限
+
+# 重力波伝播
+propagate_gravity_wave()       # 再帰的近傍展開、mass依存top-k、重力半径カットオフ
+
+# レガシー（後方互換）
+compute_gravitational_force()  # 旧: 力→直接displacement加算
+apply_displacement_decay()     # 旧: 位置の定期減衰（摩擦に置換済み）
 ```
 
 ## スクリプト詳細

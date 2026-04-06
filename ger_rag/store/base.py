@@ -62,6 +62,16 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
+    async def save_velocities(self, velocities: dict[str, np.ndarray]) -> None:
+        """Batch save velocity vectors."""
+        ...
+
+    @abstractmethod
+    async def load_velocities(self) -> dict[str, np.ndarray]:
+        """Load all velocity vectors."""
+        ...
+
+    @abstractmethod
     async def reset_dynamic_state(self) -> tuple[int, int]:
         """Reset all dynamic state. Returns (nodes_reset, edges_removed)."""
         ...

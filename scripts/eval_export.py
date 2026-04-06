@@ -110,14 +110,32 @@ SESSION_SCENARIOS = [
     },
 ]
 
-# トレーニング時は広い範囲の文書に共起を形成するため大きなtop_kを使う
-TRAINING_TOP_K = 50
+# トレーニング時は深いwave探索で広い範囲に共起と重力変位を蓄積
+TRAINING_TOP_K = 30
+TRAINING_WAVE_DEPTH = 3
+TRAINING_WAVE_K = 5
 
 
-def query_server(client: httpx.Client, url: str, text: str, top_k: int = 10) -> list[dict]:
-    resp = client.post(f"{url}/query", json={"text": text, "top_k": top_k}, timeout=60.0)
+def query_server(
+    client: httpx.Client, url: str, text: str, top_k: int = 5,
+    wave_depth: int | None = None, wave_k: int | None = None,
+) -> list[dict]:
+    payload: dict = {"text": text, "top_k": top_k}
+    if wave_depth is not None:
+        payload["wave_depth"] = wave_depth
+    if wave_k is not None:
+        payload["wave_k"] = wave_k
+    resp = client.post(f"{url}/query", json=payload, timeout=60.0)
     resp.raise_for_status()
     return resp.json()["results"]
+
+
+def get_node_info(client: httpx.Client, url: str, node_id: str) -> dict:
+    """Get node state including displacement and velocity info."""
+    resp = client.get(f"{url}/node/{node_id}", timeout=10.0)
+    if resp.status_code == 200:
+        return resp.json()
+    return {}
 
 
 def collect_comparison_data(url: str, top_k: int) -> list[dict]:
@@ -188,44 +206,55 @@ def collect_session_data(url: str, top_k: int, rounds: int) -> list[dict]:
             observe = scenario["observe_query"]
             training = scenario["training_queries"]
 
-            # Before: observe query on fresh state
+            # Before: observe query on fresh state (same wave params as training)
             print(f"    Before snapshot...")
-            before_results = query_server(client, url, observe["text"], top_k)
-            before_ranking = [
-                {
+            before_results = query_server(
+                client, url, observe["text"], top_k,
+                wave_depth=TRAINING_WAVE_DEPTH, wave_k=TRAINING_WAVE_K,
+            )
+            before_ranking = []
+            for i, r in enumerate(before_results):
+                node = get_node_info(client, url, r["id"])
+                before_ranking.append({
                     "rank": i + 1,
                     "doc_id": r["id"],
                     "content": r["content"][:300],
                     "raw_score": r["raw_score"],
                     "final_score": r["final_score"],
-                }
-                for i, r in enumerate(before_results)
-            ]
+                    "mass": node.get("mass", 1.0),
+                    "displacement_norm": node.get("displacement_norm", 0.0),
+                })
 
-            # Training: interleaved queries with large top_k to build wide co-occurrence
+            # Training: deep wave queries to build wide co-occurrence and displacement
             total_training = rounds * len(training)
             print(f"    Training: {rounds} rounds x {len(training)} queries = {total_training} queries "
-                  f"(top_k={TRAINING_TOP_K})...", end="")
+                  f"(top_k={TRAINING_TOP_K}, wave_depth={TRAINING_WAVE_DEPTH}, wave_k={TRAINING_WAVE_K})...", end="")
             for r in range(rounds):
                 for tq in training:
-                    query_server(client, url, tq, TRAINING_TOP_K)
+                    query_server(client, url, tq, TRAINING_TOP_K,
+                                 wave_depth=TRAINING_WAVE_DEPTH, wave_k=TRAINING_WAVE_K)
                 if (r + 1) % 5 == 0:
                     print(f" R{r+1}", end="", flush=True)
             print(" done")
 
-            # After: observe same query after training
+            # After: observe same query after training (same wave params)
             print(f"    After snapshot...")
-            after_results = query_server(client, url, observe["text"], top_k)
-            after_ranking = [
-                {
+            after_results = query_server(
+                client, url, observe["text"], top_k,
+                wave_depth=TRAINING_WAVE_DEPTH, wave_k=TRAINING_WAVE_K,
+            )
+            after_ranking = []
+            for i, r in enumerate(after_results):
+                node = get_node_info(client, url, r["id"])
+                after_ranking.append({
                     "rank": i + 1,
                     "doc_id": r["id"],
                     "content": r["content"][:300],
                     "raw_score": r["raw_score"],
                     "final_score": r["final_score"],
-                }
-                for i, r in enumerate(after_results)
-            ]
+                    "mass": node.get("mass", 1.0),
+                    "displacement_norm": node.get("displacement_norm", 0.0),
+                })
 
             # Detect changes
             before_ids = [d["doc_id"] for d in before_ranking]
@@ -377,7 +406,9 @@ def generate_session_prompt(records: list[dict], out_path: str) -> None:
         lines.append("")
         for doc in rec["before"]:
             content = doc["content"].replace("\n", " ").strip()
-            lines.append(f"**[{doc['rank']}]** (final={doc['final_score']:.4f}, raw={doc['raw_score']:.4f})")
+            mass = doc.get("mass", 1.0)
+            disp = doc.get("displacement_norm", 0.0)
+            lines.append(f"**[{doc['rank']}]** (final={doc['final_score']:.4f}, raw={doc['raw_score']:.4f}, mass={mass:.2f}, disp={disp:.4f})")
             lines.append(f"> {content}")
             lines.append("")
 
@@ -386,7 +417,9 @@ def generate_session_prompt(records: list[dict], out_path: str) -> None:
         lines.append("")
         for doc in rec["after"]:
             content = doc["content"].replace("\n", " ").strip()
-            lines.append(f"**[{doc['rank']}]** (final={doc['final_score']:.4f}, raw={doc['raw_score']:.4f})")
+            mass = doc.get("mass", 1.0)
+            disp = doc.get("displacement_norm", 0.0)
+            lines.append(f"**[{doc['rank']}]** (final={doc['final_score']:.4f}, raw={doc['raw_score']:.4f}, mass={mass:.2f}, disp={disp:.4f})")
             lines.append(f"> {content}")
             lines.append("")
 

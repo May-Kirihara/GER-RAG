@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config = GERConfig()
+    config = GERConfig.from_config_file()
 
     logger.info("Loading embedding model: %s", config.model_name)
     embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
@@ -84,7 +84,10 @@ async def index_documents(request: IndexRequest):
 @app.post("/query", response_model=QueryResponse)
 async def query_documents(request: QueryRequest):
     engine = _get_engine()
-    results = await engine.query(text=request.text, top_k=request.top_k)
+    results = await engine.query(
+        text=request.text, top_k=request.top_k,
+        wave_depth=request.wave_depth, wave_k=request.wave_k,
+    )
     return QueryResponse(results=results, count=len(results))
 
 

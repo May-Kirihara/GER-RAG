@@ -2,7 +2,7 @@
 
 ## システム構成
 
-GER-RAGは**二重座標系**による創発的検索システムである。原始embedding空間は不変のまま、共起した文書同士が**重力で引き寄せ合う仮想座標空間**で検索を行う。使い込むほど意外なつながりが発見される。
+GER-RAGは**二重座標系 + 軌道力学**による創発的検索システムである。原始embedding空間は不変のまま、共起した文書同士が**万有引力で引き寄せ合い、速度を持って仮想座標空間を周回する**。使い込むほど知識の星々が自己組織化し、意外なつながりが発見される。
 
 ```
 クエリ入力
@@ -11,24 +11,24 @@ GER-RAGは**二重座標系**による創発的検索システムである。原
 [RURI-v3 Embedding] ──→ クエリベクトル (768次元, L2正規化済)
   │                      ※キャッシュ済みならローカルから即座にロード
   ▼
-[FAISS IndexFlatIP] ──→ 広い候補取得 (top-K × 3, 原始embedding)
-  │
+[重力波伝播] ──→ seed top-k=3 → 再帰的近傍展開 (mass依存top-k、重力半径カットオフ)
+  │               → N ノード到達 (シミュレーション層)
   ▼
-[仮想座標での再計算]
+[仮想座標でのスコアリング]
   │  virtual_pos = normalize(original_emb + displacement)
   │  gravity_sim = dot(query, virtual_pos)
+  │  final = gravity_sim * decay + mass_boost + wave_boost
   │
-  ├─ mass_boost   = α * log(1 + mass)
-  └─ decay        = exp(-δ * (now - last_access))
+  ├─ プレゼンテーション層: top-k=5 をLLMに返却
+  └─ シミュレーション層: 全到達ノードの物理更新
   │
   ▼
-final_score = gravity_sim * decay + mass_boost
-  │ (負スコアは除外、top-Kに絞る)
+[軌道力学] ──→ Stage 1: 加速度 = 近傍引力 + アンカー復元力
+  │            Stage 2: 速度更新 (慣性 + 摩擦)
+  │            Stage 3: 位置更新 (displacement += velocity)
+  │            + mass増加, temperature再計算, 共起グラフ更新
   ▼
-[重力更新] ──→ 共起ペア間に万有引力 → displacement蓄積
-  │            mass増加, temperature再計算, 共起グラフ更新
-  ▼
-[Write-behind] ──→ 非同期でSQLiteにフラッシュ
+[Write-behind] ──→ 非同期でSQLiteにフラッシュ (displacement + velocity)
 ```
 
 ## 二重座標系
@@ -53,17 +53,84 @@ final_score = gravity_sim * decay + mass_boost
 
 ## 重力モデル
 
-共起したノードペア (i, j) に万有引力が働く：
+3段階の物理ステップ（加速度→速度→位置）で軌道力学を実現する。
 
 ```
-direction_ij = normalize(original_emb[j] - virtual_pos[i])
-force_ij     = G * mass[i] * mass[j] / (distance_ij² + ε)
-displacement[i] += η_g * force_ij * direction_ij
+Stage 1 - 加速度:
+  a_neighbors = Σ [ G * m_j / (r² + ε) * direction(i→j) ]           # 近傍引力
+  a_anchor    = -k * displacement_i                                   # 原始位置への復元力
+  a_bh        = G * bh_mass / r² * dir(→centroid) * escape_factor     # 共起BH引力
+  a_total     = a_neighbors + a_anchor + a_bh
+
+Stage 2 - 速度:
+  v += a_total * dt
+  v *= (1 - friction)      # 摩擦
+  v = clamp(v, max_vel)    # 速度上限
+
+Stage 3 - 位置:
+  displacement += v * dt
+  displacement = clamp(displacement, max_norm)  # 位置上限
 ```
 
-- 変位は `max_displacement_norm` (0.3) でクランプ（暴走防止）
-- 変位は時間とともに減衰（未アクセスノードは原始位置に回帰）
-- temperatureによる座標揺らぎで探索的な検索を促進
+### 重力半径
+
+各ノードの質量から重力圏の広さが決まる。重力圏外の近傍は引き込まない。
+
+```
+min_sim = 1 - G * mass / (2 * a_min)    # 実際の重力物理から導出
+```
+
+mass=1 → min_sim=0.95（ごく近傍のみ）、mass=10 → min_sim=0.50（中距離）、mass=50 → min_sim=0.05（広大な重力圏）
+
+### アンカー引力（脱出防止）
+
+各ノードの原始embedding位置が重力アンカーとして機能する（Hooke's law: F = -k * displacement）。近傍引力で加速したノードが外に飛び出しても、アンカーが引き戻す。
+
+### 共起ブラックホール（銀河形成）
+
+共起エッジのクラスタ重心に仮想的なブラックホール（超大質量引力源）が形成される。
+
+```
+bh_mass = scale * log(1 + Σ edge_weight * saturation(neighbor))
+centroid = Σ (weight * saturation * position_j) / Σ (weight * saturation)
+a_bh = G * bh_mass / r² * direction(→centroid) * escape_factor
+```
+
+- 頻繁に共起するノード群が「銀河」として重力的に束縛される
+- edge_decayでエッジが減衰すればBHも弱まり、銀河が解散する（忘却）
+
+### 返却飽和（Habituation）
+
+LLMに同じ文書を繰り返し返すほど、その文書の影響力が減衰する。脳の馴化と同じメカニズム。
+
+```
+saturation = 1 / (1 + return_count * saturation_rate)
+final_score *= saturation
+bh_edge_weight *= saturation(neighbor)
+```
+
+- return_countはLLMへの返却時のみインクリメント（シミュレーション層は影響しない）
+- habituation_recovery_rateで時間とともに回復（脱馴化）
+- 「もう知っている知識」のスコアとBH寄与が下がり、未知の知識が浮上する
+
+### 温度ベースBH脱出（Thermal Escape）
+
+高temperatureのノード（多様な文脈で検索される）はBHの束縛を振り切る。
+
+```
+escape_factor = 1 / (1 + temperature * thermal_escape_scale)
+a_bh *= escape_factor
+```
+
+ホットプラズマが銀河から脱出するのと同じ物理。低温ノードはクラスタに留まり、高温ノードは自由飛行して新しいクラスタに合流する。
+
+### 自然発生する軌道
+
+- **公転**: 異なる方向からの引力が合成 → 角運動量 → ハブ周囲を周回
+- **彗星**: 一時的共起で加速 → 別クラスタ通過 → スイングバイ → セレンディピティ
+- **落下**: 摩擦で減速 → ハブに吸収 → 安定した関連文書に
+- **静止**: 未アクセスノードは摩擦で停止 → 原始位置に留まる
+- **馴化脱出**: 同じ結果が繰り返されるとスコア低下 → 新しいノードが浮上
 
 ## モジュール構成
 
@@ -71,8 +138,8 @@ displacement[i] += η_g * force_ij * direction_ij
 ger_rag/
 ├── config.py               # GERConfig: 全ハイパーパラメータ（重力パラメータ含む）
 ├── core/
-│   ├── engine.py           # GEREngine: 二段階検索 + 重力更新
-│   ├── gravity.py          # 重力計算（force, displacement更新, decay, clamp）
+│   ├── engine.py           # GEREngine: wave探索 + 二層分離 + 軌道力学
+│   ├── gravity.py          # 軌道力学（加速度, 速度, wave伝播, アンカー, 重力半径）
 │   ├── scorer.py           # スコアリング関数群 (純粋関数)
 │   └── types.py            # Pydanticモデル (リクエスト/レスポンス/内部型)
 ├── embedding/

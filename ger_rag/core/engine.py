@@ -9,14 +9,13 @@ import numpy as np
 
 from ger_rag.config import GERConfig
 from ger_rag.core.gravity import (
-    apply_displacement_decay,
     compute_virtual_position,
-    update_displacements_for_cooccurrence,
+    propagate_gravity_wave,
+    update_orbital_state,
 )
 from ger_rag.core.scorer import (
     compute_decay,
     compute_mass_boost,
-    compute_temp_noise,
 )
 from ger_rag.core.types import (
     CooccurrenceEdge,
@@ -113,30 +112,37 @@ class GEREngine:
         logger.info("Indexed %d documents", len(ids))
         return ids
 
-    # --- US2: Query (Gravitational Displacement) ---
+    # --- US2: Query (Gravity Wave Propagation) ---
 
-    async def query(self, text: str, top_k: int | None = None) -> list[QueryResultItem]:
+    async def query(
+        self,
+        text: str,
+        top_k: int | None = None,
+        wave_depth: int | None = None,
+        wave_k: int | None = None,
+    ) -> list[QueryResultItem]:
         k = top_k or self.config.top_k
         query_vec = self.embedder.encode_query(text)
 
-        # Step 1: FAISS broad candidate retrieval (original embeddings)
-        candidate_k = k * self.config.candidate_multiplier
-        candidates = self.faiss_index.search(query_vec, candidate_k)
-        if not candidates:
+        # Step 1: Gravity wave propagation — recursive neighbor expansion
+        reached = propagate_gravity_wave(
+            query_vec, self.faiss_index, self.cache, self.config,
+            wave_k=wave_k, wave_depth=wave_depth,
+        )
+
+        if not reached:
             return []
 
-        candidate_ids = [cid for cid, _ in candidates]
-        raw_scores = {cid: score for cid, score in candidates}
+        # Step 2: Get original embeddings for all reached nodes
+        reached_ids = list(reached.keys())
+        original_embs = self.faiss_index.get_vectors(reached_ids)
 
-        # Step 2: Get original embeddings for candidates
-        original_embs = self.faiss_index.get_vectors(candidate_ids)
-
-        # Step 3: Compute virtual positions and gravity-based similarity
+        # Step 3: Score all reached nodes with virtual coordinates + wave boost
         now = time.time()
         query_vec_flat = query_vec[0] if query_vec.ndim == 2 else query_vec
         results: list[QueryResultItem] = []
 
-        for node_id in candidate_ids:
+        for node_id in reached_ids:
             state = self.cache.get_node(node_id)
             if state is None:
                 states = await self.store.get_node_states([node_id])
@@ -153,14 +159,15 @@ class GEREngine:
                 original_emb, displacement, state.temperature
             )
 
-            # Gravity-based similarity (cosine sim in virtual space)
             gravity_sim = float(np.dot(query_vec_flat, virtual_pos))
-
-            # Dynamic scoring components
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
             decay = compute_decay(state.last_access, now, self.config.delta)
+            wave_boost = self.config.wave_boost_weight * reached[node_id]
 
-            final = gravity_sim * decay + mass_boost
+            # Presentation saturation: frequently returned nodes get lower scores
+            saturation = 1.0 / (1.0 + state.return_count * self.config.saturation_rate)
+
+            final = (gravity_sim * decay + mass_boost + wave_boost) * saturation
 
             if final <= 0.0:
                 continue
@@ -174,94 +181,111 @@ class GEREngine:
                     id=node_id,
                     content=doc["content"],
                     metadata=doc.get("metadata"),
-                    raw_score=raw_scores.get(node_id, 0.0),
+                    raw_score=gravity_sim,
                     final_score=final,
                 )
             )
 
-        # Step 4: Sort and take top-K
+        # Step 4: Sort and take top-K for presentation to LLM
         results.sort(key=lambda r: r.final_score, reverse=True)
         results = results[:k]
 
-        # Step 5: Post-query state update (async, non-blocking to response)
+        # Step 5: Update return_count for presented nodes + habituation recovery for all
         result_ids = [r.id for r in results]
-        self._update_state_after_query(result_ids, raw_scores, original_embs, now)
+        for node_id in result_ids:
+            state = self.cache.get_node(node_id)
+            if state:
+                state.return_count += 1.0
+                self.cache.set_node(state, dirty=True)
+
+        # Habituation recovery: all reached nodes slowly recover freshness
+        all_reached_ids = list(reached.keys())
+        for node_id in all_reached_ids:
+            state = self.cache.get_node(node_id)
+            if state and state.return_count > 0:
+                state.return_count *= (1.0 - self.config.habituation_recovery_rate)
+                self.cache.set_node(state, dirty=True)
+
+        # Step 6: Simulation update — ALL reached nodes
+        self._update_simulation(all_reached_ids, reached, original_embs, now)
+        self._update_cooccurrence(result_ids)
 
         return results
 
-    def _update_state_after_query(
+    def _update_simulation(
         self,
-        result_ids: list[str],
-        raw_scores: dict[str, float],
+        all_reached_ids: list[str],
+        reached: dict[str, float],
         original_embs: dict[str, np.ndarray],
         now: float,
     ) -> None:
+        """Update gravity simulation for ALL wave-reached nodes.
+
+        This is the simulation layer: every node the wave touched gets
+        mass/temperature updates and orbital mechanics (acceleration → velocity → position).
+        Like dark matter, these invisible updates reshape the gravitational field.
+        """
+        dim = self.config.embedding_dim
         masses = {}
-        for node_id in result_ids:
+        last_accesses = {}
+
+        for node_id in all_reached_ids:
             state = self.cache.get_node(node_id)
             if state is None:
                 continue
 
-            raw_score = raw_scores.get(node_id, 0.0)
+            force = reached.get(node_id, 0.0)
 
-            # Mass update with logistic saturation
-            state.mass += self.config.eta * raw_score * (1.0 - state.mass / self.config.m_max)
+            # Mass update scaled by force
+            state.mass += self.config.eta * force * (1.0 - state.mass / self.config.m_max)
 
             # Sim history ring buffer
-            state.sim_history.append(raw_score)
+            state.sim_history.append(force)
             if len(state.sim_history) > self.config.sim_buffer_size:
                 state.sim_history = state.sim_history[-self.config.sim_buffer_size:]
 
-            # Temperature = gamma * variance(sim_history)
+            # Temperature
             if len(state.sim_history) >= 2:
                 arr = np.array(state.sim_history)
                 state.temperature = self.config.gamma * float(np.var(arr))
             else:
                 state.temperature = 0.0
 
+            last_accesses[node_id] = state.last_access
             state.last_access = now
             self.cache.set_node(state, dirty=True)
             masses[node_id] = state.mass
 
-        # Co-occurrence graph update
-        if result_ids:
-            self.graph.update_cooccurrence(result_ids)
-
-        # Gravitational displacement update
-        if len(result_ids) >= 2:
+        # Orbital mechanics: acceleration → velocity → displacement
+        active_ids = [nid for nid in all_reached_ids if nid in original_embs]
+        if len(active_ids) >= 2:
             current_displacements = {}
-            for nid in result_ids:
-                if nid not in original_embs:
-                    continue
-                cached = self.cache.get_displacement(nid)
-                if cached is not None:
-                    current_displacements[nid] = cached
-                else:
-                    current_displacements[nid] = np.zeros(self.config.embedding_dim, dtype=np.float32)
+            current_velocities = {}
+            for nid in active_ids:
+                cached_d = self.cache.get_displacement(nid)
+                current_displacements[nid] = cached_d if cached_d is not None else np.zeros(dim, dtype=np.float32)
+                cached_v = self.cache.get_velocity(nid)
+                current_velocities[nid] = cached_v if cached_v is not None else np.zeros(dim, dtype=np.float32)
 
-            # Apply decay to existing displacements
-            for nid in current_displacements:
-                state = self.cache.get_node(nid)
-                if state is not None:
-                    current_displacements[nid] = apply_displacement_decay(
-                        current_displacements[nid],
-                        self.config.displacement_decay,
-                        state.last_access,
-                        now,
-                        self.config.displacement_age_delta,
-                    )
-
-            # Compute gravitational forces and update displacements
-            updated = update_displacements_for_cooccurrence(
-                [nid for nid in result_ids if nid in original_embs],
-                original_embs,
-                current_displacements,
-                masses,
-                self.config,
+            new_disps, new_vels = update_orbital_state(
+                active_ids, original_embs,
+                current_displacements, current_velocities,
+                masses, last_accesses, now, self.config,
+                cache=self.cache,
             )
 
-            for nid, disp in updated.items():
-                self.cache.set_displacement(nid, disp)
+            for nid in new_disps:
+                self.cache.set_displacement(nid, new_disps[nid])
+                self.cache.set_velocity(nid, new_vels[nid])
+
+    def _update_cooccurrence(self, result_ids: list[str]) -> None:
+        """Update co-occurrence graph for LLM-returned results only.
+
+        Co-occurrence is based on what the user/LLM actually "sees" together,
+        not the full simulation reach.
+        """
+        if result_ids:
+            self.graph.update_cooccurrence(result_ids)
 
     # --- US3: Node State Inspection ---
 

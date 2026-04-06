@@ -46,7 +46,7 @@ async def get_engine() -> GEREngine:
     async with _engine_lock:
         if _engine is not None:
             return _engine
-        config = GERConfig()
+        config = GERConfig.from_config_file()
         logger.info("Initializing GER-RAG engine for MCP server...")
         embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
         faiss_index = FaissIndex(dimension=config.embedding_dim)
@@ -120,19 +120,26 @@ async def recall(
     query: str,
     top_k: int = 5,
     source_filter: list[str] | None = None,
+    wave_depth: int | None = None,
+    wave_k: int | None = None,
 ) -> str:
-    """Search long-term memory with gravitational relevance.
+    """Search long-term memory with gravitational wave propagation.
 
-    Frequently co-retrieved memories are pulled closer together by gravity,
-    making related knowledge easier to find over time.
+    Gravity waves propagate recursively through the knowledge space.
+    High-mass memories attract more neighbors, creating wider gravitational fields.
 
     Args:
         query: Search query
         top_k: Number of results (default 5)
         source_filter: Filter by source, e.g. ["agent", "compaction"]
+        wave_depth: Override recursion depth (default from config)
+        wave_k: Override initial seed count (default from config)
     """
     engine = await get_engine()
-    results = await engine.query(text=query, top_k=top_k * 2 if source_filter else top_k)
+    results = await engine.query(
+        text=query, top_k=top_k * 2 if source_filter else top_k,
+        wave_depth=wave_depth, wave_k=wave_k,
+    )
 
     if source_filter:
         filtered = []
@@ -169,8 +176,8 @@ async def explore(
 ) -> str:
     """Explore memories serendipitously with increased randomness.
 
-    Higher diversity brings unexpected, cross-domain connections.
-    Use this when you need creative inspiration or lateral thinking.
+    Higher diversity increases wave depth and temperature noise,
+    bringing unexpected cross-domain connections through deeper gravitational propagation.
 
     Args:
         query: Starting point for exploration
@@ -180,18 +187,20 @@ async def explore(
     engine = await get_engine()
     config = engine.config
 
-    # Temporarily increase candidate range based on diversity
-    original_mult = config.candidate_multiplier
-    config.candidate_multiplier = max(3, int(3 + diversity * 7))  # 3-10x
-
-    # Temporarily boost temperature noise for all candidates
+    # Temporarily boost temperature for exploration
     original_gamma = config.gamma
     config.gamma = config.gamma * (1.0 + diversity * 20.0)
 
+    # Diversity controls wave depth and initial k
+    explore_depth = config.wave_max_depth + int(diversity * 2)  # +0 to +2 extra depth
+    explore_k = config.wave_initial_k + int(diversity * 4)      # +0 to +4 extra seeds
+
     try:
-        results = await engine.query(text=query, top_k=top_k)
+        results = await engine.query(
+            text=query, top_k=top_k,
+            wave_depth=explore_depth, wave_k=explore_k,
+        )
     finally:
-        config.candidate_multiplier = original_mult
         config.gamma = original_gamma
 
     if not results:

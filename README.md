@@ -2,6 +2,8 @@
 
 **Gravity-Based Event-Driven RAG** - Long-term external memory for AI, where knowledge attracts knowledge
 
+> This is a research project exploring what happens when you give documents mass, velocity, and gravitational attraction. Probably eternal beta. The universe is still expanding, after all.
+
 [日本語 README](README_ja.md)
 
 ## Overview
@@ -252,15 +254,19 @@ Swagger UI: http://localhost:8000/docs
 ## Gravity Model
 
 ```
-# Dual coordinate system
-Original embedding (immutable) ──→ FAISS broad candidate retrieval (top-K × 3)
-                                        ↓
-Virtual position = normalize(original_emb + displacement)
-                                        ↓
-gravity_sim = dot(query, virtual_pos)
-final_score = gravity_sim * decay + mass_boost
-                                        ↓
-Gravity update: F = G * m_i * m_j / d²  →  displacement accumulation
+Query → Gravity Wave Propagation (recursive neighbor expansion, mass-dependent top-k)
+            ↓
+        N nodes reached (simulation layer)
+            ↓
+        Virtual position = normalize(original_emb + displacement)
+        final_score = dot(query, virtual_pos) * decay + mass_boost + wave_boost
+            ↓
+        top-k=5 returned to LLM (presentation layer)
+            ↓
+        Orbital mechanics for ALL reached nodes:
+          Stage 1: a = Σ[G*m_j/r²]*dir + (-k * displacement)  ← neighbor gravity + anchor
+          Stage 2: v += a*dt, v *= (1-friction), clamp          ← velocity (with inertia)
+          Stage 3: displacement += v*dt, clamp                  ← position update
 ```
 
 | Component | Formula | Effect |
@@ -268,8 +274,14 @@ Gravity update: F = G * m_i * m_j / d²  →  displacement accumulation
 | gravity_sim | dot(query, virtual_pos) | Similarity in virtual space (changes with gravity) |
 | decay | exp(-δ * (now - last_access)) | Prioritize recently accessed |
 | mass_boost | α * log(1 + mass) | Prioritize frequently retrieved |
-| gravitational force | G * m_i * m_j / d² | Attraction between co-occurring nodes |
-| displacement decay | Asymptotic to zero over time | Dormant nodes return to original position |
+| **saturation** | 1 / (1 + return_count * rate) | Habituation — repeated results fade, novel ones emerge |
+| wave_boost | β * wave_force | Boost from gravity wave propagation |
+| gravitational accel | G * m_j / (r² + ε) | Attraction between co-occurring nodes |
+| **BH gravity** | G * bh_mass / r² * escape | Co-occurrence cluster centroid acts as supermassive BH |
+| **thermal escape** | 1 / (1 + temp * scale) | High-temperature nodes escape BH capture |
+| anchor restoring | -k * displacement | Hooke's law — prevents escape to infinity |
+| gravity radius | 1 - G*mass/(2*a_min) | Mass-dependent reach — derived from real physics |
+| friction | v *= (1 - f) | Velocity damping — controls orbital lifetime |
 
 ## Tech Stack
 
@@ -320,6 +332,10 @@ export GER_RAG_CONFIG=/path/to/config.json
 - [Phase 2 Evaluation Report](docs/research/evaluation-report.md) - Static RAG comparison, session adaptivity, benchmarks
 - [Gravitational Displacement Design](docs/research/gravitational-displacement-design.md) - Gravity coordinate displacement design
 - [MCP Server Design](docs/research/mcp-server-design.md) - AI agent external long-term memory MCP design
+- [Gravity Wave Propagation Design](docs/research/gravity-wave-propagation-design.md) - Recursive gravity field propagation with mass-scaled reach
+- [Orbital Mechanics Design](docs/research/orbital-mechanics-design.md) - Velocity vectors, orbital dynamics, cometary trajectories
+- [Co-occurrence Black Hole Design](docs/research/cooccurrence-blackhole-design.md) - Co-occurrence clusters as supermassive black holes
+- [Habituation & Thermal Escape Design](docs/research/habituation-escape-design.md) - Presentation saturation and temperature-based BH escape
 
 ### Design Documents
 

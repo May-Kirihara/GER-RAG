@@ -17,9 +17,11 @@ class CacheLayer:
         self.node_cache: dict[str, NodeState] = {}
         self.graph_cache: dict[str, dict[str, float]] = {}
         self.displacement_cache: dict[str, np.ndarray] = {}
+        self.velocity_cache: dict[str, np.ndarray] = {}
         self.dirty_nodes: set[str] = set()
         self.dirty_edges: set[tuple[str, str]] = set()
         self.dirty_displacements: set[str] = set()
+        self.dirty_velocities: set[str] = set()
         self._flush_interval = flush_interval
         self._flush_threshold = flush_threshold
         self._write_behind_task: asyncio.Task | None = None
@@ -45,6 +47,15 @@ class CacheLayer:
     def set_displacement(self, node_id: str, displacement: np.ndarray) -> None:
         self.displacement_cache[node_id] = displacement
         self.dirty_displacements.add(node_id)
+
+    # --- Velocity ---
+
+    def get_velocity(self, node_id: str) -> np.ndarray | None:
+        return self.velocity_cache.get(node_id)
+
+    def set_velocity(self, node_id: str, velocity: np.ndarray) -> None:
+        self.velocity_cache[node_id] = velocity
+        self.dirty_velocities.add(node_id)
 
     # --- Graph edges ---
 
@@ -92,10 +103,12 @@ class CacheLayer:
             self.graph_cache.setdefault(e.dst, {})[e.src] = e.weight
 
         self.displacement_cache = await store.load_displacements()
+        self.velocity_cache = await store.load_velocities()
 
         logger.info(
-            "Cache loaded: %d nodes, %d edges, %d displacements",
-            len(self.node_cache), len(edges), len(self.displacement_cache),
+            "Cache loaded: %d nodes, %d edges, %d displacements, %d velocities",
+            len(self.node_cache), len(edges),
+            len(self.displacement_cache), len(self.velocity_cache),
         )
 
     # --- Flush to store ---
@@ -120,6 +133,16 @@ class CacheLayer:
             if dirty_disp:
                 await store.save_displacements(dirty_disp)
             self.dirty_displacements.clear()
+
+        if self.dirty_velocities:
+            dirty_vel = {
+                nid: self.velocity_cache[nid]
+                for nid in self.dirty_velocities
+                if nid in self.velocity_cache
+            }
+            if dirty_vel:
+                await store.save_velocities(dirty_vel)
+            self.dirty_velocities.clear()
 
         if self.dirty_edges:
             dirty_edge_list: list[CooccurrenceEdge] = []
@@ -169,3 +192,5 @@ class CacheLayer:
         self.dirty_edges.clear()
         self.displacement_cache.clear()
         self.dirty_displacements.clear()
+        self.velocity_cache.clear()
+        self.dirty_velocities.clear()

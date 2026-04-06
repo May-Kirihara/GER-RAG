@@ -2,6 +2,10 @@
 
 **Gravity-Based Event-Driven RAG** - 重力で知識が引き合う、AIの長期外部記憶
 
+> これは「ドキュメントに質量と速度と万有引力を与えたらどうなるか」を探求する研究プロジェクトです。たぶんエターナルベータ。だって宇宙はまだ膨張してるし。
+
+[English README](README.md)
+
 ## 概要
 
 GER-RAGは、**AIエージェントの長期外部記憶**として設計された検索システムである。使い込むほど知識同士が引き合い、**創発的なつながりやひらめき**を生み出す。
@@ -223,6 +227,9 @@ GER-RAGをMCPプロトコルで公開し、AIエージェントの**外部長期
 | サイズ | Mass — 赤色巨星（大きく安定）vs 矮星（小さい） |
 | 色温度 | Temperature — M赤 → K橙 → G黄 → F白 → A/B青白 |
 | 明るさ | Decay × Mass — 最近アクセスされた高質量星が最も明るい |
+| シアン矢印 | 速度ベクトル — 次のステップの移動方向と距離 |
+| 金色リング | 重力半径 — massから物理計算されたノードの重力圏 |
+| 紫◆ | 共起ブラックホール — 共起クラスタの重心引力源 |
 | フィラメント | 共起エッジ — 宇宙の大規模構造 |
 
 ## API
@@ -240,15 +247,19 @@ Swagger UI: http://localhost:8000/docs
 ## 重力モデル
 
 ```
-# 二重座標系
-原始embedding (不変) ──→ FAISS広め候補取得 (top-K × 3)
-                              ↓
-仮想座標 = normalize(original_emb + displacement)
-                              ↓
-gravity_sim = dot(query, virtual_pos)
-final_score = gravity_sim * decay + mass_boost
-                              ↓
-重力更新: F = G * m_i * m_j / d²  →  displacement蓄積
+クエリ → 重力波伝播（再帰的近傍展開、mass依存top-k、重力半径カットオフ）
+            ↓
+        N ノード到達（シミュレーション層）
+            ↓
+        仮想座標 = normalize(original_emb + displacement)
+        final = (gravity_sim * decay + mass_boost + wave_boost) * saturation
+            ↓
+        top-k=5 をLLMに返却（プレゼンテーション層）
+            ↓
+        軌道力学（全到達ノード）:
+          Stage 1: a = Σ[G*m_j/r²]*dir + (-k*disp) + a_bh*escape   ← 引力 + アンカー + BH
+          Stage 2: v += a*dt, v *= (1-friction), clamp               ← 速度（慣性）
+          Stage 3: displacement += v*dt, clamp                        ← 位置更新
 ```
 
 | 要素 | 数式 | 効果 |
@@ -256,8 +267,14 @@ final_score = gravity_sim * decay + mass_boost
 | gravity_sim | dot(query, virtual_pos) | 仮想座標での類似度（重力で変動） |
 | decay | exp(-δ * (now - last_access)) | 最近アクセスされたものを優先 |
 | mass_boost | α * log(1 + mass) | 頻出ドキュメントを優先 |
-| gravitational force | G * m_i * m_j / d² | 共起ノード間の引力 |
-| displacement decay | 時間とともに0に漸近 | 未アクセスノードは原始位置に回帰 |
+| **返却飽和** | 1 / (1 + return_count * rate) | 馴化 — 繰り返し返されたノードのスコア低下 |
+| wave_boost | β * wave_force | 重力波伝播によるブースト |
+| 近傍引力 | G * m_j / (r² + ε) | 共起ノード間の引力 |
+| **BH引力** | G * bh_mass / r² * escape | 共起クラスタ重心の超大質量ブラックホール |
+| **温度脱出** | 1 / (1 + temp * scale) | 高温ノードがBH束縛から脱出 |
+| アンカー復元 | -k * displacement | Hooke則 — 原始位置への復元力（脱出防止） |
+| 重力半径 | 1 - G*mass/(2*a_min) | mass依存の到達範囲（実際の物理から導出） |
+| 摩擦 | v *= (1 - f) | 速度減衰 — 軌道寿命を制御 |
 
 ## 技術スタック
 
@@ -265,9 +282,9 @@ final_score = gravity_sim * decay + mass_boost
 |-------------|------|
 | Embedding | [RURI-v3-310m](https://huggingface.co/cl-nagoya/ruri-v3-310m) (768次元, 日本語特化) |
 | ベクトル検索 | FAISS IndexFlatIP |
-| 重力計算 | NumPy (gravity.py) |
+| 重力・軌道力学 | NumPy (gravity.py) |
 | ストレージ | SQLite (WAL) + インメモリキャッシュ |
-| API | FastAPI |
+| API | FastAPI (REST) + MCP Server (エージェント長期記憶) |
 | 可視化 | Plotly + PCA/UMAP (Cosmic View) |
 | パッケージ管理 | uv |
 
@@ -305,8 +322,13 @@ export GER_RAG_CONFIG=/path/to/config.json
 
 ### 評価・研究
 
-- [Phase 2 評価レポート](docs/research/evaluation-report.md) - Static RAG比較、セッション適応性、ベンチマーク
+- [評価レポート](docs/research/evaluation-report.md) - Static RAG比較、セッション適応性、創発性指標、ベンチマーク
 - [Gravitational Displacement 設計書](docs/research/gravitational-displacement-design.md) - 重力座標変位の設計
+- [Gravity Wave Propagation 設計書](docs/research/gravity-wave-propagation-design.md) - 再帰的重力波伝播
+- [Orbital Mechanics 設計書](docs/research/orbital-mechanics-design.md) - 速度ベクトル、軌道力学、アンカー引力
+- [Co-occurrence Black Hole 設計書](docs/research/cooccurrence-blackhole-design.md) - 共起クラスタBH
+- [Habituation & Thermal Escape 設計書](docs/research/habituation-escape-design.md) - 返却飽和、温度脱出
+- [MCP Server 設計書](docs/research/mcp-server-design.md) - AIエージェント外部長期記憶
 
 ### 設計ドキュメント
 

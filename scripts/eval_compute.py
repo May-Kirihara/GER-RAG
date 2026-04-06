@@ -217,7 +217,79 @@ def print_session_report(session_data: dict, scores: dict, top_k: int) -> dict:
         improving = sum(1 for s in all_sessions if s["delta_ndcg"] > 0.001)
         print(f"\n  {'='*70}")
         print(f"  Average nDCG delta (Before→After): {avg_delta:+.4f}")
-        print(f"  Scenarios improving: {improving}/{len(all_sessions)}")
+        print(f"  Scenarios improving (nDCG): {improving}/{len(all_sessions)}")
+
+    # Serendipity metrics
+    print(f"\n{'='*80}")
+    print("  SERENDIPITY METRICS (creativity-oriented evaluation)")
+    print(f"{'='*80}")
+
+    for sc_data, sc_raw in zip(all_sessions, scenarios):
+        sid = sc_data["scenario_id"]
+        name = sc_data["scenario_name"]
+        before_ids = [d["doc_id"] for d in sc_raw.get("before", [])]
+        after_ids = [d["doc_id"] for d in sc_raw.get("after", [])]
+        b_rel = sc_data["before"]["relevances"]
+        a_rel = sc_data["after"]["relevances"]
+        rank_shifts = sc_raw.get("rank_shifts", [])
+
+        # Rank Shift Rate: fraction of docs that changed position
+        shifts = [s for s in rank_shifts if s["shift"] != 0]
+        common = set(before_ids) & set(after_ids)
+        rank_shift_rate = len(shifts) / max(1, len(common))
+
+        # Novelty@K: fraction of After docs not in Before
+        new_docs = set(after_ids) - set(before_ids)
+        novelty = len(new_docs) / max(1, len(after_ids))
+
+        # Cross-domain Score: how many unique relevance levels appear
+        # (proxy for topic diversity — more varied scores = more diverse results)
+        before_diversity = len(set(b_rel))
+        after_diversity = len(set(a_rel))
+
+        # Serendipity Index: docs that are in After but not Before, OR
+        # docs that shifted up by 2+ positions (unexpected promotion)
+        serendipitous = len(new_docs)
+        for s in rank_shifts:
+            if s["shift"] >= 2:  # rose by 2+ positions
+                serendipitous += 1
+        serendipity_index = serendipitous / max(1, len(after_ids))
+
+        # Average rank shift magnitude
+        avg_shift = statistics.mean(abs(s["shift"]) for s in rank_shifts) if rank_shifts else 0
+
+        print(f"\n  {sid}: {name}")
+        print(f"    {'Rank Shift Rate':30s} {rank_shift_rate:>8.1%}  (docs that moved)")
+        print(f"    {'Avg Shift Magnitude':30s} {avg_shift:>8.1f}  (positions per doc)")
+        print(f"    {'Novelty@K':30s} {novelty:>8.1%}  (new docs in top-K)")
+        print(f"    {'Score Diversity (Before)':30s} {before_diversity:>8d}  (unique relevance levels)")
+        print(f"    {'Score Diversity (After)':30s} {after_diversity:>8d}")
+        print(f"    {'Serendipity Index':30s} {serendipity_index:>8.1%}  (novel + promoted docs)")
+
+        sc_data["serendipity"] = {
+            "rank_shift_rate": rank_shift_rate,
+            "avg_shift_magnitude": avg_shift,
+            "novelty_at_k": novelty,
+            "score_diversity_before": before_diversity,
+            "score_diversity_after": after_diversity,
+            "serendipity_index": serendipity_index,
+        }
+
+    # Serendipity summary
+    if all_sessions:
+        avg_serendipity = statistics.mean(
+            s["serendipity"]["serendipity_index"] for s in all_sessions
+        )
+        avg_rank_shift = statistics.mean(
+            s["serendipity"]["rank_shift_rate"] for s in all_sessions
+        )
+        print(f"\n  {'='*70}")
+        print(f"  Average Serendipity Index: {avg_serendipity:.1%}")
+        print(f"  Average Rank Shift Rate: {avg_rank_shift:.1%}")
+        serendipitous_count = sum(
+            1 for s in all_sessions if s["serendipity"]["serendipity_index"] > 0
+        )
+        print(f"  Scenarios with serendipity: {serendipitous_count}/{len(all_sessions)}")
 
     return {"sessions": all_sessions}
 
@@ -233,32 +305,20 @@ def main():
     session_results_path = os.path.join(args.dir, "session_results.json")
     session_scores_path = os.path.join(args.dir, "session_scores.json")
 
-    if not os.path.exists(results_path):
-        print(f"ERROR: {results_path} not found. Run eval_export.py first.")
-        sys.exit(1)
-
-    if not os.path.exists(scores_path):
-        print(f"ERROR: {scores_path} not found.")
-        print(f"  1. {os.path.join(args.dir, 'judge_prompt.md')} をLLMに渡して判定してもらう")
-        print(f"  2. 判定結果のJSONを {scores_path} に保存する")
-        print(f"")
-        print(f"  例:")
-        print(f'  {{')
-        print(f'    "Q01_static": [3, 2, 1, 0, 1, 2, 0, 1, 0, 0],')
-        print(f'    "Q01_ger": [3, 2, 2, 1, 1, 0, 1, 0, 0, 0],')
-        print(f'    ...')
-        print(f'  }}')
-        sys.exit(1)
-
-    with open(results_path, encoding="utf-8") as f:
-        results_data = json.load(f)
-    with open(scores_path, encoding="utf-8") as f:
-        scores = json.load(f)
-
-    top_k = results_data.get("top_k", 10)
-
     report = {}
-    report.update(print_comparison_report(results_data, scores, top_k))
+    top_k = 10
+
+    # Comparison (optional)
+    if os.path.exists(results_path) and os.path.exists(scores_path):
+        with open(results_path, encoding="utf-8") as f:
+            results_data = json.load(f)
+        with open(scores_path, encoding="utf-8") as f:
+            scores = json.load(f)
+        top_k = results_data.get("top_k", 10)
+        report.update(print_comparison_report(results_data, scores, top_k))
+    elif os.path.exists(results_path):
+        print(f"  Comparison data found but {scores_path} missing.")
+        print(f"  Judge judge_prompt.md and save scores to {scores_path}")
 
     # Session adaptivity (optional)
     if os.path.exists(session_results_path) and os.path.exists(session_scores_path):
@@ -266,10 +326,15 @@ def main():
             session_data = json.load(f)
         with open(session_scores_path, encoding="utf-8") as f:
             session_scores = json.load(f)
+        top_k = session_data.get("top_k", top_k)
         report.update(print_session_report(session_data, session_scores, top_k))
     elif os.path.exists(session_results_path):
-        print(f"\n  Session data found but {session_scores_path} missing.")
+        print(f"  Session data found but {session_scores_path} missing.")
         print(f"  Judge session_judge_prompt.md and save scores to {session_scores_path}")
+
+    if not report:
+        print("ERROR: No evaluation data found. Run eval_export.py first.")
+        sys.exit(1)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
