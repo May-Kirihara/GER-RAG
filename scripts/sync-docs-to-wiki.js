@@ -12,35 +12,41 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 
-// 環境変数の取得
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GITHUB_REPO = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY;
-const GITHUB_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
+// ---- 環境変数の検証（main 実行時のみ呼ぶ） ----
+function validateEnv() {
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+  const GITHUB_REPO = process.env.GITHUB_REPO || process.env.GITHUB_REPOSITORY;
+  const GITHUB_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
 
-// GitHub Actions環境でのみ実行を許可
-if (!GITHUB_ACTIONS) {
-  console.error('❌ このスクリプトはGitHub Actions環境でのみ実行できます');
-  console.error('   ローカル環境からの実行は許可されていません');
-  console.error('   Wiki同期はGitHub Actionsから自動的に実行されます');
-  process.exit(1);
-}
+  if (!GITHUB_ACTIONS) {
+    console.error('❌ このスクリプトはGitHub Actions環境でのみ実行できます');
+    console.error('   ローカル環境からの実行は許可されていません');
+    console.error('   Wiki同期はGitHub Actionsから自動的に実行されます');
+    process.exit(1);
+  }
 
-if (!GITHUB_TOKEN) {
-  console.error('❌ GITHUB_TOKEN 環境変数が設定されていません');
-  process.exit(1);
-}
+  if (!GITHUB_TOKEN) {
+    console.error('❌ GITHUB_TOKEN 環境変数が設定されていません');
+    process.exit(1);
+  }
 
-if (!GITHUB_REPO) {
-  console.error('❌ GITHUB_REPO 環境変数が設定されていません');
-  console.error('   例: GITHUB_REPO=owner/repo');
-  process.exit(1);
-}
+  if (!GITHUB_REPO) {
+    console.error('❌ GITHUB_REPO 環境変数が設定されていません');
+    console.error('   例: GITHUB_REPO=owner/repo');
+    process.exit(1);
+  }
 
-const [owner, repo] = GITHUB_REPO.split('/');
-if (!owner || !repo) {
-  console.error('❌ GITHUB_REPO の形式が正しくありません');
-  console.error('   例: GITHUB_REPO=owner/repo');
-  process.exit(1);
+  const [owner, repo] = GITHUB_REPO.split('/');
+  if (!owner || !repo) {
+    console.error('❌ GITHUB_REPO の形式が正しくありません');
+    console.error('   例: GITHUB_REPO=owner/repo');
+    process.exit(1);
+  }
+
+  // 同期先ブランチ名（main repo の現在のブランチ）。リンク先絶対 URL に使う。
+  const REPO_BRANCH = process.env.GITHUB_REF_NAME || 'main';
+
+  return { GITHUB_TOKEN, GITHUB_REPO, owner, repo, REPO_BRANCH };
 }
 
 // ここは実際の構成に合わせて変更してください
@@ -82,12 +88,104 @@ function getMarkdownFiles(dir, basePath = '') {
 function getWikiTitle(relativePath) {
   // ファイル名から拡張子を除去
   const nameWithoutExt = relativePath.replace(/\.md$/, '');
-  
+
   // パス区切りをハイフンに変換（必要に応じて調整）
   // 例: "01_要件定義書" -> "01_要件定義書"
   // 例: "01_要件定義書/顧客要件" -> "01_要件定義書-顧客要件"
   return nameWithoutExt.replace(/\//g, '-');
 }
+
+/**
+ * Markdown content の中のリンクを GitHub Wiki 仕様に変換する。
+ *
+ * 変換ルール:
+ *   1. 同階層の Wiki ページ link `[text](Foo.md)` → `[text](Foo)`
+ *      ─ Wiki は拡張子なしページ名でアクセスする。
+ *   2. アンカー付き `[text](Foo.md#bar)` → `[text](Foo#bar)`
+ *   3. 親ディレクトリ参照 `[text](../foo/bar.md)` や `[text](../../code.py)`
+ *      → `[text](https://github.com/<owner>/<repo>/blob/<branch>/<resolved-path>)`
+ *      ─ Wiki から repo の他ファイルへ飛ぶには絶対 URL が必要。
+ *   4. 外部 URL / メール / アンカーのみ / `[[...]]` (Wiki ネイティブ) → そのまま
+ *   5. コードブロック (``` または ~~~ で囲まれた範囲) 内のリンクは変換しない
+ *      ─ サンプルコードを壊さないため
+ *
+ * 画像参照 `![alt](path)` も同様に処理する（同じ regex でカバー）。
+ */
+function transformWikiLinks(content, owner, repo, branch = 'main') {
+  const baseUrl = `https://github.com/${owner}/${repo}/blob/${branch}`;
+  const lines = content.split('\n');
+  let inFence = false;          // ``` or ~~~ コードフェンスの中か
+  let fenceMarker = '';
+
+  // [text](target) と ![alt](target) の両方を拾う
+  const linkRe = /(!?)\[([^\]]*)\]\(([^)]+)\)/g;
+
+  return lines.map(line => {
+    // フェンス開閉判定
+    const fenceMatch = line.match(/^(\s*)(```+|~~~+)/);
+    if (fenceMatch) {
+      const marker = fenceMatch[2][0]; // ` or ~
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker === fenceMarker) {
+        inFence = false;
+        fenceMarker = '';
+      }
+      return line;
+    }
+    if (inFence) return line;
+
+    return line.replace(linkRe, (match, bang, text, target) => {
+      // インラインコード内 `...[x](y)...` は素朴には判定が難しい。
+      // ここでは backtick 数を数えて、リンク全体が backtick の内側ならスキップする近似を行う。
+      const before = line.slice(0, line.indexOf(match));
+      const ticksBefore = (before.match(/`/g) || []).length;
+      if (ticksBefore % 2 === 1) return match; // インラインコード内
+
+      const trimmed = target.trim();
+
+      // 1. 外部 URL / メール / 純粋なアンカー / Wiki ネイティブリンクは触らない
+      if (/^(https?:|mailto:|tel:|ftp:|#)/.test(trimmed)) return match;
+
+      // 2. 同階層の .md (任意で #anchor 付き) → Wiki ページ
+      const sameLevelMd = trimmed.match(/^(?:\.\/)?([^\/]+?)\.md(#.*)?$/);
+      if (sameLevelMd) {
+        const wikiName = sameLevelMd[1];
+        const anchor = sameLevelMd[2] || '';
+        return `${bang}[${text}](${wikiName}${anchor})`;
+      }
+
+      // 3. ../ で repo 内の他ファイルを指している → 絶対 GitHub URL
+      if (trimmed.startsWith('../') || trimmed.startsWith('./')) {
+        // docs/wiki/<file> の視点で resolve するために、
+        // 先頭の ./ や ../ を取り除いて repo root からの相対パスに変換する。
+        const segments = trimmed.split('/');
+        // docs/wiki/ から見た相対なので、上位への ".." はそれぞれ docs/wiki, docs と一段ずつ上がる。
+        // 既知の親ディレクトリ chain ("docs/wiki" → "docs" → repo root)。
+        // ここでは sync は docs/wiki/ から行うので、`../` 1 つ = docs/、`../../` 2 つ = repo root。
+        let upCount = 0;
+        let i = 0;
+        while (i < segments.length && (segments[i] === '..' || segments[i] === '.')) {
+          if (segments[i] === '..') upCount++;
+          i++;
+        }
+        const tail = segments.slice(i).join('/');
+        const docsWikiAncestors = ['docs/wiki', 'docs', '']; // index 0=ここ, 1=親, 2=祖父母
+        // upCount=1 → docs/, upCount=2 → repo root, upCount>=3 → repo root に丸める
+        const baseInRepo = docsWikiAncestors[Math.min(upCount, docsWikiAncestors.length - 1)] || '';
+        const absPath = baseInRepo ? `${baseInRepo}/${tail}` : tail;
+        return `${bang}[${text}](${baseUrl}/${absPath})`;
+      }
+
+      // 4. その他（裸の Foo や Foo/bar.png 等）は触らない
+      return match;
+    });
+  }).join('\n');
+}
+
+// ローカルテスト用に export（GitHub Actions の本番実行には影響しない）
+module.exports = { transformWikiLinks, getWikiTitle };
 
 /**
  * Wiki ページを作成または更新（Gitリポジトリ経由）
@@ -184,6 +282,7 @@ function deleteWikiPages(wikiDir, pagesToDelete) {
  * メイン処理
  */
 function main() {
+  const { GITHUB_TOKEN, GITHUB_REPO, owner, repo, REPO_BRANCH } = validateEnv();
   console.log(`📚 ${GITHUB_REPO} の Wiki に同期を開始します...\n`);
 
   // docs/wiki/ ディレクトリの存在確認
@@ -258,10 +357,11 @@ function main() {
         fileName: page.fileName,
       }));
 
-    // すべてのファイルを追加
+    // すべてのファイルを追加（リンクを Wiki 仕様に変換してから書き込む）
     for (const file of files) {
-      const content = fs.readFileSync(file.filePath, 'utf-8');
-      createOrUpdateWikiPage(file.wikiTitle, content, wikiDir);
+      const raw = fs.readFileSync(file.filePath, 'utf-8');
+      const transformed = transformWikiLinks(raw, owner, repo, REPO_BRANCH);
+      createOrUpdateWikiPage(file.wikiTitle, transformed, wikiDir);
     }
 
     // サイドバーを作成
@@ -329,9 +429,11 @@ ${protectedPages.length > 0 ? `## Wiki 専用ページ\n\n${protectedPages.map(p
   }
 }
 
-try {
-  main();
-} catch (error) {
-  console.error('\n❌ エラーが発生しました:', error);
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error('\n❌ エラーが発生しました:', error);
+    process.exit(1);
+  }
 }
