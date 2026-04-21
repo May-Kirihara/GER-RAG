@@ -2,7 +2,7 @@
 
 GaOTTT はパソコンに入りました。次は Claude Desktop に「GaOTTT を使ってね」と教えます。
 
-← [前: Install](Tutorial-02-Install-GER-RAG.md) ｜ → [次: First Conversation](Tutorial-04-First-Conversation.md)
+← [前: Install](Tutorial-02-Install-GaOTTT.md) ｜ → [次: First Conversation](Tutorial-04-First-Conversation.md)
 
 ---
 

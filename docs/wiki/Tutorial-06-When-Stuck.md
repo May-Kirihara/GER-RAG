@@ -22,7 +22,7 @@
 
 ### `command not found: python3` / `python3 が見つかりません`
 
-→ Python が入っていません。[Tutorial-02 のステップ 2](Tutorial-02-Install-GER-RAG.md) に戻って、お使いの OS の手順で Python をインストールしてください。
+→ Python が入っていません。[Tutorial-02 のステップ 2](Tutorial-02-Install-GaOTTT.md) に戻って、お使いの OS の手順で Python をインストールしてください。
 
 インストール後、**ターミナルを必ず開き直す** ことが重要です。
 

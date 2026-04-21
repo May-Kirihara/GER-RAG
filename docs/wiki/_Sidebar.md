@@ -9,7 +9,7 @@
 
 ### 🌱 Tutorial / はじめての方へ
 - [1. Welcome](Tutorial-01-Welcome.md)
-- [2. Install GaOTTT](Tutorial-02-Install-GER-RAG.md)
+- [2. Install GaOTTT](Tutorial-02-Install-GaOTTT.md)
 - [3. Connect to Claude](Tutorial-03-Connect-To-Claude.md)
 - [4. First Conversation](Tutorial-04-First-Conversation.md)
 - [5. Everyday Use](Tutorial-05-Everyday-Use.md)

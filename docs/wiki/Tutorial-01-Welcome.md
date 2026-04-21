@@ -2,7 +2,7 @@
 
 GaOTTT にはじめて触れる方への、ゆっくり進むガイドです。Python や開発をしたことがなくても大丈夫。**LLM が好きで、もっと深く付き合いたい人** が対象です。
 
-→ [次のページ: GaOTTT をインストールする](Tutorial-02-Install-GER-RAG.md)
+→ [次のページ: GaOTTT をインストールする](Tutorial-02-Install-GaOTTT.md)
 
 ---
 
@@ -89,4 +89,4 @@ GaOTTT をつなげると、LLM は **過去の会話を覚えていられる** 
 
 それでは、行きましょう ✨
 
-→ [次へ: GaOTTT をインストールする](Tutorial-02-Install-GER-RAG.md)
+→ [次へ: GaOTTT をインストールする](Tutorial-02-Install-GaOTTT.md)
