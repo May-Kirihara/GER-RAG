@@ -335,26 +335,26 @@ prefetch キャッシュ/pool の統計。
 ### POST /tasks/{id}/complete
 
 ```json
-{"task_id": "same-as-path", "outcome": "patched engine.py", "emotion": 0.7}
+{"outcome": "patched engine.py", "emotion": 0.7}
 ```
 
-outcome を記憶し、`completed` edge を outcome → task に張り、task を archive。`task_id` が path と body で一致しない場合 400。
+`task_id` は path から渡す（body には含めない）。outcome を記憶し、`completed` edge を outcome → task に張り、task を archive。
 
 ### POST /tasks/{id}/abandon
 
 ```json
-{"task_id": "same-as-path", "reason": "priority shifted"}
+{"reason": "priority shifted"}
 ```
 
-reason を記憶し、`abandoned` edge を reason → task に張り、task を archive。
+`task_id` は path から渡す。reason を記憶し、`abandoned` edge を reason → task に張り、task を archive。
 
 ### POST /tasks/{id}/depend
 
 ```json
-{"task_id": "same-as-path", "depends_on_id": "other-task", "blocking": false}
+{"depends_on_id": "other-task", "blocking": false}
 ```
 
-`blocking=true` で `blocked_by` edge（強い依存）、false で `depends_on`。
+`task_id` は path から渡す。`blocking=true` で `blocked_by` edge（強い依存）、false で `depends_on`。
 
 ---
 

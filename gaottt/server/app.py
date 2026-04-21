@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
 from gaottt.core.types import (
-    AbandonRequest,
+    AbandonBody,
     AbandonResponse,
     AutoRememberRequest,
     AutoRememberResponse,
@@ -16,7 +16,7 @@ from gaottt.core.types import (
     CommitResponse,
     CompactRequest,
     CompactResponse,
-    CompleteRequest,
+    CompleteBody,
     CompleteResponse,
     DeclareCommitmentRequest,
     DeclareCommitmentResponse,
@@ -24,7 +24,7 @@ from gaottt.core.types import (
     DeclareIntentionResponse,
     DeclareValueRequest,
     DeclareValueResponse,
-    DependRequest,
+    DependBody,
     DependResponse,
     ExploreRequest,
     ExploreResponse,
@@ -496,12 +496,7 @@ async def start_task(task_id: str):
 
 
 @app.post("/tasks/{task_id}/complete", response_model=CompleteResponse)
-async def complete_task(task_id: str, request: CompleteRequest):
-    if request.task_id != task_id:
-        raise HTTPException(
-            status_code=400,
-            detail="task_id in path and body must match",
-        )
+async def complete_task(task_id: str, request: CompleteBody):
     engine = _get_engine()
     return await phase_d_service.complete(
         engine, task_id=task_id, outcome=request.outcome, emotion=request.emotion,
@@ -509,12 +504,7 @@ async def complete_task(task_id: str, request: CompleteRequest):
 
 
 @app.post("/tasks/{task_id}/abandon", response_model=AbandonResponse)
-async def abandon_task(task_id: str, request: AbandonRequest):
-    if request.task_id != task_id:
-        raise HTTPException(
-            status_code=400,
-            detail="task_id in path and body must match",
-        )
+async def abandon_task(task_id: str, request: AbandonBody):
     engine = _get_engine()
     return await phase_d_service.abandon(
         engine, task_id=task_id, reason=request.reason,
@@ -522,12 +512,7 @@ async def abandon_task(task_id: str, request: AbandonRequest):
 
 
 @app.post("/tasks/{task_id}/depend", response_model=DependResponse)
-async def add_task_dependency(task_id: str, request: DependRequest):
-    if request.task_id != task_id:
-        raise HTTPException(
-            status_code=400,
-            detail="task_id in path and body must match",
-        )
+async def add_task_dependency(task_id: str, request: DependBody):
     engine = _get_engine()
     return await phase_d_service.depend(
         engine,

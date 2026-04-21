@@ -78,7 +78,6 @@ async def complete(
     if outcome_id is None:
         return CompleteResponse(task_id=task_id, duplicate=True)
 
-    edge_error: str | None = None
     try:
         await engine.relate(
             src_id=outcome_id, dst_id=task_id, edge_type="completed",
@@ -93,7 +92,6 @@ async def complete(
     return CompleteResponse(
         outcome_id=outcome_id,
         task_id=task_id,
-        edge_error=edge_error,
         task_already_archived=not archived,
     )
 

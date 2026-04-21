@@ -519,18 +519,38 @@ class CommitRequest(BaseModel):
 
 
 class CompleteRequest(BaseModel):
+    """MCP-shaped request — task_id is part of the body."""
     task_id: str = Field(..., min_length=1)
     outcome: str = Field(..., min_length=1)
     emotion: float = Field(default=0.5, ge=-1.0, le=1.0)
 
 
 class AbandonRequest(BaseModel):
+    """MCP-shaped request — task_id is part of the body."""
     task_id: str = Field(..., min_length=1)
     reason: str = Field(..., min_length=1)
 
 
 class DependRequest(BaseModel):
+    """MCP-shaped request — task_id is part of the body."""
     task_id: str = Field(..., min_length=1)
+    depends_on_id: str = Field(..., min_length=1)
+    blocking: bool = False
+
+
+# REST-shaped bodies for /tasks/{id}/* endpoints — task_id comes from the path
+# so the body must NOT carry it (avoids redundant client-side duplication).
+
+class CompleteBody(BaseModel):
+    outcome: str = Field(..., min_length=1)
+    emotion: float = Field(default=0.5, ge=-1.0, le=1.0)
+
+
+class AbandonBody(BaseModel):
+    reason: str = Field(..., min_length=1)
+
+
+class DependBody(BaseModel):
     depends_on_id: str = Field(..., min_length=1)
     blocking: bool = False
 

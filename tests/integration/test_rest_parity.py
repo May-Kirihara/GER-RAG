@@ -180,7 +180,7 @@ async def test_task_lifecycle_commit_start_complete(rest_client):
 
     complete = await rest_client.post(
         f"/tasks/{task_id}/complete",
-        json={"task_id": task_id, "outcome": "patched in engine.py", "emotion": 0.7},
+        json={"outcome": "patched in engine.py", "emotion": 0.7},
     )
     assert complete.status_code == 200
     data = complete.json()
@@ -199,18 +199,10 @@ async def test_task_abandon_flow(rest_client):
     )).json()["id"]
     resp = await rest_client.post(
         f"/tasks/{task_id}/abandon",
-        json={"task_id": task_id, "reason": "priority shifted"},
+        json={"reason": "priority shifted"},
     )
     assert resp.status_code == 200
     assert resp.json()["reason_id"]
-
-
-async def test_task_path_body_mismatch_returns_400(rest_client):
-    resp = await rest_client.post(
-        "/tasks/aaaa/complete",
-        json={"task_id": "bbbb", "outcome": "noop"},
-    )
-    assert resp.status_code == 400
 
 
 # ---------- Phase D: persona ----------
