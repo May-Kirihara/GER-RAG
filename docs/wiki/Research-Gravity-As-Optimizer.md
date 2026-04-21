@@ -1,7 +1,7 @@
 # Research — Gravity as Optimizer
 
 > **このドキュメントが GaOTTT という名前の根拠** である。
-> 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は「重力を使った RAG」を標榜していた。本ページでの整理を経て **「本質は TTT (Test-Time Training) である」という位置付けが確定** し、改名 GaOTTT (Gravity as Optimizer Test-Time Training) に至った。以下はその論証。
+> 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は「重力を使った RAG」を標榜していた。本ページでの整理を経て **「TTT (Test-Time Training) の一形態として読める」位置付けが成立する**（次節の解釈の前提を置いた場合）ことが分かり、改名 GaOTTT (Gravity as Optimizer Test-Time Training) に至った。以下はその論証。
 
 物理ベース更新と既存最適化アルゴリズム（Heavy ball SGD / Hebbian / Adam / SOM 等）の **構造的対応関係** を整理した研究ノート。
 

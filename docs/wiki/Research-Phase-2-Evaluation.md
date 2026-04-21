@@ -1,12 +1,14 @@
 # Research — Phase 2 Evaluation
 
-Static RAG と GER-RAG の比較、セッション適応性、創発性指標、ベンチマーク。
+Static RAG と GaOTTT（評価当時は GER-RAG と呼んでいた同じ実装）の比較、セッション適応性、創発性指標、ベンチマーク。
 
 **一次ソース**: [`docs/research/evaluation-report.md`](../research/evaluation-report.md)
 
+> **スコープの断り**: このページの数字は **数百ドキュメント規模の限定シナリオ** での計測結果である。10 万ドキュメント規模、adversarial なクエリ、最新 re-ranker との比較は **未実施**。README の「何を測って、何を主張しているか」節も同じ前提で読めるように揃えてある。
+
 ## 静的 RAG との比較サマリ
 
-| メトリクス | Static RAG | GER-RAG | 差分 |
+| メトリクス | Static RAG | GaOTTT | 差分 |
 |---|---|---|---|
 | nDCG@10 | 0.9457 | 0.9708 | **+2.7%** |
 | MRR | 0.8833 | 1.0000 | **+13.2%** |
@@ -23,7 +25,7 @@ Static RAG と GER-RAG の比較、セッション適応性、創発性指標、
 - **Rank Shift Rate** — 同じクエリで順位が変わる頻度
 - **Serendipity Index** — top-k に新しい記憶が浮上する頻度
 
-GER-RAG は両指標で Static RAG と質的に異なる挙動を示した。
+GaOTTT は両指標で Static RAG と質的に異なる挙動を示した（数値の詳細は一次ソース）。
 
 ## ベンチマーク (SC-001〜SC-007)
 
@@ -42,7 +44,7 @@ GER-RAG は両指標で Static RAG と質的に異なる挙動を示した。
 | スクリプト | 用途 |
 |---|---|
 | [`scripts/benchmark.py`](../../scripts/benchmark.py) | SC-001〜SC-007 の成功基準を自動検証（レイテンシ、mass 蓄積、temporal decay、共起エッジ、並行処理） |
-| [`scripts/eval_export.py`](../../scripts/eval_export.py) | 静的 RAG vs GER-RAG の比較データ書き出し、LLM-as-judge 用プロンプト生成 |
+| [`scripts/eval_export.py`](../../scripts/eval_export.py) | 静的 RAG vs GaOTTT の比較データ書き出し、LLM-as-judge 用プロンプト生成 |
 | [`scripts/eval_compute.py`](../../scripts/eval_compute.py) | 外部 LLM 判定結果から nDCG / MRR / Precision を算出 |
 | [`scripts/run_benchmark_isolated.sh`](../../scripts/run_benchmark_isolated.sh) | 隔離 DB で安全に benchmark.py を回す |
 

@@ -2,7 +2,7 @@
 
 このページでは、パソコンに GaOTTT（旧 GER-RAG）を入れます。
 
-> **改名お知らせ**: 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は 2026-04 に GaOTTT (Gravity as Optimizer Test-Time Training) に改名されました。GitHub リポジトリ URL の改名は作業中（`GER-RAG.git` はリダイレクトで引き続き利用可）。このページの手順もそのまま動きます。
+> **改名お知らせ**: 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は 2026-04 に GaOTTT (Gravity as Optimizer Test-Time Training) に改名されました。旧 URL (`.../GER-RAG.git`) も GitHub のリダイレクトで引き続き届くので、古い手順書を見ても動きます。
 
 ← [前: Welcome](Tutorial-01-Welcome.md) ｜ → [次: LLM に接続](Tutorial-03-Connect-To-Claude.md)
 

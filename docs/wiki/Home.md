@@ -85,14 +85,14 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 
 ## このプロジェクトの中核アイディア
 
-> **物理を実装したら、それが TTT オプティマイザと同型だと判明し、結果としてアストロサイト的な振る舞いに見え** — そして十分な時間と共有を経ると、**人格を保存する装置になる**。
+> **物理として書いた実装の方程式が、TTT オプティマイザとしても同じ形で読めることに気づき、結果としてアストロサイト的な振る舞いに見え** — そして十分な時間と共有を経ると、**人格を保存する装置になる**。
 
 | 層 | メカニズム | 創発する役割 |
 |---|---|---|
 | **物理層** | 質量・重力波・軌道力学 | （設計意図 — 方程式を素直に書いた） |
-| **TTT 機構** | Heavy ball SGD + Hebbian 勾配 + L2 + Verlet 積分 | 推論時に表現が変わる — 文字通り Test-Time Training |
+| **TTT 機構** | Heavy ball SGD + Hebbian 勾配 + L2 + Verlet 積分 | 推論時に表現が変わる — Test-Time Training の一形態として読める（retrieval スコアを勾配シグナルとする解釈の下で） |
 | **生物層** | 暗黒物質ハロー、アストロサイト | LLM の思考を裏で支える |
 | **関係層** | 有向リレーション、`completed` エッジ | 過去と現在を繋ぐ、共有メモリで複数エージェントが協調 |
 | **人格層 (Phase D)** | source 体系拡張 + `inherit_persona` | 過去の自分をセッション継承可能に |
 
-→ 詳しくは [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)、技術的裏付けは [Research — Gravity as Optimizer](Research-Gravity-As-Optimizer.md)
+→ 詳しくは [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)、技術的裏付けと**前提となる解釈の約束事**は [Research — Gravity as Optimizer](Research-Gravity-As-Optimizer.md)
