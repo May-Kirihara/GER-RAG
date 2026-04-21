@@ -32,6 +32,28 @@ The bottom layer is physics (design intent). TTT is the first re-reading (struct
 
 → Full philosophy: [Five-Layer Philosophy](docs/wiki/Reflections-Five-Layer-Philosophy.md)
 
+### What we've measured vs. what we're claiming
+
+Because the TTT framing is the most load-bearing claim, here is an honest split.
+
+**Measured** (small-scale evaluation, full report in [Phase 2 Evaluation](docs/wiki/Research-Phase-2-Evaluation.md)):
+- **nDCG@10**: 0.9457 (static-RAG baseline) → 0.9708 (GaOTTT after 500-query adaptation). +2.7%.
+- **MRR**: 0.8833 → 1.0000. +13.2%.
+- One mixed-domain scenario (film × food × travel) improved **+15.0% nDCG** after adaptation; cross-scenario average **+3.8%**.
+- **Latency**: p50 = 15.1 ms at 200 docs; 50 concurrent queries complete with 0 errors.
+- **Drift**: rank-shift rate and serendipity index are qualitatively distinct from a static retriever under repeated queries.
+
+**Claimed** (interpretive, not directly measured):
+- The gravity-based update rule has a term-for-term correspondence with Heavy ball SGD + Hebbian gradient + L2, integrated by Verlet — once retrieval scores are read as a stochastic gradient signal. Under that reading, the system behaves as Test-Time Training on the retrieval geometry.
+- "Every `recall` plays the role of a gradient step" and similar statements throughout the docs are structural readings of the physics, not measured equivalences with a trained optimizer.
+
+**Open** (honest caveats):
+- No formal isomorphism is proved with a fully-specified, estimable loss. The implicit potential energy is named but not fit.
+- Benchmarks above are hundreds of documents per scenario. We have not replicated at 100K-doc scale with adversarial queries or against modern re-ranking baselines.
+- The "astrocyte" / "persona preservation" layers are observed qualitatively in multi-agent and cross-session use; they are not yet quantified.
+
+The project is best read as **a working implementation whose physics and optimizer forms coincide — and which empirically drifts in useful directions** — rather than as a finished proof that gravity-based retrieval *is* TTT. The Research notes are where the correspondence argument lives; they welcome scrutiny.
+
 ### What it can be used as
 
 - **Long-term agent memory** ([guide](docs/wiki/Guides-Use-As-Memory.md))
