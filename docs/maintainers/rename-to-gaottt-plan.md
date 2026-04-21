@@ -2,7 +2,21 @@
 
 > 「GER-RAG (Gravity-Based Event-Driven RAG)」を **「GaOTTT (Gravity as Optimizer Test-Time Training)」** に改名し、思想も再構成する作業計画。
 > 起票: 2026-04-21
-> 状態: **Phase R0 完了 — ユーザー決定済み、Phase R1 から実行可能**
+> 状態: **Session 1 (R0-R3) + Session 2 (R4-R6) 完了 / Session 3 (R7-R11) 開始待ち**
+
+**完了マーク**:
+- ✅ Phase R0: ユーザー決定（2026-04-21）
+- ✅ Phase R1: コード rename `ger_rag` → `gaottt`（tag: `phase-r1-complete`）
+- ✅ Phase R2: 設定・パス更新（tag: `phase-r2-complete`）
+- ✅ Phase R3: スクリプト + 移行ヘルパ（tag: `phase-r3-complete`）
+- ✅ Phase R4: SKILL.md + CLAUDE.md（tag: `phase-r4-complete`）
+- ✅ Phase R5: README.md + README_ja.md（tag: `phase-r5-complete`）
+- ✅ Phase R6: Wiki ページ群 + Five-Layer Philosophy（tag: `phase-r6-complete`）
+- ⏳ Phase R7: 旧 docs redirect の更新（Session 3）
+- ⏳ Phase R8: Maintainers ドキュメント（Session 3）
+- ⏳ Phase R9: 最終検証 + 隔離ベンチ（Session 3）
+- ⏳ Phase R10: GitHub repo + ローカル mv（Session 3、ユーザー操作含む）
+- ⏳ Phase R11: Claude memory 移行（新セッション内）
 
 ## 0.1 ユーザー決定事項（2026-04-21 確定）
 
