@@ -2,7 +2,7 @@
 
 > 「GER-RAG (Gravity-Based Event-Driven RAG)」を **「GaOTTT (Gravity as Optimizer Test-Time Training)」** に改名し、思想も再構成する作業計画。
 > 起票: 2026-04-21
-> 状態: **Session 1 (R0-R3) + Session 2 (R4-R6) 完了 / Session 3 (R7-R11) 開始待ち**
+> 状態: **全 Phase (R0-R11) 完了**（2026-04-21）
 
 **完了マーク**:
 - ✅ Phase R0: ユーザー決定（2026-04-21）
@@ -15,8 +15,10 @@
 - ✅ Phase R7: 旧 docs redirect の更新 + Tutorial-02 ファイル名改名（tag: `phase-r7-complete`）
 - ✅ Phase R8: Maintainers ドキュメント（tag: `phase-r8-complete`）
 - ✅ Phase R9: 最終検証 + 隔離ベンチ 7/7、p50=15.4ms（tag: `phase-r9-complete`）
-- 🧑 Phase R10: GitHub repo + ローカル mv（**ユーザー操作待ち** — 手順は下記 §4.Phase-R10）
-- 🧑 Phase R11: Claude memory 移行（**ユーザーによる新セッション内で実施**）
+- ✅ Phase R10: GitHub repo rename + ローカル `mv GER-RAG GaOTTT` + remote URL 更新（PR #7 `Rename-GaOTTT` マージ: `1409f2a`）
+- ✅ Phase R11: Claude auto-memory を `-mnt-holyland-Project-GaOTTT/memory/` に移行、内容の GER-RAG → GaOTTT 表記も更新
+
+**全フェーズ完了**: 2026-04-21
 
 ## 0.1 ユーザー決定事項（2026-04-21 確定）
 

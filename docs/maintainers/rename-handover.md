@@ -1,12 +1,12 @@
 # GER-RAG → GaOTTT Rename — セッション引き継ぎ + 完了記録
 
 > **このドキュメントの読者**: 次に手を入れる人（自分 / 保守者）
-> **最終更新**: 2026-04-21（Session 3 完了直後、Phase R10-R11 ユーザー操作待ち）
-> **状態**: Session 1 (R0-R3) + Session 2 (R4-R6) + Session 3 (R7-R9) 完了 / Phase R10-R11 は **ユーザー操作** 待ち
+> **最終更新**: 2026-04-21（**全 Phase 完了**）
+> **状態**: R0 〜 R11 すべて完了。リポジトリは `May-Kirihara/GaOTTT`、ローカルは `/mnt/holyland/Project/GaOTTT`、Claude auto-memory は `-mnt-holyland-Project-GaOTTT/memory/` に移行済み
 
 ## あなたが今いる場所
 
-GER-RAG → **GaOTTT (Gravity as Optimizer Test-Time Training)** 改名プロジェクトが、Claude 側でやれる範囲は完了。残るは **GitHub リポジトリ名変更・ローカルディレクトリ mv・Claude memory 移行** の 3 手で、これらは **ユーザー（May さん）の手で** 実施してもらう必要がある。
+GER-RAG → **GaOTTT (Gravity as Optimizer Test-Time Training)** 改名プロジェクトは **全て完了**。GitHub リポジトリ rename は PR #7 `Rename-GaOTTT` で反映（merge commit `1409f2a`）、ローカルディレクトリも `GaOTTT/` に改名され、Claude auto-memory も新パスに移行済み。後方互換レイヤ（`gaottt/config.py`）により legacy `~/.local/share/ger-rag/ger_rag.db` も引き続き検出・使用可能。
 
 詳細プラン: [`rename-to-gaottt-plan.md`](rename-to-gaottt-plan.md)。**§0.1** のユーザー決定事項 と **§3** の思想書き換え方針はそのまま生きている。
 
