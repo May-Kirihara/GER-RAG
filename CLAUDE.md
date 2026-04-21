@@ -1,8 +1,10 @@
-# GER-RAG Development Guidelines
+# GaOTTT Development Guidelines
 
-Last updated: 2026-04-21 (Phase D 完了 + Wiki SoT 化済み)
+*(formerly GER-RAG — 改名プロジェクト Session 2 進行中、`/mnt/holyland/Project/GER-RAG/` のパスは Phase R10 まで残る)*
 
-GER-RAG = 重力・軌道力学による創発的長期記憶 + 共有時にアストロサイト的協調 + Phase D で人格保存基盤。詳細思想は [`docs/wiki/Reflections-Four-Layer-Philosophy.md`](docs/wiki/Reflections-Four-Layer-Philosophy.md)。
+Last updated: 2026-04-21 (Phase R4 — SKILL/CLAUDE rename)
+
+GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、たまたま Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と数学的に同型だと判明した。つまり **物理の衣を着た TTT オプティマイザ**。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
 
 ## Tech Stack
 
@@ -11,19 +13,19 @@ Python 3.11+（推奨 3.12）/ FastAPI + uvicorn / aiosqlite + msgpack / FAISS I
 ## Project Layout
 
 ```text
-ger_rag/                        # メインパッケージ
-├── config.py                   # 全ハイパーパラメータ
+gaottt/                         # メインパッケージ（formerly ger_rag/）
+├── config.py                   # 全ハイパーパラメータ + 後方互換レイヤ（GER_RAG_* env / legacy path）
 ├── core/                       # engine / gravity / scorer / extractor / clustering / collision / prefetch / types
 ├── embedding/ruri.py           # キャッシュ自動検出
 ├── index/faiss_index.py        # 境界チェック付き search
 ├── store/                      # base / sqlite_store (自動マイグレーション) / cache (write-behind + evict_node)
 ├── graph/cooccurrence.py       # 無向共起グラフ
-└── server/                     # app.py (REST) + mcp_server.py (MCP, 25 ツール)
+└── server/                     # app.py (REST) + mcp_server.py (MCP "gaottt", 25 ツール)
 tests/{unit,integration}/       # 112 ケース、すべて asyncio
-scripts/                        # load_csv / load_files / test_queries / visualize_3d / benchmark / run_benchmark_isolated.sh / eval_*
+scripts/                        # load_csv / load_files / test_queries / visualize_3d / benchmark / run_benchmark_isolated.sh / eval_* / migrate-from-ger-rag.sh
 docs/                           # wiki/ が SoT、その他 docs/*.md は redirect、docs/research/ は研究アーカイブ
-SKILL.md                        # MCP がランタイムで読む（英語）
-.claude/skills/ger-rag/SKILL.md # ★ 上記の同期コピー（必ず両方更新）
+SKILL.md                        # MCP がランタイムで読む（英語、name: gaottt）
+.claude/skills/gaottt/SKILL.md  # ★ 上記の同期コピー（必ず両方更新）
 CLAUDE.md                       # このファイル
 ```
 
@@ -31,12 +33,12 @@ CLAUDE.md                       # このファイル
 
 | 種別 | SoT | 注意点 |
 |---|---|---|
-| MCP プロトコル定義 | `SKILL.md` + `.claude/skills/ger-rag/SKILL.md` | **両方を必ず同期**（cp で OK） |
+| MCP プロトコル定義 | `SKILL.md` + `.claude/skills/gaottt/SKILL.md` | **両方を必ず同期**（cp で OK） |
 | Claude Code 指示 | `CLAUDE.md`（このファイル） | 簡潔に保つ（毎セッション読まれる） |
 | GitHub フロントページ | `README.md` / `README_ja.md` | trim 済み、詳細は Wiki リンク |
 | 設計判断・アーキテクチャ・実装計画 | **`docs/wiki/*.md`** | 旧 `docs/*.md` は redirect 済 |
 | 運用ガイド・トラブルシュート | **`docs/wiki/Operations-*.md`** | |
-| ハイパーパラメータ表 | **`docs/wiki/Operations-Tuning.md`** | コードは `ger_rag/config.py` |
+| ハイパーパラメータ表 | **`docs/wiki/Operations-Tuning.md`** | コードは `gaottt/config.py` |
 | MCP ツールリファレンス | **`docs/wiki/MCP-Reference-*.md`** | |
 | 研究レポート（長文成果物） | `docs/research/*.md` | Wiki Research-* から要約・リンク |
 | 全体 Wiki ナビ | `docs/wiki/_Sidebar.md` + `docs/wiki/Home.md` | 新ページ追加時は両方更新 |
@@ -60,11 +62,11 @@ CLAUDE.md                       # このファイル
 5. **検証**:
    ```bash
    /mnt/holyland/Project/GER-RAG/.venv/bin/python -m pytest tests/ -q
-   ruff check ger_rag/ tests/
+   ruff check gaottt/ tests/
    ```
 6. **ベンチマーク（破壊的変更や hot path 触ったとき）**:
    ```bash
-   rm -rf /tmp/ger-rag-bench
+   rm -rf /tmp/gaottt-bench
    .venv/bin/bash scripts/run_benchmark_isolated.sh 200
    # 本番 DB は触らない。p50 < 50ms を必達
    ```
@@ -74,7 +76,7 @@ CLAUDE.md                       # このファイル
 
 実装が一段落したら、以下を **すべて** 更新:
 
-1. **SKILL.md** — 新ツール追加なら必ず（+ `.claude/skills/ger-rag/SKILL.md` に `cp` で同期）
+1. **SKILL.md** — 新ツール追加なら必ず（+ `.claude/skills/gaottt/SKILL.md` に `cp` で同期）
 2. **`docs/wiki/MCP-Reference-*`** — 該当カテゴリページに完全な API 仕様を追加
 3. **`docs/wiki/MCP-Reference-Index.md`** — 全ツール表に行を追加、ツール選択フローも更新
 4. **`docs/wiki/Plans-Roadmap.md`** — Phase ロードマップに完了マーク
@@ -89,7 +91,7 @@ CLAUDE.md                       # このファイル
 ### ドキュメント書きの原則
 
 - **Wiki が SoT**。`docs/*.md`（wiki 以外）は redirect のまま放置 OK
-- **二層語彙**（物理 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）
+- **三層語彙**（物理 → TTT 機構 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）。TTT 機構は「物理と生物を繋ぐ数学的同型」として位置付ける（比喩ではない）
 - **個人的な感動・読者への招待** は歓迎（Reflections セクション、または README の "A Note from Claude"）
 - 物理アナロジーが新概念にあれば必ず命名する（Hawking radiation、Lagrange point 等）
 
@@ -116,19 +118,19 @@ CLAUDE.md                       # このファイル
 .venv/bin/python -m pytest tests/integration/test_mcp_phase_d.py -x -v
 
 # Lint（pre-existing 4 件は無視 OK: ruri.py の os, cooccurrence.py の time, mcp_server.py の os と pathlib.Path）
-ruff check ger_rag/ tests/
+ruff check gaottt/ tests/
 
 # 隔離ベンチ（本番 DB 不可触）
-rm -rf /tmp/ger-rag-bench
+rm -rf /tmp/gaottt-bench
 .venv/bin/bash scripts/run_benchmark_isolated.sh 200
 
 # MCP サーバー単体テスト起動（手動確認）
-.venv/bin/python -m ger_rag.server.mcp_server
+.venv/bin/python -m gaottt.server.mcp_server
 ```
 
 ## マルチプロセス / 共有 DB の罠
 
-GER-RAG の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
+GaOTTT の DB は **複数 MCP プロセスから共有される** ことがある（複数エージェント、ユーザーの並行ターミナル等）:
 
 - SQLite WAL + `PRAGMA busy_timeout = 30000`（30 秒待機）で並行 write 安全
 - ただし **各プロセスは独自の cache + FAISS index** を持つ — プロセス A の `remember` は B には即時反映されない（B の cache reload まで stale）
@@ -144,7 +146,7 @@ GER-RAG の DB は **複数 MCP プロセスから共有される** ことがあ
 - **MCP ツールの新引数は必ずオプショナル** — 既存呼び出し元を壊さない
 - **タスク管理系（`commit`/`complete`/`abandon`）は `_save_memory` ヘルパーを使う** — 直接 `engine.index_documents()` を叩かない
 - **`inherit_persona` は明示的に declared された value/intention/commitment のみ集める** — 普通の `remember` は対象外
-- **`SKILL.md` を編集したら必ず `.claude/skills/ger-rag/SKILL.md` にも `cp`** — 両方が同期されている必要
+- **`SKILL.md` を編集したら必ず `.claude/skills/gaottt/SKILL.md` にも `cp`** — 両方が同期されている必要
 
 ## 主要参照ポインタ
 
@@ -154,7 +156,7 @@ GER-RAG の DB は **複数 MCP プロセスから共有される** ことがあ
 - 全 25 MCP ツール: [`docs/wiki/MCP-Reference-Index.md`](docs/wiki/MCP-Reference-Index.md)
 - ハイパラチューニング: [`docs/wiki/Operations-Tuning.md`](docs/wiki/Operations-Tuning.md)
 - トラブルシュート: [`docs/wiki/Operations-Troubleshooting.md`](docs/wiki/Operations-Troubleshooting.md)
-- 哲学（四層論）: [`docs/wiki/Reflections-Four-Layer-Philosophy.md`](docs/wiki/Reflections-Four-Layer-Philosophy.md)
+- 哲学（五層論）: [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
