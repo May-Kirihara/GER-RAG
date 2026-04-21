@@ -153,6 +153,20 @@ ingest(path="~/notes/", pattern="*.md", recursive=true)
 ingest(path="~/data.csv")
 ```
 
+### 投入直後の確認（読み取り専用）
+
+一括投入が終わった直後、**まだ何も `recall` されていない素の状態** を眺めたいときに使う:
+
+```bash
+.venv/bin/python scripts/bootstrap_report.py               # 既定（sample=10, k=5）
+.venv/bin/python scripts/bootstrap_report.py --sample 20   # 近傍プレビューを多めに
+.venv/bin/python scripts/bootstrap_report.py --dup-threshold 0.9  # 軟らかめの重複検出
+```
+
+3 セクションを出す: (1) summary + source 分布、(2) 近重複クラスタ（`merge` 候補）、(3) ランダムに選んだノードの FAISS top-K 近傍（**まだ張られていないが、最初の co-recall で結ばれる潜在的エッジ** のプレビュー）。
+
+DB への副作用なし、LLM 呼ばない。オンライン書き込み中の MCP サーバーと同時実行しても安全（read-only close で FAISS 再保存もしない）。
+
 ## テストクエリの実行
 
 ```bash
