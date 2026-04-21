@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from ger_rag.core.types import CooccurrenceEdge, NodeState
+from ger_rag.core.types import CooccurrenceEdge, DirectedEdge, NodeState
 
 
 class StoreBase(ABC):
@@ -57,8 +57,11 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
-    async def load_displacements(self) -> dict[str, np.ndarray]:
-        """Load all displacement vectors."""
+    async def load_displacements(
+        self, ids: list[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """Load displacement vectors. If `ids` is given, only those nodes are
+        fetched; otherwise all displacements are returned."""
         ...
 
     @abstractmethod
@@ -67,8 +70,11 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
-    async def load_velocities(self) -> dict[str, np.ndarray]:
-        """Load all velocity vectors."""
+    async def load_velocities(
+        self, ids: list[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """Load velocity vectors. If `ids` is given, only those nodes are
+        fetched; otherwise all velocities are returned."""
         ...
 
     @abstractmethod
@@ -89,6 +95,33 @@ class StoreBase(ABC):
     @abstractmethod
     async def expire_due_nodes(self, now: float) -> int:
         """Mark expired nodes as archived. Returns count of newly archived nodes."""
+        ...
+
+    @abstractmethod
+    async def upsert_directed_edge(self, edge: DirectedEdge) -> None:
+        """Create or replace a typed directed edge."""
+        ...
+
+    @abstractmethod
+    async def delete_directed_edge(
+        self, src: str, dst: str, edge_type: str | None = None,
+    ) -> int:
+        """Remove one or all directed edges between src and dst."""
+        ...
+
+    @abstractmethod
+    async def get_directed_edges(
+        self,
+        node_id: str | None = None,
+        edge_type: str | None = None,
+        direction: str = "out",
+    ) -> list[DirectedEdge]:
+        """List directed edges with optional node/type/direction filters."""
+        ...
+
+    @abstractmethod
+    async def delete_directed_edges_for_node(self, node_id: str) -> int:
+        """Drop every directed edge touching the given node."""
         ...
 
     @abstractmethod

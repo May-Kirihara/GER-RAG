@@ -44,11 +44,11 @@ SKILL.md 改良計画で求める機能と現状の実装ギャップ:
 
 | # | 機能 | 現状 | 必要な作業 |
 |---|------|------|-----------|
-| F1 | `auto_remember` | ❌ 無し | 新規 MCP ツール追加 |
-| F2 | 類似記憶の統合提案 | ❌ 無し（重複は SHA-256 完全一致のみ） | recall/reflect に類似クラスタ抽出 |
+| F1 | `auto_remember` | ✅ **Phase A で実装済** | `core/extractor.py` + MCP ツール |
+| F2 | 類似記憶の統合提案（衝突合体） | ❌ 無し（重複は SHA-256 完全一致のみ） | recall/reflect に類似クラスタ抽出 + 衝突合体 (§F2.1) |
 | F3 | 記憶間の有向リレーション（`supersedes` 等） | ⚠️ 共起エッジは無向のみ | `EdgeType` enum 追加 + スキーマ拡張 |
-| F4 | TTL 付き短期記憶（`source="hypothesis"`） | ❌ 無し | nodes に `expires_at` 追加 + 掃除ジョブ |
-| F5 | 削除/アーカイブ API（forget） | ❌ 無し（reset のみ） | `forget` / `archive` MCP ツール追加 |
+| F4 | TTL 付き短期記憶（`source="hypothesis"`） | ✅ **Phase A で実装済** | `expires_at` 列 + startup 自動 expire |
+| F5 | 削除/アーカイブ API（forget） | ✅ **Phase A で実装済** | `is_archived` 列 + forget/restore MCP ツール |
 | F6 | バックグラウンド prefetch | ❌ 無し | 軽量 prefetch API + サーバー側ジョブ |
 | F7 | エモーショナル重み付け | ⚠️ 重力次元のみ | scorer に新次元追加 |
 
@@ -62,21 +62,8 @@ SKILL.md 改良計画で求める機能と現状の実装ギャップ:
 
 ### 3.2 段階的ロールアウト
 
-各機能は独立フィーチャーフラグ（`config.json`）で個別に有効化できるようにする:
-
-```json
-{
-  "features": {
-    "auto_remember": false,
-    "similarity_clustering": false,
-    "directed_edges": false,
-    "ephemeral_memory": false,
-    "forget_api": false,
-    "background_prefetch": false,
-    "emotional_weight": false
-  }
-}
-```
+各機能はオプショナル引数として追加し、デフォルト OFF または安全側のデフォルト値で導入する。
+（当初フィーチャーフラグ方式を検討したが、Phase A の実装結果を踏まえ、**MCP ツールの新規追加・既存ツールへのオプショナル引数追加**で十分と判断。フラグ機構は導入しない。）
 
 ### 3.3 テスト戦略
 
@@ -131,8 +118,47 @@ reflect(aspect="duplicates", threshold=0.9)
 **スキーマ変更**: documents に `merged_into TEXT NULL` を追加
 **所要**: 中（3〜4日）
 
+#### F2.1 衝突合体メカニクス（Gravitational Collision & Merger）
 
-IDEA：重力式RAGなので、十分に座標が近づいたら衝突して質量が増える形で実装すると面白そう　確認不要、物理ロジックのみで実装
+**物理アナロジー**: 銀河衝突や星の合体と同じく、十分接近した質量は重力で引き寄せ合い、最終的に一つの大質量体に合体する。合体後の質量は両者の和（一部はエネルギーとして散逸する余地あり）。
+
+これは F2 の単なるユーティリティではなく、**物理シミュレーションとしての一貫性を保つコア機能**。SKILL.md 計画書 §5.3 の「Tidal Force / 潮汐力」「Phase Transition / 相転移」パターンの実装基盤となる。
+
+**動作仕様**:
+- 全ノードペアのうち、virtual position 上の cosine 類似度が `merge_threshold`（既定 0.95）以上のペアを検出
+- 双方の `mass` の和を新しい主ノードに継承（`m_max=50` で飽和）
+- 速度ベクトルは質量加重平均で合成（運動量保存）
+- documents は片方を「保持」し、もう片方を `merged_into = <kept_id>` として論理マークすることで履歴を残す
+- co-occurrence エッジ・displacement は主ノードに移譲
+- FAISS index からは合体された側のベクトルを論理削除（主ノード側は再計算 or そのまま）
+
+**API 案**:
+```python
+merge(node_ids=[...], keep=<id>, mode="manual")
+# 手動指定で衝突合体を実行
+
+# 自動衝突は engine.compact() の中でバックグラウンド実行（Phase B 末で導入）
+# 計算コスト抑制のため hot_topics 上位 N ノード周辺のみペア比較
+```
+
+**自動衝突の発火条件**（オプション）:
+- `engine.compact()` の中で実行
+- 合体は不可逆なので `mode="manual"` がデフォルト、`auto` は明示的に有効化
+
+**追加スキーマ変更**:
+```sql
+nodes(
+    ...,
+    merge_count INTEGER DEFAULT 0,  -- 何回合体に参加したか
+    merged_into TEXT NULL           -- ノード側にも履歴フラグ
+)
+```
+
+**実装スケッチ**:
+- `ger_rag/core/collision.py` を新設（衝突検出 + 質量・速度の合成）
+- `ger_rag/core/clustering.py` と分離（前者は破壊的合体、後者は非破壊的グルーピング）
+
+**所要**: F2.1 単独で大（4〜5 日）、F2 と合算で 8〜10 日
 
 ---
 
@@ -276,15 +302,15 @@ revalidate(node_id: str, certainty: float)  # 再確認したとき
 
 ## 5. 実装ロードマップ（推奨順）
 
-### Phase A: 基盤整備（依存先・小〜中）
+### Phase A: 基盤整備 — ✅ **完了（2026-04-21）**
 
-1. **F5 forget API**（小） — 単独で価値があり、F4 と列を共有するので先に基盤を作る
-2. **F4 TTL 付き短期記憶**（中） — F5 のスキーマ追加と同時に
-3. **F1 auto_remember**（中） — スキーマに依存せず単独で進められる
+1. ✅ F5 forget API — `is_archived` 列 + forget/restore MCP ツール
+2. ✅ F4 TTL 付き短期記憶 — `expires_at` 列 + startup 自動 expire + `ttl_seconds` 引数
+3. ✅ F1 auto_remember — ヒューリスティック抽出 + MCP ツール
 
-### Phase B: 関係性とスコアリング（中〜大）
+### Phase B: 関係性とスコアリング（中〜大）— 次に実施
 
-4. **F2 類似記憶の統合提案**（中）
+4. **F2 類似記憶の統合提案 + F2.1 衝突合体**（大） — `engine.compact()` と同時に導入（§6.2 参照）
 5. **F7 エモーショナル重み付け**（中） — scorer 改修、ベンチマーク必須
 6. **F3 有向リレーション**（大） — 既存 cooccurrence との共存設計
 
@@ -300,6 +326,53 @@ revalidate(node_id: str, certainty: float)  # 再確認したとき
 - **スキーマ移行**: SQLite なので `ALTER TABLE ADD COLUMN` で段階追加可能だが、テストで旧 DB → 新 DB の互換を検証
 - **MCP プロトコル互換性**: 既存ツールのシグネチャ変更は禁止。新引数はすべてオプショナル
 - **重複機能**: `forget` と `archive` の境界、`hypothesis` と通常記憶の境界が曖昧化しないよう、ドキュメントとテストで明確化
+
+### 6.1 既知の技術的負債（Phase A 完了時点）
+
+Phase A の出荷状態で既に認識されている改善ポイント:
+
+1. **FAISS オーファンベクトル**: `hard_delete_nodes` / `archive` 後も FAISS index に削除済 ID のベクトルが残る。エンジン側で None state を弾くため正常動作するが、長期運用でインデックスサイズと wave 伝播の無駄ヒットが蓄積する。
+   → **対策**: `engine.compact()` の導入（下記 §6.2）
+
+2. **ソフトアーカイブ済ノードへの wave ヒット**: archived ノードが FAISS に残るため、毎クエリで wave がヒット → engine で除外。アーカイブ多数のワークロードで線形コスト増。
+   → **対策**: 同上 `engine.compact()` で archived ノードを物理的に圧縮
+
+3. **`expire_due_nodes` が起動時のみ**: 長期常駐プロセスでは期限切れノードが in-memory cache に残り続ける（query では除外されるがメモリ占有）。
+   → **対策**: write-behind ループに統合 or `compact()` で対応
+
+### 6.2 `engine.compact()` 設計メモ（Phase B / F2 連動）
+
+Phase B の F2.1（衝突合体メカニクス）と同時期に導入予定。役割は **「物理シミュレーションの定期メンテナンス」**:
+
+| 処理 | 対応する物理現象 |
+|---|---|
+| 期限切れ TTL ノードを `is_archived=1` にマーク | TTL = 仮想粒子の崩壊 |
+| `is_archived=1` ノードのベクトルを FAISS から除去 | ホーキング輻射・蒸発の最終段階 |
+| FAISS index を rebuild（id_map 詰め直し） | 系の真空ゼロ点リセット |
+| 近接ノード対の衝突合体検出（F2.1） | 重力衝突・銀河合体 |
+| co-occurrence エッジの prune | 弱結合の散逸 |
+
+**API 案**:
+```python
+engine.compact(
+    *,
+    expire_ttl: bool = True,
+    rebuild_faiss: bool = True,
+    auto_merge: bool = False,        # F2.1 が入ってから default True 検討
+    merge_threshold: float = 0.95,
+) -> CompactReport
+```
+
+**呼び出しタイミング**:
+- 手動: MCP ツール `compact()` 経由
+- 自動: write-behind ループの低頻度版（例: 1 時間ごと）
+
+**注意点**:
+- FAISS rebuild は I/O が重いため、バックグラウンドで実行
+- rebuild 中は FAISS への書き込みをロックする必要がある（既存 `_engine_lock` を流用検討）
+- `auto_merge=True` は不可逆操作なので、ユーザー設定で明示的に有効化させる
+
+**所要**: 中（3〜4 日）— F2.1 と同時実装が効率的
 
 ## 7. 関連ドキュメント
 

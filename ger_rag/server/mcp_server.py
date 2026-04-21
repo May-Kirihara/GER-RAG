@@ -72,11 +72,18 @@ mcp = FastMCP(
     "ger-rag-memory",
     instructions=(
         "GER-RAG: Gravitational long-term memory for AI agents. "
-        "Use 'remember' to store knowledge (set source='hypothesis' or pass "
-        "ttl_seconds for ephemeral notes), 'recall' to search with gravitational "
-        "relevance, 'explore' for serendipitous discovery, 'reflect' to analyze "
-        "your memory state, 'auto_remember' to extract save candidates from a "
-        "transcript, 'forget'/'restore' to prune (soft by default), and 'ingest' "
+        "Use 'remember' to store knowledge (source='hypothesis' or ttl_seconds "
+        "for ephemeral, emotion/certainty for affective weighting), 'recall' to "
+        "search with gravitational relevance (transparently consumes 'prefetch' "
+        "cache), 'prefetch' to pre-warm the gravity well around an anticipated "
+        "query, 'prefetch_status' to inspect cache health, 'explore' for "
+        "serendipitous discovery, 'reflect' to analyze memory state "
+        "(aspect='duplicates' for collision candidates, 'relations' for "
+        "typed-edge overview), 'auto_remember' to extract save candidates, "
+        "'forget'/'restore' to prune (soft by default), 'merge' to collide "
+        "near-duplicates, 'compact' for periodic maintenance, 'revalidate' to "
+        "refresh certainty, 'relate'/'unrelate'/'get_relations' for typed "
+        "directed edges (supersedes/derived_from/contradicts), and 'ingest' "
         "to bulk-load files."
     ),
 )
@@ -93,6 +100,8 @@ async def remember(
     tags: list[str] | None = None,
     context: str | None = None,
     ttl_seconds: float | None = None,
+    emotion: float = 0.0,
+    certainty: float = 1.0,
 ) -> str:
     """Store knowledge in long-term memory.
 
@@ -109,6 +118,12 @@ async def remember(
         ttl_seconds: Override expiration in seconds. If omitted and
                 source="hypothesis", uses default_hypothesis_ttl_seconds
                 from config. Permanent for other sources unless set.
+        emotion: Emotional weight in [-1.0, 1.0]. Negative = frustration/loss,
+                positive = relief/success. Magnitude (not sign) boosts recall —
+                both joyful successes and painful failures deserve to surface.
+        certainty: Confidence in [0.0, 1.0]. Higher means recall ranks this
+                memory higher; certainty decays over time unless re-verified
+                via the `revalidate` tool.
     """
     engine = await get_engine()
     metadata = {"source": source}
@@ -124,7 +139,12 @@ async def remember(
     elif source == "hypothesis":
         expires_at = time.time() + engine.config.default_hypothesis_ttl_seconds
 
-    doc: dict = {"content": content, "metadata": metadata}
+    doc: dict = {
+        "content": content,
+        "metadata": metadata,
+        "emotion": emotion,
+        "certainty": certainty,
+    }
     if expires_at is not None:
         doc["expires_at"] = expires_at
         metadata["expires_at"] = time.strftime(
@@ -136,6 +156,34 @@ async def remember(
         return "Already exists in memory (duplicate content)."
     suffix = f" (expires {metadata['expires_at']})" if expires_at else ""
     return f"Remembered. ID: {ids[0]}{suffix}"
+
+
+@mcp.tool()
+async def revalidate(
+    node_id: str,
+    certainty: float | None = None,
+    emotion: float | None = None,
+) -> str:
+    """Re-verify a memory: refresh its certainty timestamp and optionally adjust weights.
+
+    Certainty decays over time (~30-day half life by default). Calling this
+    on a memory you confirm is still true resets the decay clock and keeps
+    the memory ranked highly in `recall`.
+
+    Args:
+        node_id: Memory ID to revalidate
+        certainty: New certainty in [0.0, 1.0]. If omitted, the existing value
+                is kept (timestamp is still refreshed).
+        emotion: New emotion weight in [-1.0, 1.0]. If omitted, unchanged.
+    """
+    engine = await get_engine()
+    state = await engine.revalidate(node_id, certainty=certainty, emotion=emotion)
+    if state is None:
+        return f"Node {node_id} not found or archived."
+    return (
+        f"Revalidated {node_id[:8]}.. "
+        f"certainty={state.certainty:.2f}, emotion={state.emotion_weight:+.2f}"
+    )
 
 
 @mcp.tool()
@@ -180,11 +228,17 @@ async def recall(
     source_filter: list[str] | None = None,
     wave_depth: int | None = None,
     wave_k: int | None = None,
+    force_refresh: bool = False,
 ) -> str:
     """Search long-term memory with gravitational wave propagation.
 
     Gravity waves propagate recursively through the knowledge space.
     High-mass memories attract more neighbors, creating wider gravitational fields.
+
+    By default this transparently consumes any matching prefetch entry —
+    if `prefetch(query, top_k)` was called recently, the result is returned
+    instantly. Pass `force_refresh=True` to bypass the prefetch cache and
+    re-run the full wave simulation.
 
     Args:
         query: Search query
@@ -192,11 +246,13 @@ async def recall(
         source_filter: Filter by source, e.g. ["agent", "compaction"]
         wave_depth: Override recursion depth (default from config)
         wave_k: Override initial seed count (default from config)
+        force_refresh: Bypass prefetch cache (default False)
     """
     engine = await get_engine()
     results = await engine.query(
         text=query, top_k=top_k * 2 if source_filter else top_k,
         wave_depth=wave_depth, wave_k=wave_k,
+        use_cache=not force_refresh,
     )
 
     if source_filter:
@@ -285,7 +341,9 @@ async def reflect(
 
     Args:
         aspect: "summary" (overview), "hot_topics" (high-mass memories),
-                "connections" (strong co-occurrence edges), "dormant" (forgotten memories)
+                "connections" (strong co-occurrence edges), "dormant" (forgotten memories),
+                "duplicates" (near-duplicate clusters; pass to merge() to collide),
+                "relations" (directed typed edges: supersedes / derived_from / contradicts)
         limit: Number of items to return
     """
     engine = await get_engine()
@@ -344,7 +402,253 @@ async def reflect(
             lines.append(f"  {age_days:.1f} days ago, mass={n.mass:.2f} | {content}...")
         return "\n".join(lines)
 
+    elif aspect == "relations":
+        edges = await engine.store.get_directed_edges()
+        if not edges:
+            return "No directed relations recorded yet."
+        by_type: dict[str, int] = {}
+        for e in edges:
+            by_type[e.edge_type] = by_type.get(e.edge_type, 0) + 1
+        lines = [f"Directed relations ({len(edges)} total):"]
+        for t, c in sorted(by_type.items(), key=lambda kv: -kv[1]):
+            lines.append(f"  {t}: {c}")
+        recent = sorted(edges, key=lambda e: e.created_at, reverse=True)[:limit]
+        lines.append(f"\nMost recent {len(recent)}:")
+        for e in recent:
+            lines.append(
+                f"  {e.src[:8]}.. --[{e.edge_type}]--> {e.dst[:8]}.. "
+                f"(weight={e.weight:.2f})"
+            )
+        return "\n".join(lines)
+
+    elif aspect == "duplicates":
+        clusters = engine.find_duplicates(threshold=0.95, top_n_by_mass=500)
+        if not clusters:
+            return "No near-duplicate clusters found (threshold 0.95)."
+        lines = [f"Near-duplicate clusters ({len(clusters)} found, top {limit}):"]
+        for i, c in enumerate(clusters[:limit], start=1):
+            lines.append(
+                f"\n[Cluster {i}] {len(c.ids)} nodes, "
+                f"avg_pairwise_sim={c.avg_pairwise_similarity:.3f}"
+            )
+            for nid in c.ids:
+                doc = await engine.store.get_document(nid)
+                content = (doc.get("content", "")[:80] if doc else "?").replace("\n", " ")
+                lines.append(f"  - {nid[:8]}.. mass={cache.get_node(nid).mass:.2f} | {content}")
+            lines.append(
+                f"  → To merge: merge(node_ids={list(c.ids)})"
+            )
+        return "\n".join(lines)
+
     return f"Unknown aspect: {aspect}"
+
+
+@mcp.tool()
+async def prefetch(
+    query: str,
+    top_k: int = 5,
+    wave_depth: int | None = None,
+    wave_k: int | None = None,
+) -> str:
+    """Schedule a background recall to pre-load related memories.
+
+    The astrocyte's true workload: while you reason in the foreground, this
+    pre-warms the gravity well around `query` so a subsequent `recall` with
+    the same arguments returns instantly. Useful at the start of a turn when
+    you can predict what the user will probe next.
+
+    Returns immediately; the actual work runs in a bounded background pool.
+    Subsequent `recall(query, top_k)` calls within the cache TTL (default 90s)
+    are served from the cache without re-running the wave simulation.
+
+    Args:
+        query: search text to pre-warm
+        top_k: number of results to cache (must match the eventual recall)
+        wave_depth: optional override
+        wave_k: optional override
+    """
+    engine = await get_engine()
+    engine.prefetch(text=query, top_k=top_k, wave_depth=wave_depth, wave_k=wave_k)
+    return (
+        f"Scheduled prefetch for '{query[:60]}...' (top_k={top_k}). "
+        f"Subsequent recall within {engine.config.prefetch_ttl_seconds:.0f}s "
+        f"will be served from cache."
+    )
+
+
+@mcp.tool()
+async def prefetch_status() -> str:
+    """Inspect the prefetch cache and async pool stats."""
+    engine = await get_engine()
+    status = engine.prefetch_status()
+    cache = status["cache"]
+    pool = status["pool"]
+    return (
+        "Prefetch cache:\n"
+        f"  size:      {cache['size']}/{cache['max_size']}  (active: {cache['active']})\n"
+        f"  hit/miss:  {cache['hits']} / {cache['misses']}  "
+        f"(hit_rate: {cache['hit_rate']:.2%})\n"
+        f"  evictions: {cache['evictions']}\n"
+        f"  ttl:       {cache['ttl_seconds']:.0f}s\n"
+        "Prefetch pool:\n"
+        f"  scheduled: {pool['scheduled']}\n"
+        f"  completed: {pool['completed']}\n"
+        f"  failed:    {pool['failed']}\n"
+        f"  in_flight: {pool['in_flight']}/{pool['max_concurrent']}"
+    )
+
+
+@mcp.tool()
+async def relate(
+    src_id: str,
+    dst_id: str,
+    edge_type: str,
+    weight: float = 1.0,
+    metadata: dict | None = None,
+) -> str:
+    """Create a typed directed relation from src memory to dst memory.
+
+    Reserved edge types:
+      - "supersedes"   — src replaced/retracted dst (newer overrides older)
+      - "derived_from" — src is an extension/derivation of dst
+      - "contradicts"  — src disagrees with dst
+
+    Custom edge_type strings are also allowed for experimentation.
+    Used for "past-self dialogue" (Time-Delayed Echoes pattern): when you
+    revise an earlier judgment, save the new conclusion and link it to the
+    old one with edge_type="supersedes".
+
+    Args:
+        src_id: source memory ID (the newer / derived / contradicting one)
+        dst_id: destination memory ID (the older / source / opposed one)
+        edge_type: relation kind (see above)
+        weight: optional strength of the relation (default 1.0)
+        metadata: optional structured note (e.g. reason for retraction)
+    """
+    engine = await get_engine()
+    edge = await engine.relate(
+        src_id=src_id, dst_id=dst_id, edge_type=edge_type,
+        weight=weight, metadata=metadata,
+    )
+    return (
+        f"Related {edge.src[:8]}.. --[{edge.edge_type}]--> {edge.dst[:8]}.. "
+        f"(weight={edge.weight:.2f})"
+    )
+
+
+@mcp.tool()
+async def unrelate(
+    src_id: str,
+    dst_id: str,
+    edge_type: str | None = None,
+) -> str:
+    """Remove a directed relation. If edge_type is omitted, removes all relations between the pair."""
+    engine = await get_engine()
+    n = await engine.unrelate(src_id, dst_id, edge_type)
+    return f"Removed {n} directed edge(s) between {src_id[:8]}.. and {dst_id[:8]}.."
+
+
+@mcp.tool()
+async def get_relations(
+    node_id: str,
+    edge_type: str | None = None,
+    direction: str = "out",
+) -> str:
+    """List directed relations connected to a memory.
+
+    Args:
+        node_id: memory ID
+        edge_type: filter by relation kind (optional)
+        direction: "out" (relations from node), "in" (relations to node), or "both"
+    """
+    engine = await get_engine()
+    edges = await engine.get_relations(node_id, edge_type=edge_type, direction=direction)
+    if not edges:
+        return f"No directed relations found for {node_id[:8]}.. (direction={direction})."
+    lines = [f"Relations for {node_id[:8]}.. (direction={direction}, {len(edges)} found):"]
+    for e in edges:
+        meta = f" meta={e.metadata}" if e.metadata else ""
+        lines.append(
+            f"  {e.src[:8]}.. --[{e.edge_type}]--> {e.dst[:8]}.. "
+            f"weight={e.weight:.2f}{meta}"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def merge(
+    node_ids: list[str],
+    keep: str | None = None,
+) -> str:
+    """Gravitationally collide and merge memories into one survivor.
+
+    Two or more nodes are absorbed into a single survivor: masses add (capped),
+    velocities are momentum-weighted, displacements are mass-weighted, and
+    co-occurrence edges are re-targeted. Absorbed nodes are soft-archived
+    with merged_into pointing to the survivor — history is preserved.
+
+    Use this after `reflect(aspect="duplicates")` surfaces near-duplicate
+    clusters. Merging is irreversible; absorbed nodes can be restore()'d
+    only as standalone (the merge is not unwound).
+
+    Args:
+        node_ids: 2 or more memory IDs to collide
+        keep: Optional ID to force-survive. If omitted, the heaviest wins
+              (ties broken by most recent access)
+    """
+    engine = await get_engine()
+    outcomes = await engine.merge(node_ids, keep=keep)
+    if not outcomes:
+        return "Nothing to merge (need ≥2 active nodes from the given IDs)."
+    lines = [f"Merged {len(outcomes)} node(s) into a survivor:"]
+    for o in outcomes:
+        lines.append(
+            f"  {o.absorbed_id[:8]}.. → {o.survivor_id[:8]}.. "
+            f"(mass {o.mass_before:.3f} + {o.absorbed_mass:.3f} = {o.mass_after:.3f})"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def compact(
+    expire_ttl: bool = True,
+    rebuild_faiss: bool = True,
+    auto_merge: bool = False,
+    merge_threshold: float = 0.95,
+    merge_top_n: int = 500,
+) -> str:
+    """Periodic maintenance: expire TTL nodes, rebuild FAISS, optionally auto-merge.
+
+    Run periodically (e.g. weekly) to:
+      - mark TTL-expired nodes as archived (Hawking radiation)
+      - drop archived/merged vectors from FAISS (system zero-point reset)
+      - optionally collide near-duplicate clusters (gravitational merger)
+
+    Auto-merge is irreversible and OFF by default. Enable explicitly when you
+    want the physics to clean up duplicates without manual review.
+
+    Args:
+        expire_ttl: Run TTL expiration pass (default True)
+        rebuild_faiss: Rebuild FAISS index dropping orphan vectors (default True)
+        auto_merge: Run automatic collision-merge of duplicates (default False)
+        merge_threshold: Cosine similarity threshold for auto-merge (default 0.95)
+        merge_top_n: Limit auto-merge candidate pool to top-N by mass (default 500)
+    """
+    engine = await get_engine()
+    report = await engine.compact(
+        expire_ttl=expire_ttl,
+        rebuild_faiss=rebuild_faiss,
+        auto_merge=auto_merge,
+        merge_threshold=merge_threshold,
+        merge_top_n=merge_top_n,
+    )
+    return (
+        f"Compaction complete:\n"
+        f"  TTL-expired:    {report['expired']}\n"
+        f"  Auto-merged:    {report['merged_pairs']} pairs\n"
+        f"  FAISS rebuilt:  {report['faiss_rebuilt']}\n"
+        f"  FAISS vectors:  {report['vectors_before']} → {report['vectors_after']}"
+    )
 
 
 @mcp.tool()

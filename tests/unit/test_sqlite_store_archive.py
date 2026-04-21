@@ -85,6 +85,39 @@ async def test_expire_due_nodes_archives_only_expired(store):
     assert states["permanent"].is_archived is False
 
 
+async def test_load_displacements_filters_by_ids(store):
+    import numpy as np
+    await _seed_node(store, "n1")
+    await _seed_node(store, "n2")
+    await _seed_node(store, "n3")
+    await store.save_displacements({
+        "n1": np.array([1.0, 0.0], dtype=np.float32),
+        "n2": np.array([0.0, 1.0], dtype=np.float32),
+        "n3": np.array([1.0, 1.0], dtype=np.float32),
+    })
+
+    all_disps = await store.load_displacements()
+    assert set(all_disps.keys()) == {"n1", "n2", "n3"}
+
+    subset = await store.load_displacements(ids=["n1", "n3"])
+    assert set(subset.keys()) == {"n1", "n3"}
+
+    empty = await store.load_displacements(ids=[])
+    assert empty == {}
+
+
+async def test_load_velocities_filters_by_ids(store):
+    import numpy as np
+    await _seed_node(store, "n1")
+    await _seed_node(store, "n2")
+    await store.save_velocities({
+        "n1": np.array([0.1, 0.0], dtype=np.float32),
+        "n2": np.array([0.0, 0.2], dtype=np.float32),
+    })
+    subset = await store.load_velocities(ids=["n2"])
+    assert set(subset.keys()) == {"n2"}
+
+
 async def test_reset_dynamic_state_clears_new_columns(store):
     await _seed_node(store, "n1", expires_at=time.time() + 60, is_archived=True)
     nodes_count, _ = await store.reset_dynamic_state()

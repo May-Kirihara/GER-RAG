@@ -150,6 +150,16 @@ class GERConfig:
     auto_remember_min_chars: int = 12
     auto_remember_max_chars: int = 400
 
+    # F7: emotional weight & certainty
+    emotion_alpha: float = 0.04                       # Score weight per |emotion|
+    certainty_alpha: float = 0.02                     # Score weight per certainty
+    certainty_half_life_seconds: float = 30 * 86400.0 # 30 days half-life
+
+    # F6: background prefetch
+    prefetch_cache_size: int = 64                     # Max cached query results
+    prefetch_ttl_seconds: float = 90.0                # Cache entry lifetime
+    prefetch_max_concurrent: int = 4                  # Bounded async pool size
+
     def __post_init__(self):
         if not self.db_path:
             self.db_path = os.path.join(self.data_dir, "ger_rag.db")
