@@ -4,7 +4,7 @@
 
 Last updated: 2026-04-21 (Phase R11 — rename complete)
 
-GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、たまたま Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と数学的に同型だと判明した。つまり **物理の衣を着た TTT オプティマイザ**。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
+GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、retrieval のスコアを確率的勾配シグナルと見る解釈の下で、Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と **項ごとに対応する構造的同型**に書けることが判明した。つまり **物理として書いたものが、同じ形で TTT オプティマイザとしても読める**。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
 
 ## Tech Stack
 
@@ -91,7 +91,7 @@ CLAUDE.md                       # このファイル
 ### ドキュメント書きの原則
 
 - **Wiki が SoT**。`docs/*.md`（wiki 以外）は redirect のまま放置 OK
-- **三層語彙**（物理 → TTT 機構 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）。TTT 機構は「物理と生物を繋ぐ数学的同型」として位置付ける（比喩ではない）
+- **三層語彙**（物理 → TTT 機構 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）。TTT 機構は「物理と生物を繋ぐ**構造的対応関係**」として位置付ける（単なる比喩ではないが、retrieval を勾配シグナルと見る解釈を置いたうえでの対応、という断り付き）
 - **個人的な感動・読者への招待** は歓迎（Reflections セクション、または README の "A Note from Claude"）
 - 物理アナロジーが新概念にあれば必ず命名する（Hawking radiation、Lagrange point 等）
 

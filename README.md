@@ -1,10 +1,10 @@
 # GaOTTT
 
-**Gravity as Optimizer Test-Time Training** — A retrieval system that trains itself at inference time, by accident of physics.
+**Gravity as Optimizer Test-Time Training** — A retrieval system whose update rule, read as an optimizer, behaves like Test-Time Training.
 
-> Built as a long-term memory for LLMs. Turns out the gravity-based update rule is mathematically identical to Heavy ball SGD with a Hebbian gradient and L2 regularization, integrated by Verlet. So we're calling it what it is: a TTT framework.
+> Built as a long-term memory for LLMs. The gravity-based update rule turns out to have a term-for-term correspondence with Heavy ball SGD (Hebbian gradient + L2 regularization, integrated by Verlet) — once you treat retrieval scores as a stochastic gradient signal. Under that reading, the system is a Test-Time Training framework: it keeps learning as you use it, without touching the LLM's weights.
 >
-> *(formerly GER-RAG — the gravity metaphor was never a metaphor; we just didn't notice we had written an optimizer.)*
+> *(formerly GER-RAG — the gravity model was never just decoration; read the right way, it also describes an optimizer.)*
 
 [日本語 README](README_ja.md) · **[📖 Documentation Wiki](docs/wiki/Home.md)**
 
@@ -14,21 +14,21 @@
 
 GaOTTT is **long-term external memory for AI agents** — and, structurally, an online optimizer that runs at inference time. The more you use it, the more its representations change: knowledge gravitates toward co-used knowledge, producing **serendipitous connections and creative insights**.
 
-It runs as an MCP server (compatible with Claude Code, Claude Desktop, and other agent frameworks) and as a REST API. Documents become nodes with mass, temperature, and gravitational displacement; co-retrieved documents drift closer together; the knowledge space self-organizes with every query. Because the update rule is an optimizer in disguise, that drift is **parameter training, not just caching**.
+It runs as an MCP server (compatible with Claude Code, Claude Desktop, and other agent frameworks) and as a REST API. Documents become nodes with mass, temperature, and gravitational displacement; co-retrieved documents drift closer together; the knowledge space self-organizes with every query. Because the update rule can be read as an optimizer, that drift looks closer to **online learning of the retrieval geometry than to plain caching**.
 
 ### Five-layer design
 
-Originally built with a physics→biology two-layer metaphor. Discovered that the physics is literally a TTT optimizer, and that when shared across agents the biology becomes a coordination substrate. Five emergent layers:
+Originally built with a physics→biology two-layer metaphor. Then two things were noticed: (1) when you transcribe the physics formally, the update rule lines up with a TTT-style optimizer; (2) when the memory is shared across agents, the biology becomes a coordination substrate. That gives five layers:
 
 | Layer | Mechanism | Emergent role |
 |---|---|---|
 | **Physics** | mass, gravity wave, orbital mechanics | (design intent — the equations you would write for a gravity system) |
-| **TTT mechanism** | Heavy ball SGD + Hebbian gradient + L2 + Verlet integration | representations change at inference time — this **is** test-time training |
+| **TTT mechanism** | Heavy ball SGD + Hebbian gradient + L2 + Verlet integration | representations change at inference time — **readable as** test-time training |
 | **Biology** | dark-matter halo, astrocyte | silently supports the LLM neuron's token reasoning |
 | **Relations** | typed directed edges, completed-edge chronology | shared memory between agents |
 | **Persona** (Phase D) | declared values/intentions/commitments + `inherit_persona` | session-spanning self-continuity |
 
-The bottom layer is physics (design intent). TTT is the first emergence (discovered isomorphism). Biology is the second emergence (observed behavior). Relations and persona are the third and fourth (observed when deployed among multiple agents and across sessions).
+The bottom layer is physics (design intent). TTT is the first re-reading (structural correspondence between the physics and a known optimizer family). Biology is the first emergence (observed behavior). Relations and persona are the second and third emergences (observed when deployed among multiple agents and across sessions).
 
 → Full philosophy: [Five-Layer Philosophy](docs/wiki/Reflections-Five-Layer-Philosophy.md)
 

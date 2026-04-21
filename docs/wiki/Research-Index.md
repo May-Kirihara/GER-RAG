@@ -13,7 +13,7 @@ GaOTTT の設計根拠、評価、実験レポートの目次。
 
 | レポート | 内容 |
 |---|---|
-| [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md) | 重力式更新が Heavy ball SGD / Hebbian / SOM / TTT と数学的に同型である分析 |
+| [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md) | 重力式更新と Heavy ball SGD / Hebbian / SOM / TTT の**構造的対応関係**の分析（解釈の前提つき） |
 
 ## 設計根拠
 

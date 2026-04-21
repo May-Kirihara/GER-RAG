@@ -3,15 +3,21 @@
 > **このドキュメントが GaOTTT という名前の根拠** である。
 > 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は「重力を使った RAG」を標榜していた。本ページでの整理を経て **「本質は TTT (Test-Time Training) である」という位置付けが確定** し、改名 GaOTTT (Gravity as Optimizer Test-Time Training) に至った。以下はその論証。
 
-物理ベース更新と既存最適化アルゴリズム（Heavy ball SGD / Hebbian / Adam / SOM 等）の数学的同型関係を整理した研究ノート。
+物理ベース更新と既存最適化アルゴリズム（Heavy ball SGD / Hebbian / Adam / SOM 等）の **構造的対応関係** を整理した研究ノート。
 
 **完全版（参考文献付き）**: [`docs/research/gravity-as-optimizer.md`](../research/gravity-as-optimizer.md)
 
+## 前提となる解釈の約束事
+
+以下の対応関係は、**retrieval 時のスコアを「暗黙の potential energy の負の勾配に比例する確率的シグナル」として解釈する** 立場の下で成り立つ。つまり「recall した瞬間にその軌道上で微小な勾配ステップが適用された」と読めば、物理の更新則と最適化器の更新則が項ごとに一致する。
+
+明示的な loss 関数は書き下されていないので、「厳密な同一性」ではなく **「項ごとに整合する構造的同型」** と見るのが安全な読み方。この解釈を取らない場合は、以下の表は「同じ形の式を使った独立した二系統」として読んでもらって構わない。
+
 ## TL;DR
 
-GaOTTT の重力 + 軌道力学による更新は、形式的には **「Hebbian 引力 + L2 正則化を、Verlet 積分（leapfrog）で解く Heavy ball SGD」** と同型。明示的な loss 関数は無いが、暗黙の potential energy が最小化されている。
+GaOTTT の重力 + 軌道力学による更新は、形式的には **「Hebbian 引力 + L2 正則化を、Verlet 積分（leapfrog）で解く Heavy ball SGD」** と項ごとに対応する。明示的な loss 関数は書き下されていないが、暗黙の potential energy が最小化されている（と解釈できる）。
 
-これは TTT の一形態であり、**「LLM の重みは frozen のまま、retrieval geometry を online で適応させる」** というアプローチに位置付けられる。**比喩ではなく数学的同型** であり、これが命名 GaOTTT の根拠。
+この読み方の下では TTT の一形態として位置づけられる — **「LLM の重みは frozen のまま、retrieval geometry を online で適応させる」**。命名 GaOTTT は、この構造的対応関係を指している（単なる比喩ではなく、項ごとの対応が引けるという意味）。
 
 ## 同型関係の早見表
 

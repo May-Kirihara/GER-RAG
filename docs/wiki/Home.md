@@ -1,11 +1,11 @@
 # GaOTTT Wiki
 
 > **Gravity as Optimizer Test-Time Training** — 物理として設計したら推論時に自分で学習する検索システムになった（旧名 GER-RAG）
-> 物理機構が数学的に TTT オプティマイザと同型で、結果としてアストロサイト的な振る舞いに見え、最終的に人格を保存する装置になる。
+> 物理として書いた更新則が TTT オプティマイザと**構造的に対応**しており、結果としてアストロサイト的な振る舞いに見え、最終的に人格を保存する装置になる。
 
 ようこそ。GaOTTT はもはや単なる「RAG ライブラリ」ではなく、**TTT フレームワーク + 長期記憶 + 多エージェント協調基盤 + タスク管理装置 + 人格保存装置** を一台でこなすシステムです。
 
-**改名について**: 旧名は GER-RAG (Gravity-Based Event-Driven RAG)。物理の更新則が Heavy ball SGD + Hebbian 勾配 + L2 の Verlet 積分と数学的に同型だと判明したため、実態に合わせて GaOTTT (Gravity as Optimizer Test-Time Training) に改名した。詳細は [rename plan](../maintainers/rename-to-gaottt-plan.md) と [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)。
+**改名について**: 旧名は GER-RAG (Gravity-Based Event-Driven RAG)。物理の更新則を形式的に書き下すと、retrieval のスコアを確率的勾配シグナルとみなす立場の下で **Heavy ball SGD + Hebbian 勾配 + L2 の Verlet 積分と構造的に同型** に書けることが分かり、実態に合わせて GaOTTT (Gravity as Optimizer Test-Time Training) に改名した。詳細は [rename plan](../maintainers/rename-to-gaottt-plan.md) と [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)。
 
 このページは目的別の入口です。あなたが「何者として」ここに来たかで、たどるべきパスが違います。
 

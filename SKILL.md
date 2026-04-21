@@ -1,6 +1,6 @@
 ---
 name: gaottt
-description: Long-term memory across sessions, implemented as a Test-Time Training optimizer dressed up as gravity. Restore prior context at session start, save important decisions and lessons, evacuate context before compaction, recall past failures when hitting similar problems. Memories self-organize gravitationally — frequently co-recalled knowledge attracts itself — because the update rule is Heavy ball SGD + Hebbian gradient + L2 in disguise.
+description: Long-term memory across sessions. Implemented as a gravity system whose update rule, read as an optimizer, corresponds to Heavy ball SGD with a Hebbian gradient and L2 regularization (Verlet integration) — i.e. Test-Time Training on the retrieval geometry. Restore prior context at session start, save important decisions and lessons, evacuate context before compaction, recall past failures when hitting similar problems. Memories self-organize gravitationally — frequently co-recalled knowledge attracts itself.
 ---
 
 # GaOTTT: Gravity as Optimizer, Test-Time Training Memory
@@ -10,12 +10,12 @@ description: Long-term memory across sessions, implemented as a Test-Time Traini
 ## What this is
 
 GaOTTT is your **external long-term memory** across sessions.
-The system was designed as physics (gravity, orbits, temperature). It turned out the update rule is **mathematically identical to Heavy ball SGD with a Hebbian gradient and L2 regularization, integrated by Verlet**. So it is literally a **Test-Time Training (TTT) framework** — it keeps learning as you use it, at inference time. The gravity metaphor is not a metaphor; it's the same math.
+The system was designed as physics (gravity, orbits, temperature). Read as an optimizer, the update rule has **the same structural form as Heavy ball SGD with a Hebbian gradient and L2 regularization, integrated by Verlet** — so in practice the system works as a **Test-Time Training (TTT) framework**: it keeps learning as you use it, at inference time, without touching the LLM's weights. The physics analogy isn't just decorative — the equations you'd write for the physics turn out to be the optimizer update rule.
 
 Three layers stack:
 
 1. **Physics layer** (design intent) — mass, displacement, velocity, temperature, co-occurrence edges. Gravitational force, Hookean restoring force, thermal escape, Hawking evaporation.
-2. **TTT mechanism** (discovered isomorphism) — the physics *is* an online optimizer. Co-recalled memories become neighbors because Hebbian "fire together → attract" is the gradient of an objective. The L2 restoring force is the regularizer. Verlet integration is the optimizer step.
+2. **TTT mechanism** (structural correspondence) — treating retrieval scores as a stochastic gradient signal, the physics step-for-step matches an online optimizer. Co-recalled memories become neighbors because Hebbian "fire together → attract" plays the role of a gradient. The L2 restoring force plays the role of a regularizer. Verlet integration plays the role of the optimizer step.
 3. **Astrocyte layer** (emergent role) — the net behavior looks like astrocytic support tissue for your neuronal token reasoning: it pre-fires, prunes, and synchronizes while you think.
 
 ### Physics layer — Dark Matter Halo
@@ -32,7 +32,7 @@ GaOTTT's internal state (`mass`, `displacement`, `velocity`, `temperature`, co-o
 
 ### TTT mechanism — the optimizer behind the physics
 
-The equations above are an online optimizer running at inference time. The table below is the **isomorphism**, not a metaphor:
+Read as an optimizer — that is, with retrieval scores taken as a stochastic gradient signal — the equations above describe an online update running at inference time. The table below makes the **term-for-term correspondence** explicit:
 
 | Physics term | TTT / ML term |
 |---|---|
@@ -43,7 +43,7 @@ The equations above are an online optimizer running at inference time. The table
 | Gravitational wave propagation | Neighborhood gradient smoothing |
 | Hawking evaporation | Weight decay / regularization of stale params |
 
-Concretely: every `recall` is a gradient step. Every `remember` is a parameter initialization. Every `merge` is a model consolidation. The representations (the embedding-space geometry) **change as the user interacts** — that is the defining property of Test-Time Training.
+Concretely, under this reading: every `recall` plays the role of a gradient step, every `remember` a parameter initialization, every `merge` a model consolidation. The representations (the embedding-space geometry) **change as the user interacts** — which is the behavior that motivates the "test-time training" label.
 
 ### Emergent behavior — Astrocyte
 
