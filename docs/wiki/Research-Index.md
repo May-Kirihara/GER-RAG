@@ -9,6 +9,12 @@ GER-RAG の設計根拠、評価、実験レポートの目次。
 | [Multi-Agent Experiment](Research-Multi-Agent-Experiment.md) | 私側 3 エージェント並列探索（2 ラウンド） + ユーザー側との対比 |
 | [User Exploration (10 Rounds)](Research-User-Exploration-10-Rounds.md) | ユーザー側 3 エージェント 10 ラウンド探索、10 柱・統一方程式 |
 
+## 理論的考察
+
+| レポート | 内容 |
+|---|---|
+| [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md) | 重力式更新が Heavy ball SGD / Hebbian / SOM / TTT と数学的に同型である分析 |
+
 ## 設計根拠
 
 | ドキュメント | 内容 |

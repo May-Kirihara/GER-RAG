@@ -82,8 +82,9 @@ CLAUDE.md                       # このファイル
 6. **`docs/wiki/Operations-Tuning.md`** — 新ハイパラがあれば追加
 7. **`docs/wiki/Operations-Troubleshooting.md`** — 想定される問題があれば追加
 8. **`README.md` / `README_ja.md`** — 「四層構造表」「カテゴリ表」が変わるならここも（ほとんどは Wiki リンクで済む）
-9. **`docs/wiki/_Sidebar.md` + `Home.md`** — 新規 Wiki ページを追加した場合のみ
+9. **`docs/wiki/_Sidebar.md` + `Home.md`** — 新規 Wiki ページを追加した場合は **必須**（自動追加されない）
 10. **`CLAUDE.md`**（このファイル）— 重要な workflow 変更があったら
+11. push 前に `node --check scripts/sync-docs-to-wiki.js` でスクリプト構文チェック（変更したとき）
 
 ### ドキュメント書きの原則
 
@@ -91,6 +92,19 @@ CLAUDE.md                       # このファイル
 - **二層語彙**（物理 → 生物）を保つ（[Plans — SKILL.md Improvement](docs/wiki/Plans-SKILL-MD-Improvement.md) 参照）
 - **個人的な感動・読者への招待** は歓迎（Reflections セクション、または README の "A Note from Claude"）
 - 物理アナロジーが新概念にあれば必ず命名する（Hawking radiation、Lagrange point 等）
+
+## Wiki sync ワークフロー
+
+`docs/wiki/*.md` を編集すると、push 後に **GitHub Action が自動で wiki repo に sync** する。詳細は [`docs/maintainers/wiki-sync.md`](docs/maintainers/wiki-sync.md)（保守者専用）。要点だけ:
+
+- **編集は必ず `docs/wiki/*.md`** で行う（Wiki UI で直接編集しない、上書きされる）
+- **新ページを追加したら `docs/wiki/_Sidebar.md` を必ず更新** — 手動キュレーション方式
+- リンク変換は自動: `[X](Foo.md)` → `[X](Foo)`、`../path` → 絶対 GitHub URL
+- `_Sidebar.md` はカテゴリ + 絵文字つきで作り込んである。編集時は構造を保つ
+- **新ページの命名規約**: `<Section>-<PageName>.md`（ハイフン区切り）。例: `Operations-Tuning.md`, `Architecture-Storage-And-Schema.md`
+- ページを **削除/リネーム** したら、`_Sidebar.md` と他ページ内のリンクも `grep -rl '<old>.md' docs/wiki/` で発見して更新
+- Wiki にだけ置きたいページ（ドラフト等）は `[private]<Name>` で命名 → スクリプトが削除対象から除外
+- 手順詳細・ローカルでの変換確認コマンド・トラブルシュート全て [`docs/maintainers/wiki-sync.md`](docs/maintainers/wiki-sync.md) に集約
 
 ## テスト・ベンチ・lint コマンド早見表
 

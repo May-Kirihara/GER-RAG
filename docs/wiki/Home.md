@@ -13,7 +13,8 @@
 
 ### 🆕 GER-RAG を初めて知った
 
-→ [Getting Started](Getting-Started.md) でインストール〜最初の `remember` まで 5 分
+- **プログラミング経験がない or 浅い方** → 🌱 [Tutorial: はじめての方へ](Tutorial-01-Welcome.md)（6 ページのステップバイステップ、約 30〜60 分）
+- **開発者の方** → [Getting Started](Getting-Started.md)（インストール〜最初の `remember` まで 5 分）
 
 ### 🧑‍💻 GER-RAG を使いたい（個人や Claude エージェントとして）
 

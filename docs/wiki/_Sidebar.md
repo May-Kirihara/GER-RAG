@@ -5,6 +5,14 @@
 ### 🚀 Getting Started
 - [Install & First Memory](Getting-Started.md)
 
+### 🌱 Tutorial / はじめての方へ
+- [1. Welcome](Tutorial-01-Welcome.md)
+- [2. Install GER-RAG](Tutorial-02-Install-GER-RAG.md)
+- [3. Connect to Claude](Tutorial-03-Connect-To-Claude.md)
+- [4. First Conversation](Tutorial-04-First-Conversation.md)
+- [5. Everyday Use](Tutorial-05-Everyday-Use.md)
+- [6. When Stuck](Tutorial-06-When-Stuck.md)
+
 ### 📚 Guides
 - [As Long-Term Memory](Guides-Use-As-Memory.md)
 - [As Task Manager](Guides-Use-As-Task-Manager.md)
@@ -44,6 +52,7 @@
 - [Index](Research-Index.md)
 - [Multi-Agent Experiment](Research-Multi-Agent-Experiment.md)
 - [User Exploration (10 Rounds)](Research-User-Exploration-10-Rounds.md)
+- [Gravity as Optimizer (TTT)](Research-Gravity-As-Optimizer.md)
 - [Design Documents](Research-Design-Documents.md)
 - [Phase 2 Evaluation](Research-Phase-2-Evaluation.md)
 

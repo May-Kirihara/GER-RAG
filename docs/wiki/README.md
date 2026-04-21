@@ -82,6 +82,15 @@
 - 大きな変更時は `_Sidebar.md` の更新を忘れない
 - 新規 Wiki ページを追加したら `Home.md` と `_Sidebar.md` 両方に登録する
 
-### GitHub Wiki への移行
+### GitHub Wiki への自動同期
 
-将来 GitHub Wiki に移したい場合、各 `.md` ファイルをそのまま GitHub Wiki にコピーすれば動く（ファイル名がページ名になる）。`docs/wiki/` 構造は GitHub Wiki と互換的に設計されている。
+このリポジトリは GitHub Action による **自動同期** を運用中。`docs/wiki/` への push が GitHub Wiki repo に反映される。
+
+→ 保守者向け詳細: [`docs/maintainers/wiki-sync.md`](../maintainers/wiki-sync.md)
+   （リンク変換、新ページ追加・削除・リネームの手順、トラブルシュート等）
+
+### 注意点（簡易版）
+
+- **編集は `docs/wiki/*.md` で**、Wiki UI から直接編集しない（次の sync で上書きされる）
+- **新規ページ追加時は `_Sidebar.md` の更新を忘れない**（自動追加されない）
+- ページ間リンクは `[Text](Page.md)` 形式で書く（sync 時に Wiki 仕様 `[Text](Page)` に変換される）
