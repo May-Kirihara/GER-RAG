@@ -364,8 +364,21 @@ function main() {
       createOrUpdateWikiPage(file.wikiTitle, transformed, wikiDir);
     }
 
-    // サイドバーを作成
-    const sidebarContent = `# 目次
+    // サイドバーの扱い:
+    //   - docs/wiki/_Sidebar.md がソースにあれば、上の for-loop で transformWikiLinks
+    //     を通して既に書き込み済み（カテゴリ分け・絵文字・手動キュレーションを尊重）
+    //   - 無ければフラットな自動生成リストにフォールバックし、保護ページも含める
+    const hasCustomSidebar = files.some(f => f.wikiTitle === '_Sidebar');
+    if (hasCustomSidebar) {
+      console.log('\n📑 docs/wiki/_Sidebar.md を尊重します（自動生成スキップ）');
+      // 保護ページが指定されている場合は警告だけ出す
+      if (protectedPages.length > 0) {
+        console.log(`   ⚠️  保護ページ ${protectedPages.length} 個はサイドバーに自動追加されません`);
+        console.log(`      docs/wiki/_Sidebar.md に手動で追加してください:`);
+        protectedPages.forEach(p => console.log(`        - [[${p.wikiTitle}|${p.wikiTitle}]]`));
+      }
+    } else {
+      const sidebarContent = `# 目次
 
 ${files
   .filter(f => !f.relativePath?.includes('wiki-backup'))
@@ -374,7 +387,8 @@ ${files
 
 ${protectedPages.length > 0 ? `## Wiki 専用ページ\n\n${protectedPages.map(p => `- [[${p.wikiTitle}|${p.wikiTitle}]]`).join('\n')}\n` : ''}
 `;
-    createOrUpdateWikiPage('_Sidebar', sidebarContent, wikiDir);
+      createOrUpdateWikiPage('_Sidebar', sidebarContent, wikiDir);
+    }
 
     // 削除対象のページを処理
     const pagesToDelete = wikiPages
