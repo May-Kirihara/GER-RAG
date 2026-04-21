@@ -12,7 +12,7 @@ GaOTTT をゼロからインストールして、最初の `remember` と `recal
 ## 1. インストール
 
 ```bash
-git clone https://github.com/May-Kirihara/GER-RAG.git
+git clone https://github.com/May-Kirihara/GaOTTT.git
 cd GaOTTT
 uv venv .venv --python 3.12
 uv pip install -e ".[dev]"

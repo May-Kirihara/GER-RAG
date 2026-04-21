@@ -52,7 +52,7 @@ source $HOME/.cargo/env
 
 - **インターネットが切れた** → 接続を確認して再実行
 - **ディスク容量不足** → 4GB 以上空いているか確認
-- **権限エラー** → `~/GER-RAG` フォルダにいることを `pwd` で確認
+- **権限エラー** → `~/GaOTTT` フォルダにいることを `pwd` で確認
 
 それでもダメなら、エラー全文を Claude に見せて聞いてください。
 
@@ -86,7 +86,7 @@ source $HOME/.cargo/env
 
 ```bash
 # 設定ファイルに書いた command のパスが本当にあるか:
-ls /Users/あなたのユーザー名/GER-RAG/.venv/bin/python
+ls /Users/あなたのユーザー名/GaOTTT/.venv/bin/python
 ```
 
 ファイルが見つかれば OK。`No such file or directory` なら、パスが間違っているか、Tutorial-02 のインストールが完了していません。
@@ -100,7 +100,7 @@ ls /Users/あなたのユーザー名/GER-RAG/.venv/bin/python
 GaOTTT 自体の起動でコケています。手動で起動してエラーを見ましょう:
 
 ```bash
-cd ~/GER-RAG
+cd ~/GaOTTT
 .venv/bin/python -m gaottt.server.mcp_server
 ```
 
@@ -165,7 +165,7 @@ rm -rf ~/.local/share/gaottt/   # 記憶データ
 ## それでも詰まったら
 
 - **エラー全文を Claude に貼って聞く** — 最強の手段
-- リポジトリの Issue を見る: https://github.com/May-Kirihara/GER-RAG/issues
+- リポジトリの Issue を見る: https://github.com/May-Kirihara/GaOTTT/issues
 - 新しい問題なら Issue を立てる（エラー全文・OS・実行したコマンドを書く）
 
 ---

@@ -79,9 +79,9 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 {
   "mcpServers": {
     "gaottt": {
-      "command": "/path/to/GER-RAG/.venv/bin/python",
+      "command": "/path/to/GaOTTT/.venv/bin/python",
       "args": ["-m", "gaottt.server.mcp_server"],
-      "cwd": "/path/to/GER-RAG"
+      "cwd": "/path/to/GaOTTT"
     }
   }
 }
@@ -97,7 +97,7 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
     "gaottt": {
       "type": "local",
       "command": [
-        "/path/to/GER-RAG/.venv/bin/python",
+        "/path/to/GaOTTT/.venv/bin/python",
         "-m",
         "gaottt.server.mcp_server"
       ]
@@ -114,8 +114,10 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 | OS | データディレクトリ | 設定ファイル |
 |---|---|---|
-| Linux/macOS | `~/.local/share/gaottt/` | `~/.config/ger-rag/config.json` |
-| Windows | `%LOCALAPPDATA%\ger-rag\` | `%APPDATA%\ger-rag\config.json` |
+| Linux/macOS | `~/.local/share/gaottt/` | `~/.config/gaottt/config.json` |
+| Windows | `%LOCALAPPDATA%\gaottt\` | `%APPDATA%\gaottt\config.json` |
+
+旧名 GER-RAG 時代の `~/.local/share/ger-rag/` や `~/.config/ger-rag/` に既存データがあれば、`gaottt/config.py` の互換レイヤが自動検出して使用する（deprecation 警告を出力）。移行するなら `scripts/migrate-from-ger-rag.sh` を走らせる。
 
 カスタマイズ:
 ```bash

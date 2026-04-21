@@ -106,22 +106,22 @@ GaOTTT のソースコードを、自分のパソコンに持ってきます。
 
 ```bash
 cd ~
-git clone https://github.com/May-Kirihara/GER-RAG
-cd GER-RAG
+git clone https://github.com/May-Kirihara/GaOTTT
+cd GaOTTT
 ```
 
 > 💡 `git` も入ってない場合: Mac は `xcode-select --install`、Windows は https://git-scm.com/download/win から入れてください。
 >
-> 📝 上記 URL は改名前のものですが、GitHub が自動でリダイレクトしてくれるので問題ありません。
+> 📝 旧 URL (`.../GER-RAG`) も GitHub のリダイレクトで届きますが、clone 時のフォルダ名は `GER-RAG` になるので、以降の手順は適宜読み替えてください。
 
 ### こう見えたら成功 ✅
 
 ```
-$ cd GER-RAG
-GER-RAG $
+$ cd GaOTTT
+GaOTTT $
 ```
 
-ターミナルの先頭が `GER-RAG` っぽい表示になれば、フォルダの中に入れています（フォルダ名は近日中に GaOTTT に変わる予定）。
+ターミナルの先頭が `GaOTTT` っぽい表示になれば、フォルダの中に入れています。
 
 ---
 
@@ -173,8 +173,8 @@ GaOTTT is ready!
 
 ### 💡 何が起きたか（興味があれば）
 
-- `~/GER-RAG` フォルダに、GaOTTT 一式が入りました（フォルダ名は `GaOTTT` に変わる予定）
+- `~/GaOTTT` フォルダに、GaOTTT 一式が入りました
 - `.venv` フォルダの中に、GaOTTT だけが使う Python 環境ができました（あなたのパソコン全体に影響しません）
 - 初回のインストールで、約 1〜2GB のファイルがダウンロードされています
 
-不要になったら `~/GER-RAG` フォルダを丸ごと削除すれば、すべて綺麗に消えます。
+不要になったら `~/GaOTTT` フォルダを丸ごと削除すれば、すべて綺麗に消えます。

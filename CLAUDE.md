@@ -1,8 +1,8 @@
 # GaOTTT Development Guidelines
 
-*(formerly GER-RAG — 改名プロジェクト Session 2 進行中、`/mnt/holyland/Project/GER-RAG/` のパスは Phase R10 まで残る)*
+*(formerly GER-RAG — 改名プロジェクト完了: Phase R0-R11、2026-04-21)*
 
-Last updated: 2026-04-21 (Phase R4 — SKILL/CLAUDE rename)
+Last updated: 2026-04-21 (Phase R11 — rename complete)
 
 GaOTTT = **Gravity as Optimizer, Test-Time Training**。物理として設計した重力・軌道力学の更新則が、たまたま Heavy ball SGD + Hebbian gradient + L2 の Verlet 積分と数学的に同型だと判明した。つまり **物理の衣を着た TTT オプティマイザ**。その上に共有時のアストロサイト的協調と Phase D の人格保存基盤が積み上がっている。詳細思想は [`docs/wiki/Reflections-Five-Layer-Philosophy.md`](docs/wiki/Reflections-Five-Layer-Philosophy.md)（物理 → 生物 → TTT 機構 → 関係 → 人格の五層）。
 
@@ -61,7 +61,7 @@ CLAUDE.md                       # このファイル
    - `tests/integration/test_mcp_phase_d.py` の形式で MCP round-trip
 5. **検証**:
    ```bash
-   /mnt/holyland/Project/GER-RAG/.venv/bin/python -m pytest tests/ -q
+   .venv/bin/python -m pytest tests/ -q
    ruff check gaottt/ tests/
    ```
 6. **ベンチマーク（破壊的変更や hot path 触ったとき）**:
@@ -112,7 +112,7 @@ CLAUDE.md                       # このファイル
 
 ```bash
 # 単体 + 統合テスト
-/mnt/holyland/Project/GER-RAG/.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest tests/ -q
 
 # 特定ファイル
 .venv/bin/python -m pytest tests/integration/test_mcp_phase_d.py -x -v

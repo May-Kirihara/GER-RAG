@@ -54,9 +54,9 @@ The bottom layer is physics (design intent). TTT is the first emergence (discove
 ## Quick Start
 
 ```bash
-# Install (repository rename to May-Kirihara/GaOTTT is in progress;
-# the old URL will continue to redirect via GitHub's rename facility)
-git clone https://github.com/May-Kirihara/GER-RAG.git && cd GER-RAG
+# Install (the old URL May-Kirihara/GER-RAG.git still redirects to
+# May-Kirihara/GaOTTT.git via GitHub's rename facility)
+git clone https://github.com/May-Kirihara/GaOTTT.git && cd GaOTTT
 uv venv .venv --python 3.12
 uv pip install -e ".[dev]"
 

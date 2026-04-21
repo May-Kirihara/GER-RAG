@@ -129,7 +129,7 @@ async def test_depend_blocking_uses_blocked_by(engine_singleton):
 async def test_declare_value_intention_commitment_chain(engine_singleton):
     v = _extract_id(await srv.declare_value(content="Direct experience yields true understanding"))
     i_msg = await srv.declare_intention(
-        content="Build GER-RAG into a relationship infrastructure", parent_value_id=v,
+        content="Build GaOTTT into a relationship infrastructure", parent_value_id=v,
     )
     assert "derived_from" in i_msg
     i = _extract_id(i_msg)
@@ -191,7 +191,7 @@ async def test_reflect_commitments_sorts_by_deadline(engine_singleton):
 
 async def test_reflect_relationships_groups_by_who(engine_singleton, monkeypatch):
     # remember(source="relationship:alice") and "relationship:bob"
-    await srv.remember(content="alice gave me the GER-RAG idea", source="relationship:alice")
+    await srv.remember(content="alice gave me the GaOTTT idea", source="relationship:alice")
     await srv.remember(content="alice is Phase D's first user", source="relationship:alice")
     await srv.remember(content="bob suggested the prefetch pattern", source="relationship:bob")
 

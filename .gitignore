@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# GER-RAG specific
+# GaOTTT specific (formerly GER-RAG; legacy ger_rag_3d.html still ignored)
 *.db
 *.db-wal
 *.db-shm
@@ -218,4 +218,5 @@ input/documents.csv
 .mcp.json
 .specify
 .claude
+gaottt_3d.html
 ger_rag_3d.html
