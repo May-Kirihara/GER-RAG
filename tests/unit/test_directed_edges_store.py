@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from ger_rag.core.types import DirectedEdge
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.core.types import DirectedEdge
+from gaottt.store.sqlite_store import SqliteStore
 
 
 @pytest.fixture

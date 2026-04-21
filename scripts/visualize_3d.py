@@ -22,10 +22,10 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ger_rag.config import GERConfig
-from ger_rag.core.gravity import compute_virtual_position
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.gravity import compute_virtual_position
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.sqlite_store import SqliteStore
 
 
 # -----------------------------------------------------------------------
@@ -87,7 +87,7 @@ def reduce_to_3d(vectors: np.ndarray, method: str = "pca") -> np.ndarray:
         return PCA(n_components=3).fit_transform(vectors)
 
 
-async def load_data(config: GERConfig):
+async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
 
@@ -131,7 +131,7 @@ def compute_bh_centroids_3d(
     coords_3d: np.ndarray,
     cooccurrence_neighbors: dict[str, dict[str, float]],
     masses: np.ndarray,
-    config: GERConfig,
+    config: GaOTTTConfig,
 ) -> list[dict]:
     """Compute BH centroid positions in 3D space for visualization.
 
@@ -556,7 +556,7 @@ def main():
                         help="Side-by-side: original vs virtual coordinates")
     args = parser.parse_args()
 
-    config = GERConfig.from_config_file()
+    config = GaOTTTConfig.from_config_file()
 
     print("Loading data...")
     vectors, ids, state_map, doc_map, edges, displacements, velocities, cooc_neighbors = asyncio.run(load_data(config))

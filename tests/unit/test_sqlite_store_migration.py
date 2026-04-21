@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.store.sqlite_store import SqliteStore
 
 
 def _create_legacy_db(path: Path) -> None:

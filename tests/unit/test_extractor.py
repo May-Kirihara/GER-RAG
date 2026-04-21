@@ -1,4 +1,4 @@
-from ger_rag.core.extractor import extract_candidates
+from gaottt.core.extractor import extract_candidates
 
 
 def test_returns_empty_for_noise_only():

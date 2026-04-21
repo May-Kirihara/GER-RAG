@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from ger_rag.core.prefetch import PrefetchCache, PrefetchPool
+from gaottt.core.prefetch import PrefetchCache, PrefetchPool
 
 
 # --- PrefetchCache ---

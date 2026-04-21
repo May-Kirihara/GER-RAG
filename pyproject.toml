@@ -1,7 +1,7 @@
 [project]
-name = "ger-rag"
+name = "gaottt"
 version = "0.1.0"
-description = "Gravity-Based Event-Driven RAG with dynamic scoring"
+description = "Gravity as Optimizer Test-Time Training — gravity-based long-term memory that turned out to be a TTT framework (formerly GER-RAG)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

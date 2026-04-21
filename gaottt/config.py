@@ -70,7 +70,7 @@ def _default_data_dir() -> str:
 
 
 @dataclass
-class GERConfig:
+class GaOTTTConfig:
     # Embedding
     model_name: str = "cl-nagoya/ruri-v3-310m"
     embedding_dim: int = 768
@@ -171,8 +171,8 @@ class GERConfig:
             self.faiss_index_path = os.path.join(self.data_dir, "ger_rag.faiss")
 
     @classmethod
-    def from_config_file(cls) -> "GERConfig":
-        """Create GERConfig with overrides from config.json."""
+    def from_config_file(cls) -> "GaOTTTConfig":
+        """Create GaOTTTConfig with overrides from config.json."""
         file_conf = _load_config_file()
         valid_fields = {f.name for f in fields(cls)}
         overrides = {k: v for k, v in file_conf.items() if k in valid_fields}

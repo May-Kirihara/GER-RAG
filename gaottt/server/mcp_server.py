@@ -22,32 +22,32 @@ from pathlib import Path
 import numpy as np
 from mcp.server.fastmcp import FastMCP
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.core.extractor import extract_candidates
-from ger_rag.embedding.ruri import RuriEmbedder
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.ingest.loader import ingest_path
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.core.extractor import extract_candidates
+from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.ingest.loader import ingest_path
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Engine singleton ---
 
-_engine: GEREngine | None = None
+_engine: GaOTTTEngine | None = None
 _engine_lock = asyncio.Lock()
 
 
-async def get_engine() -> GEREngine:
+async def get_engine() -> GaOTTTEngine:
     global _engine
     if _engine is not None:
         return _engine
     async with _engine_lock:
         if _engine is not None:
             return _engine
-        config = GERConfig.from_config_file()
+        config = GaOTTTConfig.from_config_file()
         logger.info("Initializing GER-RAG engine for MCP server...")
         embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
         faiss_index = FaissIndex(dimension=config.embedding_dim)
@@ -56,7 +56,7 @@ async def get_engine() -> GEREngine:
             flush_interval=config.flush_interval_seconds,
             flush_threshold=config.flush_threshold,
         )
-        engine = GEREngine(
+        engine = GaOTTTEngine(
             config=config, embedder=embedder, faiss_index=faiss_index,
             cache=cache, store=store,
         )

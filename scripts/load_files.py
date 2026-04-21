@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-from ger_rag.ingest.loader import ingest_path
+from gaottt.ingest.loader import ingest_path
 
 DEFAULT_URL = "http://localhost:8000"
 DEFAULT_BATCH = 50

@@ -6,8 +6,8 @@ import time
 
 import numpy as np
 
-from ger_rag.core.types import CooccurrenceEdge, NodeState
-from ger_rag.store.base import StoreBase
+from gaottt.core.types import CooccurrenceEdge, NodeState
+from gaottt.store.base import StoreBase
 
 logger = logging.getLogger(__name__)
 

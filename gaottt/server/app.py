@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.core.types import (
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.core.types import (
     GraphResponse,
     IndexedDoc,
     IndexRequest,
@@ -17,10 +17,10 @@ from ger_rag.core.types import (
     QueryResponse,
     ResetResponse,
 )
-from ger_rag.embedding.ruri import RuriEmbedder
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    config = GERConfig.from_config_file()
+    config = GaOTTTConfig.from_config_file()
 
     logger.info("Loading embedding model: %s", config.model_name)
     embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
         flush_threshold=config.flush_threshold,
     )
 
-    engine = GEREngine(
+    engine = GaOTTTEngine(
         config=config,
         embedder=embedder,
         faiss_index=faiss_index,
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GER-RAG", version="0.1.0", lifespan=lifespan)
 
 
-def _get_engine() -> GEREngine:
+def _get_engine() -> GaOTTTEngine:
     return app.state.engine
 
 

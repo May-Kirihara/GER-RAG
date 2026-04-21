@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from ger_rag.core.types import CooccurrenceEdge, NodeState
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.core.types import CooccurrenceEdge, NodeState
+from gaottt.store.sqlite_store import SqliteStore
 
 
 @pytest.fixture

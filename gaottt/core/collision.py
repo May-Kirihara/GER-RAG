@@ -19,9 +19,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ger_rag.config import GERConfig
-from ger_rag.core.types import NodeState
-from ger_rag.store.cache import CacheLayer
+from gaottt.config import GaOTTTConfig
+from gaottt.core.types import NodeState
+from gaottt.store.cache import CacheLayer
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def merge_pair(
     survivor: NodeState,
     absorbed: NodeState,
     cache: CacheLayer,
-    config: GERConfig,
+    config: GaOTTTConfig,
     now: float | None = None,
 ) -> MergeOutcome:
     """Apply the collision mechanics in-place against the cache.

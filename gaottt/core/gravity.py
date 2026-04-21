@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
-    from ger_rag.index.faiss_index import FaissIndex
-    from ger_rag.store.cache import CacheLayer
+    from gaottt.index.faiss_index import FaissIndex
+    from gaottt.store.cache import CacheLayer
 
-from ger_rag.config import GERConfig
+from gaottt.config import GaOTTTConfig
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def compute_bh_acceleration(
     temperature_i: float,
     cache: "CacheLayer",
     all_positions: dict[str, np.ndarray],
-    config: GERConfig,
+    config: GaOTTTConfig,
 ) -> np.ndarray:
     """Compute gravitational acceleration from co-occurrence cluster black hole.
 
@@ -120,7 +120,7 @@ def compute_acceleration(
     original_pos_i: np.ndarray,
     displacement_i: np.ndarray,
     neighbors: list[tuple[np.ndarray, float]],
-    config: GERConfig,
+    config: GaOTTTConfig,
     node_id: str | None = None,
     cache: "CacheLayer | None" = None,
     all_positions: dict[str, np.ndarray] | None = None,
@@ -160,7 +160,7 @@ def update_velocity(
     acceleration: np.ndarray,
     last_access: float,
     now: float,
-    config: GERConfig,
+    config: GaOTTTConfig,
 ) -> np.ndarray:
     """Update velocity: v += a*dt, apply friction, clamp.
 
@@ -193,7 +193,7 @@ def update_orbital_state(
     masses: dict[str, float],
     last_accesses: dict[str, float],
     now: float,
-    config: GERConfig,
+    config: GaOTTTConfig,
     cache: "CacheLayer | None" = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Full orbital mechanics step for all nodes.
@@ -261,7 +261,7 @@ def update_orbital_state(
 
 def compute_gravitational_force(
     pos_i: np.ndarray, pos_j: np.ndarray,
-    mass_i: float, mass_j: float, config: GERConfig,
+    mass_i: float, mass_j: float, config: GaOTTTConfig,
 ) -> np.ndarray:
     """Legacy: compute force vector (used by old displacement-only model)."""
     diff = pos_j - pos_i
@@ -290,7 +290,7 @@ def propagate_gravity_wave(
     query_vector: np.ndarray,
     faiss_index: "FaissIndex",
     cache: "CacheLayer",
-    config: GERConfig,
+    config: GaOTTTConfig,
     wave_k: int | None = None,
     wave_depth: int | None = None,
 ) -> dict[str, float]:

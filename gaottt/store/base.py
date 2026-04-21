@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 
-from ger_rag.core.types import CooccurrenceEdge, DirectedEdge, NodeState
+from gaottt.core.types import CooccurrenceEdge, DirectedEdge, NodeState
 
 
 class StoreBase(ABC):
