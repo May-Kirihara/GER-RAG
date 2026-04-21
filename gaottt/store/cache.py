@@ -172,13 +172,19 @@ class CacheLayer:
 
         if self.dirty_edges:
             dirty_edge_list: list[CooccurrenceEdge] = []
+            removed_pairs: list[tuple[str, str]] = []
             for src, dst in self.dirty_edges:
-                weight = self.graph_cache.get(src, {}).get(dst, 0.0)
-                dirty_edge_list.append(
-                    CooccurrenceEdge(src=src, dst=dst, weight=weight, last_update=time.time())
-                )
+                if dst in self.graph_cache.get(src, {}):
+                    weight = self.graph_cache[src][dst]
+                    dirty_edge_list.append(
+                        CooccurrenceEdge(src=src, dst=dst, weight=weight, last_update=time.time())
+                    )
+                else:
+                    removed_pairs.append((src, dst))
             if dirty_edge_list:
                 await store.save_edges(dirty_edge_list)
+            if removed_pairs:
+                await store.delete_edges(removed_pairs)
             self.dirty_edges.clear()
 
     # --- Write-behind background task ---
@@ -187,7 +193,12 @@ class CacheLayer:
         while True:
             await asyncio.sleep(self._flush_interval)
             try:
-                if self.dirty_nodes or self.dirty_edges:
+                if (
+                    self.dirty_nodes
+                    or self.dirty_edges
+                    or self.dirty_displacements
+                    or self.dirty_velocities
+                ):
                     await self.flush_to_store(store)
             except Exception:
                 logger.exception("Write-behind flush failed")

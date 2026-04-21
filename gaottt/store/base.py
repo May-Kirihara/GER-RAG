@@ -47,6 +47,15 @@ class StoreBase(ABC):
         ...
 
     @abstractmethod
+    async def delete_edges(self, pairs: list[tuple[str, str]]) -> int:
+        """Physically remove co-occurrence edges by (src, dst) pairs.
+
+        Matches are made on the normalized ordering (min, max) as stored
+        by save_edges. Returns the number of rows deleted.
+        """
+        ...
+
+    @abstractmethod
     async def get_all_edges(self) -> list[CooccurrenceEdge]:
         """Get all edges."""
         ...

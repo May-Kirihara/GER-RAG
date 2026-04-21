@@ -18,16 +18,6 @@ def compute_temp_noise(temperature: float) -> float:
     return random.gauss(0.0, temperature)
 
 
-def compute_final_score(
-    raw_score: float,
-    mass_boost: float,
-    decay: float,
-    temp_noise: float,
-    graph_boost: float,
-) -> float:
-    return raw_score * decay + mass_boost + temp_noise + graph_boost
-
-
 def compute_emotion_boost(
     emotion_weight: float,
     alpha: float,

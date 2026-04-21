@@ -246,6 +246,20 @@ class SqliteStore(StoreBase):
         )
         await self._conn.commit()
 
+    async def delete_edges(self, pairs: list[tuple[str, str]]) -> int:
+        assert self._conn is not None
+        if not pairs:
+            return 0
+        normalized = [(min(a, b), max(a, b)) for a, b in pairs]
+        total = 0
+        for src, dst in normalized:
+            cursor = await self._conn.execute(
+                "DELETE FROM edges WHERE src = ? AND dst = ?", (src, dst),
+            )
+            total += cursor.rowcount or 0
+        await self._conn.commit()
+        return total
+
     async def get_edges_for_node(self, node_id: str) -> list[CooccurrenceEdge]:
         assert self._conn is not None
         cursor = await self._conn.execute(

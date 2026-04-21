@@ -18,24 +18,10 @@ class CooccurrenceGraph:
         for id_a, id_b in combinations(result_ids, 2):
             key = (min(id_a, id_b), max(id_a, id_b))
             self._cooccurrence_counts[key] += 1
-            if self._cooccurrence_counts[key] >= self._config.edge_threshold:
-                current_weight = self._cache.get_neighbors(key[0]).get(key[1], 0.0)
-                new_weight = current_weight + 1.0
-                self._cache.set_edge(key[0], key[1], new_weight)
-
-    def compute_graph_boost(
-        self,
-        node_id: str,
-        candidate_scores: dict[str, float],
-    ) -> float:
-        neighbors = self._cache.get_neighbors(node_id)
-        if not neighbors:
-            return 0.0
-        boost = 0.0
-        for neighbor_id, weight in neighbors.items():
-            if neighbor_id in candidate_scores:
-                boost += weight * candidate_scores[neighbor_id]
-        return self._config.rho * boost
+            current_weight = self._cache.get_neighbors(key[0]).get(key[1], 0.0)
+            edge_exists = current_weight > 0.0
+            if edge_exists or self._cooccurrence_counts[key] >= self._config.edge_threshold:
+                self._cache.set_edge(key[0], key[1], current_weight + 1.0)
 
     def decay_and_prune(self) -> None:
         all_edges = self._cache.get_all_edges()
