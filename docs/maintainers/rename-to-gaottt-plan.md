@@ -13,10 +13,10 @@
 - ✅ Phase R5: README.md + README_ja.md（tag: `phase-r5-complete`）
 - ✅ Phase R6: Wiki ページ群 + Five-Layer Philosophy（tag: `phase-r6-complete`）
 - ✅ Phase R7: 旧 docs redirect の更新 + Tutorial-02 ファイル名改名（tag: `phase-r7-complete`）
-- ⏳ Phase R8: Maintainers ドキュメント（Session 3、進行中）
-- ⏳ Phase R9: 最終検証 + 隔離ベンチ（Session 3）
-- ⏳ Phase R10: GitHub repo + ローカル mv（Session 3、ユーザー操作含む）
-- ⏳ Phase R11: Claude memory 移行（新セッション内）
+- ✅ Phase R8: Maintainers ドキュメント（tag: `phase-r8-complete`）
+- ✅ Phase R9: 最終検証 + 隔離ベンチ 7/7、p50=15.4ms（tag: `phase-r9-complete`）
+- 🧑 Phase R10: GitHub repo + ローカル mv（**ユーザー操作待ち** — 手順は下記 §4.Phase-R10）
+- 🧑 Phase R11: Claude memory 移行（**ユーザーによる新セッション内で実施**）
 
 ## 0.1 ユーザー決定事項（2026-04-21 確定）
 
