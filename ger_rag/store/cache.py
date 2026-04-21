@@ -94,22 +94,48 @@ class CacheLayer:
 
     async def load_from_store(self, store: StoreBase) -> None:
         states = await store.get_all_node_states()
+        archived_ids: set[str] = set()
         for s in states:
+            if s.is_archived:
+                archived_ids.add(s.id)
+                continue
             self.node_cache[s.id] = s
 
         edges = await store.get_all_edges()
+        loaded_edges = 0
         for e in edges:
+            if e.src in archived_ids or e.dst in archived_ids:
+                continue
             self.graph_cache.setdefault(e.src, {})[e.dst] = e.weight
             self.graph_cache.setdefault(e.dst, {})[e.src] = e.weight
+            loaded_edges += 1
 
         self.displacement_cache = await store.load_displacements()
         self.velocity_cache = await store.load_velocities()
 
         logger.info(
-            "Cache loaded: %d nodes, %d edges, %d displacements, %d velocities",
-            len(self.node_cache), len(edges),
+            "Cache loaded: %d active nodes (%d archived skipped), %d edges, %d displacements, %d velocities",
+            len(self.node_cache), len(archived_ids), loaded_edges,
             len(self.displacement_cache), len(self.velocity_cache),
         )
+
+    # --- Archive (F4 + F5) ---
+
+    def evict_node(self, node_id: str) -> None:
+        """Drop a node and its associated state from the in-memory cache.
+
+        Used when a node is archived or deleted; the canonical state still
+        lives in the store (or is removed there separately for hard delete).
+        """
+        self.node_cache.pop(node_id, None)
+        self.displacement_cache.pop(node_id, None)
+        self.velocity_cache.pop(node_id, None)
+        self.dirty_nodes.discard(node_id)
+        self.dirty_displacements.discard(node_id)
+        self.dirty_velocities.discard(node_id)
+        neighbors = self.graph_cache.pop(node_id, {})
+        for other in neighbors:
+            self.graph_cache.get(other, {}).pop(node_id, None)
 
     # --- Flush to store ---
 

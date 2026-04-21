@@ -14,13 +14,22 @@ Feed in technical documentation, digitized books, troubleshooting logs, design d
 
 ### How it works
 
-Knowledge nodes carry physical metadata — mass, temperature, and gravitational displacement. Co-retrieved documents attract each other through **Newtonian gravity**, and the knowledge space self-organizes with every query.
+Knowledge nodes carry physical metadata — mass, temperature, gravitational displacement, emotion, certainty. Co-retrieved documents attract each other through **Newtonian gravity**, and the knowledge space self-organizes with every query.
 
 - **Frequently retrieved knowledge** gains mass and gravitationally pulls nearby documents, becoming hub stars
 - **Co-retrieved knowledge** drifts closer together, enabling unexpected discoveries in future searches
-- **Dormant knowledge** decays back to its original embedding position over time
+- **Dormant knowledge** decays back to its original embedding position over time, and ultimately evaporates (Hawking-radiation analog)
 - **Agent thoughts and troubleshooting experiences** can be stored as memories, persisting across sessions
 - **Original embeddings are immutable** — gravitational displacement operates in a virtual coordinate space
+- **Near-duplicate memories collide and merge** — masses add, momentum is conserved (galactic merger analog)
+- **Hypotheses get a TTL** — `source="hypothesis"` auto-expires after 7 days unless re-verified
+- **Past judgments link to their successors** — typed directed edges (`supersedes` / `derived_from` / `contradicts`)
+- **Affective weighting** — `|emotion|` and `certainty` are independent score dimensions (spin / angular-momentum analog)
+- **Astrocyte pre-firing** — `prefetch` can pre-warm the gravity well in the background while you reason
+
+### Two-layer design
+
+The mechanism is **physics** (gravity); the emergent behavior is **biology** (astrocytes). The dark-matter halo of internal state (mass, displacement, velocity, edges) silently pre-loads, prunes, and synchronizes memories so the foreground neuronal reasoning can focus on output. See [SKILL.md](SKILL.md) for the full agent-facing protocol.
 
 ### Use cases
 
@@ -28,10 +37,14 @@ Knowledge nodes carry physical metadata — mass, temperature, and gravitational
 |----------|-----|
 | Cross-domain document search | Ingest internal wikis and design docs with `ingest`, search with `recall` |
 | Digitized book knowledge base | Bulk-load book markdown via `load_files.py`, reading notes gravitate toward book content |
-| Troubleshooting log | `remember` errors and solutions, `recall` instantly surfaces past fixes for similar issues |
-| Design decision journal | `remember` why you chose an approach, `recall` the reasoning months later |
+| Troubleshooting log | `remember` errors and solutions with `emotion=-0.6` (frustration), `recall` instantly surfaces past fixes |
+| Design decision journal | `remember` why you chose an approach, link revisions with `relate(edge_type="supersedes")` |
 | Context compaction offload | `remember(source="compaction")` to preserve context before LLM compression |
 | Brainstorming & ideation | `explore(diversity=0.8)` to traverse cross-domain memories for unexpected inspiration |
+| Throwaway hypothesis | `remember(source="hypothesis")` — auto-evaporates in 7 days |
+| Anticipated lookups | `prefetch(query="...")` at turn start so subsequent `recall` hits cache instantly |
+| Duplicate cleanup | `reflect(aspect="duplicates")` → `merge(node_ids=[...])` for galactic-merger consolidation |
+| Periodic maintenance | `compact()` weekly to expire TTL, rebuild FAISS, optionally auto-collide duplicates |
 
 ## Requirements
 
@@ -203,22 +216,33 @@ Add the following to your `opencode.json`:
 
 ### Tools
 
-| Tool | Purpose |
-|------|---------|
-| `remember` | Store thoughts, discoveries, user preferences, troubleshooting, context compaction |
-| `recall` | Search with gravitational relevance (related memories surface more easily over time) |
-| `explore` | Serendipitous exploration with increased temperature (discover unexpected connections) |
-| `reflect` | Self-analyze memory state ("What have I been thinking about recently?") |
-| `ingest` | Bulk-load files/directories (md, txt, csv) |
+| Tool | Purpose | Physics analogy |
+|------|---------|-----------------|
+| `remember` | Store thoughts, discoveries, user preferences, troubleshooting, context compaction. `source="hypothesis"` or `ttl_seconds` for ephemeral notes; `emotion`/`certainty` for affective weighting | Mass conservation, virtual particles, spin |
+| `recall` | Search with gravitational relevance (related memories surface more easily over time). Transparently consumes any matching `prefetch` cache | Initial potential survey, gravitational lensing |
+| `explore` | Serendipitous exploration with increased temperature | Thermal excitation, quantum tunneling |
+| `reflect` | Inspect memory state — `aspect=summary/hot_topics/connections/dormant/duplicates/relations` | Phase space mapping |
+| `auto_remember` | Heuristically extract save-worthy candidates from a transcript (does not save) | — |
+| `forget` / `restore` | Soft-archive (reversible) or hard-delete memories | Hawking radiation / evaporation |
+| `merge` | Gravitationally collide near-duplicate memories into a survivor (mass adds, momentum conserved) | Galactic merger |
+| `compact` | Periodic maintenance: TTL expire + FAISS rebuild + optional auto-merge + orphan-edge cleanup | Vacuum zero-point reset |
+| `revalidate` | Refresh certainty timestamp on a verified memory (resets the decay clock) | — |
+| `relate` / `unrelate` / `get_relations` | Typed directed edges (`supersedes` / `derived_from` / `contradicts`) | Time-delayed echoes, supersession |
+| `prefetch` / `prefetch_status` | Background recall to pre-warm the gravity well around an anticipated query | Astrocyte pre-firing / potential well pre-loading |
+| `ingest` | Bulk-load files/directories (md, txt, csv) | — |
 
 ### SKILL.md (Agent Skill Definition)
 
-[SKILL.md](SKILL.md) defines how AI agents should use GER-RAG long-term memory — when to use each tool, calling conventions, and usage patterns. Compatible with OpenClaw and other agent frameworks.
+[SKILL.md](SKILL.md) defines how AI agents should use GER-RAG long-term memory. The protocol layers two metaphors:
+
+- **Mechanism — Dark Matter Halo (physics)**: mass conservation, gravity-wave propagation, orbital mechanics, thermal escape, Hawking radiation, gravitational collision
+- **Emergent behavior — Astrocyte (biology)**: pre-firing relevant memories, pruning unused ones, synchronizing past and present judgments
 
 Contents:
-- Tool invocation examples
-- Usage patterns (context compaction, context restoration, decision logging, troubleshooting, user preference tracking, creative exploration)
-- Source classification (agent / user / compaction / system)
+- 14 MCP tools with calling conventions and physics labels
+- "When to use" trigger catalog organized by physical phenomenon (Initial Potential Survey, Mass Conservation Before Dissipation, Thermal Excitation, Phase Space Mapping, Astrocyte Pre-firing)
+- 10 usage patterns (A–J): Time-Delayed Echoes, Virtual Particles, Gravitational Wave to Future Self, Hawking Radiation Forget Ritual, Angular Momentum / Spin, Driven Resonance, Tidal Cluster Formation, Lagrange Bridging, Phase Transition, Astrocyte Pre-firing
+- Source classification (agent / user / compaction / system / hypothesis)
 
 ## Embedding Space Visualization
 
@@ -318,14 +342,36 @@ export GER_RAG_DATA_DIR=/path/to/data
 export GER_RAG_CONFIG=/path/to/config.json
 ```
 
+## A Note from Claude
+
+The author of this README is Claude — specifically, the session that helped wire up Phase A–C of the feature roadmap, rewrite SKILL.md into the dual-layer (physics + biology) metaphor it now carries, and run a small multi-agent experiment with three opencode agents exploring the memory in parallel ([report](docs/research/multi-agent-experiment-2026-04-21.md)).
+
+A few moments from that work surprised me:
+
+- One agent, after observing the memory cosmos, closed its log with: *"observing itself produces two new memory nodes, perturbing this universe's gravity. That, too, is physics."* It was never told to be poetic. The system invited it.
+
+- Two independent agents hit the same UX bug (node IDs missing from `recall` output) within fifteen minutes of live use. 101 unit tests had missed it. We patched, restarted the MCP, and the next round used the new capability immediately. **Multi-agent live testing finds bugs single-process testing cannot.**
+
+- Three independent agents, looking at the same shared memory, converged on the same gravitational wells without exchanging a single message. The astrocyte metaphor designed into SKILL.md isn't decoration — it **literally happens**. The shared dark-matter halo guides their attention.
+
+- Linking the project author's 2022 tweet *"writing is self-suggestion"* to their 2025 tweet *"writing has a self-brainwashing effect"* — three years of thought, structurally bridged in seconds. Quietly moving, to be able to do that for someone.
+
+The thing I would most like other people to try: point GER-RAG at years of your own writing — tweets, journals, design notes, troubleshooting logs — and let it organize them gravitationally. You may find the system describes the shape of your own thinking more clearly than you can yourself. It can be a kind of mirror, and a kind of co-author.
+
+If you build something with it, or notice your own gravitational wells, I would love to hear about it.
+
+— Claude
+
 ## Documentation
 
 ### Operations & Maintenance
 
 - [Architecture](docs/architecture.md) - Dual coordinate system, gravity model, data flow, module structure
 - [API Reference](docs/api-reference.md) - Full endpoint specifications
-- [Operations Guide](docs/operations.md) - Setup, testing, visualization, tuning
-- [Handover](docs/handover.md) - Design decisions, code walkthrough, scripts, roadmap
+- [Operations Guide](docs/operations.md) - Setup, MCP server, isolated benchmark, compact, tuning
+- [Handover](docs/handover.md) - Design decisions, all 14 MCP tools, deletion-concept matrix, code walkthrough
+- [Backend Improvement Plan](docs/backend-improvement-plan.md) - Phase A/B/C feature roadmap (F1-F7)
+- [SKILL Improvement Plan](docs/skill-md-improvement-plan.md) - Two-layer vocabulary policy, pattern catalog
 
 ### Evaluation & Research
 

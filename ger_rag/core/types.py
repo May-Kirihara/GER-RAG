@@ -13,6 +13,14 @@ class NodeState(BaseModel):
     last_access: float = Field(default_factory=time.time)
     sim_history: list[float] = Field(default_factory=list)
     return_count: float = 0.0
+    expires_at: float | None = None
+    is_archived: bool = False
+    merged_into: str | None = None
+    merge_count: int = 0
+    merged_at: float | None = None
+    emotion_weight: float = 0.0
+    certainty: float = 1.0
+    last_verified_at: float | None = None
 
 
 class CooccurrenceEdge(BaseModel):
@@ -20,6 +28,25 @@ class CooccurrenceEdge(BaseModel):
     dst: str
     weight: float = 0.0
     last_update: float = Field(default_factory=time.time)
+
+
+class DirectedEdge(BaseModel):
+    """Typed directed relation between two memories (F3).
+
+    edge_type:
+      - "supersedes"   — src replaced/retracted dst (newer overrides older)
+      - "derived_from" — src is an extension/derivation of dst
+      - "contradicts"  — src disagrees with dst (mutual exclusion candidate)
+    """
+    src: str
+    dst: str
+    edge_type: str
+    weight: float = 1.0
+    created_at: float = Field(default_factory=time.time)
+    metadata: dict[str, Any] | None = None
+
+
+KNOWN_EDGE_TYPES: tuple[str, ...] = ("supersedes", "derived_from", "contradicts")
 
 
 # --- Request / Response models ---
