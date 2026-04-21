@@ -29,7 +29,7 @@ GitHub Wiki（読み手が見る）
    - `[X](Foo.md)` → `[X](Foo)` （同階層 `.md` → 拡張子なし Wiki ページ名）
    - `[X](Foo.md#section)` → `[X](Foo#section)` （アンカー保持）
    - `[X](../research/foo.md)` → `[X](https://github.com/<owner>/<repo>/blob/<branch>/docs/research/foo.md)`
-   - `[X](../../ger_rag/config.py)` → 絶対 GitHub URL
+   - `[X](../../gaottt/config.py)` → 絶対 GitHub URL
    - 外部 URL / mailto / 純アンカー / インラインコード / コードフェンス内 → そのまま
 3. Wiki repo (`<repo>.wiki.git`) にクローン → 変換後の content を書き込み
 4. **`docs/wiki/_Sidebar.md` がソースにあれば尊重**（カテゴリ分け・絵文字を保持）。無ければフラットな自動生成リストにフォールバック
@@ -74,7 +74,9 @@ node -e "
 const { transformWikiLinks } = require('./scripts/sync-docs-to-wiki.js');
 const fs = require('fs');
 const src = fs.readFileSync('docs/wiki/Home.md', 'utf-8');
-console.log(transformWikiLinks(src, 'May-Kirihara', 'GER-RAG', 'main'));
+console.log(transformWikiLinks(src, 'May-Kirihara', 'GaOTTT', 'main'));
+// Phase R10 完了前は第 3 引数を 'GER-RAG' にする（リネーム前の repo 名）。
+// GitHub の old→new リダイレクトが効くので、どちらでもリンクは解決する。
 " | less
 ```
 

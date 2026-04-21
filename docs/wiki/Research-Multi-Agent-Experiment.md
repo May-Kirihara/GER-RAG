@@ -60,4 +60,4 @@ Agent 1 (観察者) だけが熱的脱出に成功し、独自の橋を作った
 
 → 完全版: [`docs/research/multi-agent-experiment-2026-04-21.md`](../research/multi-agent-experiment-2026-04-21.md)
 → ユーザー側 10 ラウンド: [User Exploration (10 Rounds)](Research-User-Exploration-10-Rounds.md)
-→ 哲学的考察: [Four-Layer Philosophy](Reflections-Four-Layer-Philosophy.md)
+→ 哲学的考察: [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)

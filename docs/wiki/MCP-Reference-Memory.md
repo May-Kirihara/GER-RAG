@@ -1,6 +1,6 @@
 # MCP Reference — Memory Tools
 
-GER-RAG の中核となる 6 つの記憶ツール。詳細仕様は [`SKILL.md`](../../SKILL.md) のツールセクションを正とする。
+GaOTTT の中核となる 6 つの記憶ツール。詳細仕様は [`SKILL.md`](../../SKILL.md) のツールセクションを正とする。
 
 ## remember
 

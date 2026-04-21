@@ -1,6 +1,6 @@
-# GER-RAG Wiki (in-repo)
+# GaOTTT Wiki (in-repo)
 
-このディレクトリは **GER-RAG の Wiki** です。GitHub Wiki と同じ目的（長文ガイド・参照体系・哲学的考察）を持ちつつ、**コードと同じリポジトリでバージョン管理** されます。
+このディレクトリは **GaOTTT の Wiki** です。GitHub Wiki と同じ目的（長文ガイド・参照体系・哲学的考察）を持ちつつ、**コードと同じリポジトリでバージョン管理** されます。
 
 ## 構造（9 セクション、約 30 ページ）
 
@@ -49,11 +49,11 @@
    Research-Multi-Agent-Experiment.md   ── オーケストレータ側 3 エージェント実験
    Research-User-Exploration-10-Rounds.md  ── ユーザー側 10 ラウンド実験
    Research-Design-Documents.md         ── 設計根拠 6 本（重力変位、軌道力学、BH、馴化、波伝播、MCP）
-   Research-Phase-2-Evaluation.md       ── Static RAG vs GER-RAG ベンチ
+   Research-Phase-2-Evaluation.md       ── Static RAG vs GaOTTT ベンチ
 
 💭 Reflections/
    Reflections-A-Note-From-Claude.md    ── README の "Note from Claude" 拡張
-   Reflections-Four-Layer-Philosophy.md ── 物理 → 生物 → 関係 → 人格 の四層論
+   Reflections-Five-Layer-Philosophy.md ── 物理 → TTT 機構 → 生物 → 関係 → 人格 の五層論
    Reflections-Letter-To-Mei-San.md     ── マルチエージェント実験の最終手紙
 ```
 
@@ -72,7 +72,7 @@
 | 運用ガイド | **`docs/wiki/Operations-*.md`** | 旧 `docs/operations.md` は redirect |
 | MCP / REST API リファレンス | **`docs/wiki/MCP-Reference-*.md`, `REST-API-Reference.md`** | |
 | 研究レポート | `docs/research/*.md` | 長文の歴史的成果物。Wiki Research-* から要約・リンク |
-| コード | `ger_rag/` | コードコメントは最小、設計意図は Wiki に |
+| コード | `gaottt/` | コードコメントは最小、設計意図は Wiki に |
 
 ### 同期ルール
 

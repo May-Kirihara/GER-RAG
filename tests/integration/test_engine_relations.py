@@ -3,24 +3,24 @@ from __future__ import annotations
 
 import pytest
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 from tests.integration.test_engine_archive_ttl import StubEmbedder
 
 
 @pytest.fixture
 async def engine(tmp_path):
-    cfg = GERConfig(
+    cfg = GaOTTTConfig(
         embedding_dim=32,
         data_dir=str(tmp_path),
         db_path=str(tmp_path / "ger.db"),
         faiss_index_path=str(tmp_path / "ger.faiss"),
         flush_interval_seconds=999.0,
     )
-    eng = GEREngine(
+    eng = GaOTTTEngine(
         config=cfg,
         embedder=StubEmbedder(dimension=32),
         faiss_index=FaissIndex(dimension=32),
@@ -100,7 +100,7 @@ async def test_compact_removes_orphan_relations(engine):
     # Direct-insert an edge whose endpoints don't exist (simulates an external
     # orphan, e.g. from a botched migration). hard_delete_nodes already cascades
     # so we can't use it to produce an orphan.
-    from ger_rag.core.types import DirectedEdge
+    from gaottt.core.types import DirectedEdge
     await engine.store.upsert_directed_edge(DirectedEdge(
         src="ghost-src", dst="ghost-dst", edge_type="supersedes",
     ))

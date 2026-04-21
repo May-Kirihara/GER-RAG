@@ -25,5 +25,5 @@ GER-RAG の物理機構の設計根拠を集めた研究ドキュメント群。
 
 物理メタファーは **デコレーション** ではなく、**設計上の制約と着想の源泉** だった。各設計文書は、なぜこの式を選んだか、他の選択肢と何が違うか、を記述している。
 
-→ 哲学的整理: [Four-Layer Philosophy](Reflections-Four-Layer-Philosophy.md)
+→ 哲学的整理: [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)
 → 実装: [Architecture — Gravity Model](Architecture-Gravity-Model.md)

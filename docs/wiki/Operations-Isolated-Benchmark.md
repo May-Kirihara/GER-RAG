@@ -4,7 +4,7 @@
 
 ## なぜ隔離するか
 
-通常のベンチマークは大量のクエリと記憶操作を行うため、本番 GER-RAG DB（数千〜数万件のあなた自身の記憶）を汚染する可能性がある。隔離スクリプトは `/tmp/ger-rag-bench/` で完全に独立した DB を使用。
+通常のベンチマークは大量のクエリと記憶操作を行うため、本番 GaOTTT DB（数千〜数万件のあなた自身の記憶）を汚染する可能性がある。隔離スクリプトは `/tmp/gaottt-bench/` で完全に独立した DB を使用。
 
 ## 起動
 
@@ -24,11 +24,11 @@ BENCH_DIR=/tmp/my-bench ./scripts/run_benchmark_isolated.sh
 
 ## 挙動
 
-1. `GER_RAG_DATA_DIR=/tmp/ger-rag-bench` を設定して uvicorn を起動 → 本番 DB は不可触
+1. `GAOTTT_DATA_DIR=/tmp/gaottt-bench` を設定して uvicorn を起動 → 本番 DB は不可触
 2. 200 件（or 指定数）の文書をベンチ DB に投入
 3. SC-001〜SC-007 + Baseline drift を実行
-4. 結果は `/tmp/ger-rag-bench/report.json` に保存
-5. ベンチ DB は確認用に残す（`rm -rf /tmp/ger-rag-bench` で消去）
+4. 結果は `/tmp/gaottt-bench/report.json` に保存
+5. ベンチ DB は確認用に残す（`rm -rf /tmp/gaottt-bench` で消去）
 
 ## 評価される項目
 
@@ -40,7 +40,7 @@ BENCH_DIR=/tmp/my-bench ./scripts/run_benchmark_isolated.sh
 | SC-004 | 共起グラフ | エッジ形成 |
 | SC-005 | 並行性 | 50 同時クエリで 0 エラー |
 | SC-006 | 永続化 | 状態保存 |
-| Baseline | Static RAG vs GER-RAG | スコア drift 確認 |
+| Baseline | Static RAG vs GaOTTT | スコア drift 確認 |
 
 ## 現状の数値（Phase D 完了時点）
 
@@ -55,7 +55,7 @@ SC-005 Concurrency:    50 succeeded, 0 failed
 ```bash
 # テスト → ベンチで退行ゼロ確認
 .venv/bin/python -m pytest tests/ -q
-rm -rf /tmp/ger-rag-bench
+rm -rf /tmp/gaottt-bench
 .venv/bin/bash scripts/run_benchmark_isolated.sh
 ```
 

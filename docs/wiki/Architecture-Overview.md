@@ -1,11 +1,11 @@
 # Architecture — Overview
 
-GER-RAG のモジュール構成と二重座標系の概要。
+GaOTTT のモジュール構成と二重座標系の概要。
 
 ## モジュール構成
 
 ```
-ger_rag/
+gaottt/
 ├── server/
 │   ├── app.py            FastAPI (REST)
 │   └── mcp_server.py     MCP (LLM 向け、25 ツール)
@@ -29,7 +29,7 @@ ger_rag/
 
 ## 二重座標系
 
-GER-RAG の中核アイディア:
+GaOTTT の中核アイディア:
 
 ```
 [原始 embedding 空間]   ── RURI-v3 が出力、不変
@@ -111,7 +111,7 @@ top-K 返却（プレゼンテーション層）
 
 ## 設計判断の記録
 
-GER-RAG の主要な設計選択とその根拠:
+GaOTTT の主要な設計選択とその根拠:
 
 | 判断事項 | 決定内容 | 経緯 |
 |---|---|---|
@@ -147,9 +147,9 @@ GER-RAG の主要な設計選択とその根拠:
 
 主要な処理フローの入り口を順に追えば、コード全体が読み解ける:
 
-1. **サーバー起動**: [`server/app.py`](../../ger_rag/server/app.py) の `lifespan()` → 全コンポーネント初期化
-2. **MCP 起動**: [`server/mcp_server.py`](../../ger_rag/server/mcp_server.py) の `get_engine()` → 遅延初期化
-3. **クエリ処理**: [`engine.query()`](../../ger_rag/core/engine.py) → `gravity.propagate_gravity_wave()` → 仮想座標スコアリング
+1. **サーバー起動**: [`server/app.py`](../../gaottt/server/app.py) の `lifespan()` → 全コンポーネント初期化
+2. **MCP 起動**: [`server/mcp_server.py`](../../gaottt/server/mcp_server.py) の `get_engine()` → 遅延初期化
+3. **クエリ処理**: [`engine.query()`](../../gaottt/core/engine.py) → `gravity.propagate_gravity_wave()` → 仮想座標スコアリング
 4. **軌道力学**: `engine._update_simulation()` → `gravity.update_orbital_state()`（3 段階物理）
 5. **MCP `remember`**: `mcp_server.remember()` → `_save_memory()` → `engine.index_documents()`
 6. **MCP `commit`** (Phase D): `mcp_server.commit()` → `_save_memory(source="task")` → `engine.relate(fulfills, parent)`
@@ -162,5 +162,5 @@ GER-RAG の主要な設計選択とその根拠:
 
 ## コード参照
 
-- [`ger_rag/`](../../ger_rag/) — 全モジュールの実装
-- [`ger_rag/config.py`](../../ger_rag/config.py) — 全ハイパーパラメータ
+- [`gaottt/`](../../gaottt/) — 全モジュールの実装
+- [`gaottt/config.py`](../../gaottt/config.py) — 全ハイパーパラメータ

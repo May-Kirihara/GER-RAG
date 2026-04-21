@@ -9,22 +9,30 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Config file locations (checked in order):
-#   1. GER_RAG_CONFIG env var
-#   2. ~/.config/ger-rag/config.json  (Linux/macOS)
-#      %APPDATA%/ger-rag/config.json  (Windows)
+#   1. GAOTTT_CONFIG env var (legacy GER_RAG_CONFIG accepted with deprecation warning)
+#   2. ~/.config/gaottt/config.json  (Linux/macOS)
+#      %APPDATA%/gaottt/config.json  (Windows)
+#   3. Legacy ~/.config/ger-rag/config.json (fallback for migrating users)
 _CONFIG_FILE_PATHS = []
 
-_env_config = os.environ.get("GER_RAG_CONFIG")
+_env_config = os.environ.get("GAOTTT_CONFIG") or os.environ.get("GER_RAG_CONFIG")
+if os.environ.get("GER_RAG_CONFIG") and not os.environ.get("GAOTTT_CONFIG"):
+    logger.warning(
+        "GER_RAG_CONFIG is deprecated; use GAOTTT_CONFIG. "
+        "Continuing with the legacy variable."
+    )
 if _env_config:
     _CONFIG_FILE_PATHS.append(Path(_env_config))
 
 if sys.platform == "win32":
     _appdata = os.environ.get("APPDATA", "")
     if _appdata:
+        _CONFIG_FILE_PATHS.append(Path(_appdata) / "gaottt" / "config.json")
         _CONFIG_FILE_PATHS.append(Path(_appdata) / "ger-rag" / "config.json")
 else:
     _xdg = os.environ.get("XDG_CONFIG_HOME", "")
     _config_base = Path(_xdg) if _xdg else Path.home() / ".config"
+    _CONFIG_FILE_PATHS.append(_config_base / "gaottt" / "config.json")
     _CONFIG_FILE_PATHS.append(_config_base / "ger-rag" / "config.json")
 
 
@@ -41,17 +49,38 @@ def _load_config_file() -> dict:
     return {}
 
 
+def _legacy_data_dir_default() -> Path:
+    """Where the old GER-RAG default data directory would have been."""
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "")
+        return Path(local) / "ger-rag" if local else Path.home() / "ger-rag"
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "ger-rag"
+
+
 def _default_data_dir() -> str:
     """Resolve data directory.
 
     Priority:
-      1. GER_RAG_DATA_DIR env var
+      1. GAOTTT_DATA_DIR env var (legacy GER_RAG_DATA_DIR accepted with warning)
       2. "data_dir" in config file
       3. Platform default:
-         - Linux/macOS: ~/.local/share/ger-rag/
-         - Windows:     %LOCALAPPDATA%/ger-rag/
+         - Linux/macOS: ~/.local/share/gaottt/
+         - Windows:     %LOCALAPPDATA%/gaottt/
+
+    Backward compatibility: if no env/config override is set and the
+    new platform default is empty, but a legacy ger-rag/ directory exists
+    with a real ger_rag.db, prefer the legacy path so existing users do
+    not lose access to their memory. Run scripts/migrate-from-ger-rag.sh
+    to move the data permanently.
     """
-    env = os.environ.get("GER_RAG_DATA_DIR")
+    env = os.environ.get("GAOTTT_DATA_DIR") or os.environ.get("GER_RAG_DATA_DIR")
+    if os.environ.get("GER_RAG_DATA_DIR") and not os.environ.get("GAOTTT_DATA_DIR"):
+        logger.warning(
+            "GER_RAG_DATA_DIR is deprecated; use GAOTTT_DATA_DIR. "
+            "Continuing with the legacy variable."
+        )
     if env:
         p = Path(env)
     else:
@@ -60,17 +89,28 @@ def _default_data_dir() -> str:
             p = Path(file_conf["data_dir"])
         elif sys.platform == "win32":
             local = os.environ.get("LOCALAPPDATA", "")
-            p = Path(local) / "ger-rag" if local else Path.home() / "ger-rag"
+            p = Path(local) / "gaottt" if local else Path.home() / "gaottt"
         else:
             xdg = os.environ.get("XDG_DATA_HOME", "")
             base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-            p = base / "ger-rag"
+            p = base / "gaottt"
+
+        legacy = _legacy_data_dir_default()
+        if not (p / "gaottt.db").exists() and (legacy / "ger_rag.db").exists():
+            logger.warning(
+                "Detected legacy GER-RAG data at %s. "
+                "Run scripts/migrate-from-ger-rag.sh to migrate to %s, "
+                "or set GAOTTT_DATA_DIR explicitly.",
+                legacy, p,
+            )
+            p = legacy
+
     p.mkdir(parents=True, exist_ok=True)
     return str(p)
 
 
 @dataclass
-class GERConfig:
+class GaOTTTConfig:
     # Embedding
     model_name: str = "cl-nagoya/ruri-v3-310m"
     embedding_dim: int = 768
@@ -166,13 +206,27 @@ class GERConfig:
 
     def __post_init__(self):
         if not self.db_path:
-            self.db_path = os.path.join(self.data_dir, "ger_rag.db")
+            new_db = os.path.join(self.data_dir, "gaottt.db")
+            legacy_db = os.path.join(self.data_dir, "ger_rag.db")
+            if not os.path.exists(new_db) and os.path.exists(legacy_db):
+                logger.warning(
+                    "Using legacy ger_rag.db at %s; run scripts/migrate-from-ger-rag.sh to rename.",
+                    legacy_db,
+                )
+                self.db_path = legacy_db
+            else:
+                self.db_path = new_db
         if not self.faiss_index_path:
-            self.faiss_index_path = os.path.join(self.data_dir, "ger_rag.faiss")
+            new_faiss = os.path.join(self.data_dir, "gaottt.faiss")
+            legacy_faiss = os.path.join(self.data_dir, "ger_rag.faiss")
+            if not os.path.exists(new_faiss) and os.path.exists(legacy_faiss):
+                self.faiss_index_path = legacy_faiss
+            else:
+                self.faiss_index_path = new_faiss
 
     @classmethod
-    def from_config_file(cls) -> "GERConfig":
-        """Create GERConfig with overrides from config.json."""
+    def from_config_file(cls) -> "GaOTTTConfig":
+        """Create GaOTTTConfig with overrides from config.json."""
         file_conf = _load_config_file()
         valid_fields = {f.name for f in fields(cls)}
         overrides = {k: v for k, v in file_conf.items() if k in valid_fields}

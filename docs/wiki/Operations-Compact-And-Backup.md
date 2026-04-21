@@ -42,17 +42,17 @@ Compaction complete:
 
 | ファイル | 内容 | 消失時の影響 |
 |---|---|---|
-| `ger_rag.db` | SQLite DB（documents + nodes + edges + directed_edges） | 全データ消失、再投入必要 |
-| `ger_rag.faiss` | FAISS ベクトルインデックス | 起動時に再構築不可、再投入必要 |
-| `ger_rag.faiss.ids` | FAISS 位置 → document ID マッピング | 上記同様 |
+| `gaottt.db` | SQLite DB（documents + nodes + edges + directed_edges） | 全データ消失、再投入必要 |
+| `gaottt.faiss` | FAISS ベクトルインデックス | 起動時に再構築不可、再投入必要 |
+| `gaottt.faiss.ids` | FAISS 位置 → document ID マッピング | 上記同様 |
 
 ## バックアップ
 
 ```bash
 # サーバー停止中に実行
-cp ~/.local/share/ger-rag/ger_rag.db ~/.local/share/ger-rag/ger_rag.db.bak
-cp ~/.local/share/ger-rag/ger_rag.faiss ~/.local/share/ger-rag/ger_rag.faiss.bak
-cp ~/.local/share/ger-rag/ger_rag.faiss.ids ~/.local/share/ger-rag/ger_rag.faiss.ids.bak
+cp ~/.local/share/gaottt/gaottt.db ~/.local/share/gaottt/gaottt.db.bak
+cp ~/.local/share/gaottt/gaottt.faiss ~/.local/share/gaottt/gaottt.faiss.bak
+cp ~/.local/share/gaottt/gaottt.faiss.ids ~/.local/share/gaottt/gaottt.faiss.ids.bak
 ```
 
 **注意**: サーバー稼働中のバックアップは dirty 状態がフラッシュされていない可能性。確実なバックアップにはサーバー停止が必要。
@@ -61,9 +61,9 @@ cp ~/.local/share/ger-rag/ger_rag.faiss.ids ~/.local/share/ger-rag/ger_rag.faiss
 
 ```bash
 # サーバー停止後
-rm ~/.local/share/ger-rag/ger_rag.db
-rm ~/.local/share/ger-rag/ger_rag.faiss
-rm ~/.local/share/ger-rag/ger_rag.faiss.ids
+rm ~/.local/share/gaottt/gaottt.db
+rm ~/.local/share/gaottt/gaottt.faiss
+rm ~/.local/share/gaottt/gaottt.faiss.ids
 # サーバー再起動で空の状態から開始
 ```
 
@@ -71,7 +71,7 @@ rm ~/.local/share/ger-rag/ger_rag.faiss.ids
 
 ```cron
 # 毎週日曜 03:00 に compact 実行（MCP 経由）
-0 3 * * 0 echo 'compact()' | claude-code --mcp ger-rag-memory --no-interactive
+0 3 * * 0 echo 'compact()' | claude-code --mcp gaottt --no-interactive
 ```
 
 → 関連: [Tuning](Operations-Tuning.md), [Architecture — Storage & Schema](Architecture-Storage-And-Schema.md)

@@ -1,6 +1,6 @@
 # Getting Started
 
-GER-RAG をゼロからインストールして、最初の `remember` と `recall` を打つまで、約 5 分。
+GaOTTT をゼロからインストールして、最初の `remember` と `recall` を打つまで、約 5 分。
 
 ## 前提
 
@@ -13,7 +13,7 @@ GER-RAG をゼロからインストールして、最初の `remember` と `reca
 
 ```bash
 git clone https://github.com/May-Kirihara/GER-RAG.git
-cd GER-RAG
+cd GaOTTT
 uv venv .venv --python 3.12
 uv pip install -e ".[dev]"
 ```
@@ -27,16 +27,16 @@ uv pip install -e ".[dev]"
 
 ## 2. データディレクトリの確認
 
-GER-RAG は OS ごとの固定ディレクトリに DB と FAISS index を保存します。どこから起動しても同じデータ:
+GaOTTT は OS ごとの固定ディレクトリに DB と FAISS index を保存します。どこから起動しても同じデータ:
 
 | OS | データディレクトリ |
 |---|---|
-| Linux/macOS | `~/.local/share/ger-rag/` |
+| Linux/macOS | `~/.local/share/gaottt/` |
 | Windows | `%LOCALAPPDATA%\ger-rag\` |
 
 カスタマイズ:
 ```bash
-export GER_RAG_DATA_DIR=/path/to/data
+export GAOTTT_DATA_DIR=/path/to/data
 ```
 
 ## 3. MCP サーバー起動（Claude Code / Claude Desktop で使う場合）
@@ -44,10 +44,10 @@ export GER_RAG_DATA_DIR=/path/to/data
 `.mcp.json.example` を `.mcp.json` にコピーしてパスを書き換える、または直接起動:
 
 ```bash
-.venv/bin/python -m ger_rag.server.mcp_server
+.venv/bin/python -m gaottt.server.mcp_server
 ```
 
-Claude Code に登録すると、SKILL.md が自動的にロードされ、`mcp__ger-rag-memory__remember` などのツールが使えます。
+Claude Code に登録すると、SKILL.md が自動的にロードされ、`mcp__gaottt__remember` などのツールが使えます。
 
 詳細は [Operations — Server Setup](Operations-Server-Setup.md)。
 
@@ -57,7 +57,7 @@ MCP クライアント（Claude Code 等）から:
 
 ```
 remember(
-  content="今日 GER-RAG のインストールが完了した",
+  content="今日 GaOTTT のインストールが完了した",
   source="agent",
   tags=["milestone"],
   emotion=0.5,
@@ -70,7 +70,7 @@ remember(
 ## 5. 思い出してみる
 
 ```
-recall(query="GER-RAG のインストール", top_k=3)
+recall(query="GaOTTT のインストール", top_k=3)
 ```
 
 返り値に先ほど保存した記憶が、`final_score`・`raw_score`・`source`・`displacement` の値とともに浮上します。

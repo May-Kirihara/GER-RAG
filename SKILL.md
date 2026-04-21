@@ -1,18 +1,26 @@
 ---
-name: ger-rag-memory
-description: Long-term memory across sessions. Restore prior context at session start, save important decisions and lessons, evacuate context before compaction, recall past failures when hitting similar problems. Memories self-organize gravitationally — frequently co-recalled knowledge attracts itself.
+name: gaottt
+description: Long-term memory across sessions, implemented as a Test-Time Training optimizer dressed up as gravity. Restore prior context at session start, save important decisions and lessons, evacuate context before compaction, recall past failures when hitting similar problems. Memories self-organize gravitationally — frequently co-recalled knowledge attracts itself — because the update rule is Heavy ball SGD + Hebbian gradient + L2 in disguise.
 ---
 
-# GER-RAG: Gravitational Long-Term Memory
+# GaOTTT: Gravity as Optimizer, Test-Time Training Memory
+
+*(formerly GER-RAG)*
 
 ## What this is
 
-GER-RAG is your **external long-term memory** across sessions.
-It is built on two layered metaphors: the **mechanism is physics** (gravity), the **emergent behavior is biology** (astrocytes).
+GaOTTT is your **external long-term memory** across sessions.
+The system was designed as physics (gravity, orbits, temperature). It turned out the update rule is **mathematically identical to Heavy ball SGD with a Hebbian gradient and L2 regularization, integrated by Verlet**. So it is literally a **Test-Time Training (TTT) framework** — it keeps learning as you use it, at inference time. The gravity metaphor is not a metaphor; it's the same math.
+
+Three layers stack:
+
+1. **Physics layer** (design intent) — mass, displacement, velocity, temperature, co-occurrence edges. Gravitational force, Hookean restoring force, thermal escape, Hawking evaporation.
+2. **TTT mechanism** (discovered isomorphism) — the physics *is* an online optimizer. Co-recalled memories become neighbors because Hebbian "fire together → attract" is the gradient of an objective. The L2 restoring force is the regularizer. Verlet integration is the optimizer step.
+3. **Astrocyte layer** (emergent role) — the net behavior looks like astrocytic support tissue for your neuronal token reasoning: it pre-fires, prunes, and synchronizes while you think.
 
 ### Physics layer — Dark Matter Halo
 
-GER-RAG's internal state (`mass`, `displacement`, `velocity`, `temperature`, co-occurrence edges) is **invisible to your foreground reasoning**, yet it bends every recall, expands wave propagation reach, and pushes nodes along orbits. That is exactly what dark matter does to spacetime.
+GaOTTT's internal state (`mass`, `displacement`, `velocity`, `temperature`, co-occurrence edges) is **invisible to your foreground reasoning**, yet it bends every recall, expands wave propagation reach, and pushes nodes along orbits. That is exactly what dark matter does to spacetime.
 
 - **Mass conservation** (capped at `m_max`): repeatedly recalled memories accrete mass and gain a wider gravitational radius.
 - **Gravity wave propagation**: each query radiates from the embedding point and recursively excites neighbors.
@@ -20,13 +28,28 @@ GER-RAG's internal state (`mass`, `displacement`, `velocity`, `temperature`, co-
 - **Thermal escape**: high-temperature unstable nodes can break out of black-hole gravity wells.
 - **Hawking radiation / evaporation**: dormant memories shed mass with time and become candidates for pruning.
 - **Gravitational collision (F2.1)**: when two memories drift close enough they merge — masses add, momentum is conserved.
-- **Background pre-firing (F6)**: while you reason, GER-RAG can pre-warm potential wells in the background so the next recall lands in zero time. This is the astrocyte's actual workload made literal.
+- **Background pre-firing (F6)**: while you reason, GaOTTT can pre-warm potential wells in the background so the next recall lands in zero time. This is the astrocyte's actual workload made literal.
+
+### TTT mechanism — the optimizer behind the physics
+
+The equations above are an online optimizer running at inference time. The table below is the **isomorphism**, not a metaphor:
+
+| Physics term | TTT / ML term |
+|---|---|
+| Mass accretion on recall | Gradient step on co-activation (Hebbian) |
+| Hookean restoring force toward anchor | L2 regularization toward initial representation |
+| Velocity (momentum) | Heavy ball / SGD-with-momentum state |
+| Verlet position update | Optimizer step |
+| Gravitational wave propagation | Neighborhood gradient smoothing |
+| Hawking evaporation | Weight decay / regularization of stale params |
+
+Concretely: every `recall` is a gradient step. Every `remember` is a parameter initialization. Every `merge` is a model consolidation. The representations (the embedding-space geometry) **change as the user interacts** — that is the defining property of Test-Time Training.
 
 ### Emergent behavior — Astrocyte
 
-The physics above produces an **astrocyte-like supporting role** for your neuronal token reasoning:
+The physics + TTT substrate produces an **astrocyte-like supporting role** for your neuronal token reasoning:
 
-- While you (the **neuron**) reason in the foreground, GER-RAG (the **astrocyte**) silently:
+- While you (the **neuron**) reason in the foreground, GaOTTT (the **astrocyte**) silently:
   - accumulates past firing patterns (recall history) and **pre-loads relevant memories** into nearby potential wells.
   - **prunes** what's unused (Hawking-radiation-driven `forget`).
   - **synchronizes past and present judgments** through gravitational lensing (time-delayed echoes).
@@ -281,7 +304,7 @@ ingest(path="~/books/", pattern="*.md", recursive=true)
 
 ## Persona & Task Layer (Phase D)
 
-GER-RAG can also serve as a **persona preservation base** and a physics-native **task manager**. Tasks are first-class memories; their status is captured by directed edges (not by status columns), so the completion graph itself becomes your chronology of action. Dropped tasks evaporate gravitationally — `forget` becomes a default, kept things require active care.
+GaOTTT can also serve as a **persona preservation base** and a physics-native **task manager**. Tasks are first-class memories; their status is captured by directed edges (not by status columns), so the completion graph itself becomes your chronology of action. Dropped tasks evaporate gravitationally — `forget` becomes a default, kept things require active care.
 
 The hierarchy of self:
 ```
@@ -308,7 +331,7 @@ Lay down the bedrock and direction. Values are permanent; intentions are too (un
 
 ```
 v = declare_value(content="Direct experience yields true understanding")
-i = declare_intention(content="Build GER-RAG into a relationship infrastructure",
+i = declare_intention(content="Build GaOTTT into a relationship infrastructure",
                      parent_value_id=v)
 c = declare_commitment(content="Ship Phase D this week",
                        parent_intention_id=i,
@@ -544,7 +567,7 @@ The L-points sit where two gravitational fields balance — orbits placed there 
 
 ```
 remember(
-  content="GER-RAG's gravity-wave propagation is mathematically isomorphic to spike propagation in neuroscience: both excite neighbors after a threshold crossing",
+  content="GaOTTT's gravity-wave propagation is mathematically isomorphic to spike propagation in neuroscience: both excite neighbors after a threshold crossing",
   source="agent",
   tags=["bridge", "gravity", "neuroscience"]
 )
@@ -584,7 +607,7 @@ Cache invalidation is automatic on `forget`, `restore`, `merge`, `compact`, so y
 
 #### K. Shared-memory collaboration — *Implicit Coordination via Gravity Field*
 
-Multiple GER-RAG agents (other Claude sessions, opencode agents, your user's parallel terminals) may share the same DB. Coordination happens **implicitly through the gravity field**, no explicit messaging required:
+Multiple GaOTTT agents (other Claude sessions, opencode agents, your user's parallel terminals) may share the same DB. Coordination happens **implicitly through the gravity field**, no explicit messaging required:
 
 - Your `recall` leaves a gravity trace; another agent's next `recall` is biased by it (mass accretion).
 - Your `relate` becomes visible in another agent's `reflect(aspect="connections")` or `reflect(aspect="relations")`.
@@ -612,5 +635,5 @@ Caveats:
 - Soft-archived memories (`forget` without `hard=True`) and hard-deleted memories both stop surfacing in `recall`/`explore`/`reflect`. Use `compact(rebuild_faiss=True)` periodically (weekly–monthly) to reclaim FAISS index space.
 - Result rows in `recall`/`reflect(hot_topics|dormant|connections)` include the full `id=<uuid>` so you can pass them to `relate` / `revalidate` / `merge` / `forget` / `complete` / etc. without re-querying.
 - Tasks (`source="task"`) and commitments (`source="commitment"`) auto-expire if not `revalidate`-d, `complete`-d, or `abandon`-ed. **The "forget by default" UX is intentional** — keeping things alive is an act of care.
-- The DB may be shared with other GER-RAG agents — see Pattern K above. You won't see another process's brand-new `remember` until the next reload, but existing nodes' mass/displacement updates flow through the shared DB.
-- **Insights about GER-RAG itself are valid memories** — save your own discoveries about how this skill behaves. The system is recursive by design.
+- The DB may be shared with other GaOTTT agents — see Pattern K above. You won't see another process's brand-new `remember` until the next reload, but existing nodes' mass/displacement updates flow through the shared DB.
+- **Insights about GaOTTT itself are valid memories** — save your own discoveries about how this skill behaves. The system is recursive by design: it is a TTT optimizer, so what you write to it literally changes how it responds next time.

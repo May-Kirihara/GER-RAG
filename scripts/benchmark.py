@@ -1,4 +1,4 @@
-"""GER-RAG Benchmark Suite
+"""GaOTTT Benchmark Suite
 
 Measures all success criteria (SC-001 to SC-007) and Phase 2 evaluation metrics.
 
@@ -403,11 +403,11 @@ def bench_reset(url: str) -> BenchResult:
 
 
 # ---------------------------------------------------------------------------
-# Baseline Comparison: Static RAG vs GER-RAG
+# Baseline Comparison: Static RAG vs GaOTTT
 # ---------------------------------------------------------------------------
 
 def bench_baseline_comparison(url: str) -> BenchResult:
-    print_header("Baseline: Static RAG vs GER-RAG (session adaptivity)")
+    print_header("Baseline: Static RAG vs GaOTTT (session adaptivity)")
 
     query_text = "映画やアニメの感想"
 
@@ -452,11 +452,11 @@ def bench_baseline_comparison(url: str) -> BenchResult:
     avg_drift = statistics.mean(score_drifts) if score_drifts else 0
     new_in_top5 = len(set(round2_ranking) - set(round1_ranking))
 
-    # GER-RAG should show score changes (avg_drift != 0)
+    # GaOTTT should show score changes (avg_drift != 0)
     passed = abs(avg_drift) > 0.001 or rank_changes > 0
     return BenchResult(
-        name="Baseline: Static RAG vs GER-RAG",
-        criterion="GER-RAG shows measurable score/ranking changes over repeated queries (static RAG would not)",
+        name="Baseline: Static RAG vs GaOTTT",
+        criterion="GaOTTT shows measurable score/ranking changes over repeated queries (static RAG would not)",
         passed=passed,
         detail=f"After 11 queries: avg_score_drift={avg_drift:+.4f}, "
                f"rank_changes={rank_changes}/{len(common_ids)}, "
@@ -472,7 +472,7 @@ def bench_baseline_comparison(url: str) -> BenchResult:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="GER-RAG Benchmark Suite")
+    parser = argparse.ArgumentParser(description="GaOTTT Benchmark Suite")
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--all", action="store_true", help="Run all benchmarks")
     parser.add_argument("--latency", action="store_true", help="SC-001: Latency")

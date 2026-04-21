@@ -22,7 +22,7 @@ import time
 from collections import OrderedDict
 from typing import Awaitable, Callable, TypeVar
 
-from ger_rag.core.types import QueryResultItem
+from gaottt.core.types import QueryResultItem
 
 T = TypeVar("T")
 

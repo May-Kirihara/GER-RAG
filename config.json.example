@@ -1,5 +1,5 @@
 {
-  "_comment": "GER-RAG configuration. Copy to ~/.config/ger-rag/config.json (Linux/macOS) or %APPDATA%/ger-rag/config.json (Windows)",
+  "_comment": "GaOTTT configuration. Copy to ~/.config/gaottt/config.json (Linux/macOS) or %APPDATA%/gaottt/config.json (Windows). Legacy ~/.config/ger-rag/config.json paths are still read as a fallback.",
 
   "model_name": "cl-nagoya/ruri-v3-310m",
   "embedding_dim": 768,

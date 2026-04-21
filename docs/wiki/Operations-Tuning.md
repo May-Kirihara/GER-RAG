@@ -1,8 +1,8 @@
 # Operations — Tuning Hyperparameters
 
-`ger_rag/config.py` の `GERConfig` を編集してサーバー再起動で反映。
+`gaottt/config.py` の `GERConfig` を編集してサーバー再起動で反映。
 
-すべてのハイパーパラメータの一次ソース: [`ger_rag/config.py`](../../ger_rag/config.py)
+すべてのハイパーパラメータの一次ソース: [`gaottt/config.py`](../../gaottt/config.py)
 
 ---
 

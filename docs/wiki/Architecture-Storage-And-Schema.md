@@ -1,6 +1,6 @@
 # Architecture — Storage & Schema
 
-ストレージ層の詳細とテーブル定義。一次ソースは [`ger_rag/store/sqlite_store.py`](../../ger_rag/store/sqlite_store.py)。
+ストレージ層の詳細とテーブル定義。一次ソースは [`gaottt/store/sqlite_store.py`](../../gaottt/store/sqlite_store.py)。
 
 ## 全体構成
 
@@ -106,4 +106,4 @@ CREATE INDEX idx_nodes_archived/expires_at/merged_into;
 - `dirty_*: set[str]` — 書き込み待ち
 - 5 秒ごと（既定）に write-behind タスクが flush
 
-→ 一次ソース: [`ger_rag/store/sqlite_store.py`](../../ger_rag/store/sqlite_store.py), [`ger_rag/store/cache.py`](../../ger_rag/store/cache.py)
+→ 一次ソース: [`gaottt/store/sqlite_store.py`](../../gaottt/store/sqlite_store.py), [`gaottt/store/cache.py`](../../gaottt/store/cache.py)

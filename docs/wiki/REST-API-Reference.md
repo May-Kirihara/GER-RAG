@@ -1,6 +1,6 @@
 # REST API Reference
 
-GER-RAG の HTTP API（FastAPI）の完全リファレンス。
+GaOTTT の HTTP API（FastAPI）の完全リファレンス。
 
 ベース URL: `http://localhost:8000` （[Operations — Server Setup](Operations-Server-Setup.md)）
 認証: なし（Phase 1）

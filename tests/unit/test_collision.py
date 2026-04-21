@@ -2,16 +2,16 @@ import time
 
 import numpy as np
 
-from ger_rag.config import GERConfig
-from ger_rag.core.collision import (
+from gaottt.config import GaOTTTConfig
+from gaottt.core.collision import (
     compose_displacement,
     compose_mass,
     compose_velocity,
     merge_pair,
     pick_survivor,
 )
-from ger_rag.core.types import NodeState
-from ger_rag.store.cache import CacheLayer
+from gaottt.core.types import NodeState
+from gaottt.store.cache import CacheLayer
 
 
 def test_pick_survivor_prefers_heavier():
@@ -49,7 +49,7 @@ def test_compose_displacement_is_norm_clipped():
 
 
 def test_merge_pair_archives_absorbed_and_redirects_edges():
-    cfg = GERConfig(embedding_dim=4)
+    cfg = GaOTTTConfig(embedding_dim=4)
     cache = CacheLayer()
     survivor = NodeState(id="s", mass=5.0, last_access=time.time())
     absorbed = NodeState(id="x", mass=2.0, last_access=time.time())
@@ -76,7 +76,7 @@ def test_merge_pair_archives_absorbed_and_redirects_edges():
 
 
 def test_merge_pair_preserves_velocity_momentum():
-    cfg = GERConfig(embedding_dim=2)
+    cfg = GaOTTTConfig(embedding_dim=2)
     cache = CacheLayer()
     s = NodeState(id="s", mass=3.0)
     a = NodeState(id="a", mass=1.0)

@@ -1,13 +1,14 @@
-"""GER-RAG MCP Server — AI Agent Long-Term Memory
+"""GaOTTT MCP Server — AI Agent Long-Term Memory (formerly GER-RAG)
 
 Provides gravitational displacement-powered memory for AI agents.
+Phase R4 will reframe the philosophy as "TTT framework that happens to look like RAG".
 
 Usage:
     # stdio (Claude Code / Claude Desktop)
-    python -m ger_rag.server.mcp_server
+    python -m gaottt.server.mcp_server
 
     # SSE (remote clients)
-    python -m ger_rag.server.mcp_server --transport sse --port 8001
+    python -m gaottt.server.mcp_server --transport sse --port 8001
 """
 
 from __future__ import annotations
@@ -22,33 +23,33 @@ from pathlib import Path
 import numpy as np
 from mcp.server.fastmcp import FastMCP
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.core.extractor import extract_candidates
-from ger_rag.embedding.ruri import RuriEmbedder
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.ingest.loader import ingest_path
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.core.extractor import extract_candidates
+from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.ingest.loader import ingest_path
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Engine singleton ---
 
-_engine: GEREngine | None = None
+_engine: GaOTTTEngine | None = None
 _engine_lock = asyncio.Lock()
 
 
-async def get_engine() -> GEREngine:
+async def get_engine() -> GaOTTTEngine:
     global _engine
     if _engine is not None:
         return _engine
     async with _engine_lock:
         if _engine is not None:
             return _engine
-        config = GERConfig.from_config_file()
-        logger.info("Initializing GER-RAG engine for MCP server...")
+        config = GaOTTTConfig.from_config_file()
+        logger.info("Initializing GaOTTT engine for MCP server...")
         embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
         faiss_index = FaissIndex(dimension=config.embedding_dim)
         store = SqliteStore(db_path=config.db_path)
@@ -56,22 +57,22 @@ async def get_engine() -> GEREngine:
             flush_interval=config.flush_interval_seconds,
             flush_threshold=config.flush_threshold,
         )
-        engine = GEREngine(
+        engine = GaOTTTEngine(
             config=config, embedder=embedder, faiss_index=faiss_index,
             cache=cache, store=store,
         )
         await engine.startup()
         _engine = engine
-        logger.info("GER-RAG engine ready (%d nodes, %d vectors)", len(cache.node_cache), faiss_index.size)
+        logger.info("GaOTTT engine ready (%d nodes, %d vectors)", len(cache.node_cache), faiss_index.size)
         return engine
 
 
 # --- MCP Server ---
 
 mcp = FastMCP(
-    "ger-rag-memory",
+    "gaottt",
     instructions=(
-        "GER-RAG: Gravitational long-term memory for AI agents. "
+        "GaOTTT (formerly GER-RAG): Gravitational long-term memory for AI agents. "
         "Use 'remember' to store knowledge (source='hypothesis' or ttl_seconds "
         "for ephemeral, emotion/certainty for affective weighting), 'recall' to "
         "search with gravitational relevance (transparently consumes 'prefetch' "
@@ -1319,7 +1320,7 @@ async def context_recall(topic: str) -> str:
         f"The following long-term memories are relevant to \"{topic}\":\n\n"
         f"{memory_text}\n\n"
         f"Use these memories to inform your response. "
-        f"They are ranked by GER-RAG's gravitational model based on past access patterns."
+        f"They are ranked by GaOTTT's gravitational model based on past access patterns."
     )
 
 

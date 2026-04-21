@@ -1,7 +1,7 @@
 """Round-trip tests for the MCP tool wrappers (forget/restore/auto_remember/remember TTL).
 
 The decorated tools are still plain callables; we patch the engine singleton
-in ``ger_rag.server.mcp_server`` to a stub-backed engine and invoke the tools
+in ``gaottt.server.mcp_server`` to a stub-backed engine and invoke the tools
 directly.
 """
 from __future__ import annotations
@@ -10,18 +10,18 @@ import time
 
 import pytest
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.server import mcp_server as srv
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.server import mcp_server as srv
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 from tests.integration.test_engine_archive_ttl import StubEmbedder
 
 
 @pytest.fixture
 async def engine_singleton(tmp_path, monkeypatch):
-    cfg = GERConfig(
+    cfg = GaOTTTConfig(
         embedding_dim=32,
         data_dir=str(tmp_path),
         db_path=str(tmp_path / "ger.db"),
@@ -29,7 +29,7 @@ async def engine_singleton(tmp_path, monkeypatch):
         flush_interval_seconds=999.0,
         default_hypothesis_ttl_seconds=60.0,
     )
-    eng = GEREngine(
+    eng = GaOTTTEngine(
         config=cfg,
         embedder=StubEmbedder(dimension=32),
         faiss_index=FaissIndex(dimension=32),

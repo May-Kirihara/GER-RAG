@@ -4,12 +4,12 @@ import time
 from collections import defaultdict
 from itertools import combinations
 
-from ger_rag.config import GERConfig
-from ger_rag.store.cache import CacheLayer
+from gaottt.config import GaOTTTConfig
+from gaottt.store.cache import CacheLayer
 
 
 class CooccurrenceGraph:
-    def __init__(self, config: GERConfig, cache: CacheLayer):
+    def __init__(self, config: GaOTTTConfig, cache: CacheLayer):
         self._config = config
         self._cache = cache
         self._cooccurrence_counts: dict[tuple[str, str], int] = defaultdict(int)

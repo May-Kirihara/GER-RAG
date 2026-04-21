@@ -1,4 +1,4 @@
-"""Run test queries against GER-RAG and display results.
+"""Run test queries against GaOTTT and display results.
 
 Usage:
     python scripts/test_queries.py [--url URL] [--rounds N] [--mode basic|full|stress]
@@ -238,7 +238,7 @@ def mode_stress(client: httpx.Client, url: str, args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GER-RAG test query runner")
+    parser = argparse.ArgumentParser(description="GaOTTT test query runner")
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--rounds", type=int, default=2)

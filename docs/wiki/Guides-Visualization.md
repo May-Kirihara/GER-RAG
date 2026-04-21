@@ -1,6 +1,6 @@
 # Guide — Cosmic 3D Visualization
 
-GER-RAG の記憶宇宙を、**恒星と銀河のように** Plotly で可視化するツール。
+GaOTTT の記憶宇宙を、**恒星と銀河のように** Plotly で可視化するツール。
 
 ## 起動
 

@@ -5,17 +5,17 @@ import time
 
 import pytest
 
-from ger_rag.config import GERConfig
-from ger_rag.core.engine import GEREngine
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.engine import GaOTTTEngine
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 from tests.integration.test_engine_archive_ttl import StubEmbedder
 
 
 @pytest.fixture
 async def engine(tmp_path):
-    cfg = GERConfig(
+    cfg = GaOTTTConfig(
         embedding_dim=32,
         data_dir=str(tmp_path),
         db_path=str(tmp_path / "ger.db"),
@@ -24,7 +24,7 @@ async def engine(tmp_path):
         wave_initial_k=5,
         wave_max_depth=1,
     )
-    eng = GEREngine(
+    eng = GaOTTTEngine(
         config=cfg,
         embedder=StubEmbedder(dimension=32),
         faiss_index=FaissIndex(dimension=32),

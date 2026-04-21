@@ -64,7 +64,7 @@ def avg_relevance(relevances: list[int]) -> float:
 
 def print_comparison_report(results_data: dict, scores: dict, top_k: int) -> dict:
     print(f"\n{'='*80}")
-    print("  RETRIEVAL QUALITY: GER-RAG vs Static RAG")
+    print("  RETRIEVAL QUALITY: GaOTTT vs Static RAG")
     print(f"{'='*80}")
 
     header = f"  {'Query':<12s} {'':18s} {'nDCG@10':>8s} {'MRR':>8s} {'P@10':>8s} {'Avg Rel':>8s}"
@@ -95,7 +95,7 @@ def print_comparison_report(results_data: dict, scores: dict, top_k: int) -> dic
         g_avg = avg_relevance(g_rel)
 
         print(f"  {qid:<12s} {'Static RAG':18s} {s_ndcg:>8.4f} {s_mrr:>8.4f} {s_prec:>8.4f} {s_avg:>8.2f}")
-        print(f"  {'':12s} {'GER-RAG':18s} {g_ndcg:>8.4f} {g_mrr:>8.4f} {g_prec:>8.4f} {g_avg:>8.2f}")
+        print(f"  {'':12s} {'GaOTTT':18s} {g_ndcg:>8.4f} {g_mrr:>8.4f} {g_prec:>8.4f} {g_avg:>8.2f}")
 
         delta_ndcg = g_ndcg - s_ndcg
         sign = "+" if delta_ndcg >= 0 else ""
@@ -124,7 +124,7 @@ def print_comparison_report(results_data: dict, scores: dict, top_k: int) -> dic
 
     print(f"  {'='*74}")
     print(f"  {'AVERAGE':<12s} {'Static RAG':18s} {avg_s_ndcg:>8.4f} {avg_s_mrr:>8.4f} {avg_s_prec:>8.4f}")
-    print(f"  {'':12s} {'GER-RAG':18s} {avg_g_ndcg:>8.4f} {avg_g_mrr:>8.4f} {avg_g_prec:>8.4f}")
+    print(f"  {'':12s} {'GaOTTT':18s} {avg_g_ndcg:>8.4f} {avg_g_mrr:>8.4f} {avg_g_prec:>8.4f}")
 
     delta = avg_g_ndcg - avg_s_ndcg
     pct = (delta / avg_s_ndcg * 100) if avg_s_ndcg > 0 else 0
@@ -192,7 +192,7 @@ def print_session_report(session_data: dict, scores: dict, top_k: int) -> dict:
         print(f"    New docs in top-{top_k}: {new_count}, Dropped: {dropped_count}")
         print(f"    {'':18s} {'nDCG@10':>8s} {'MRR':>8s} {'P@10':>8s} {'Avg Rel':>8s}")
         print(f"    {'Before (static)':18s} {b_ndcg:>8.4f} {b_mrr_val:>8.4f} {b_prec:>8.4f} {b_avg:>8.2f}")
-        print(f"    {'After (GER-RAG)':18s} {a_ndcg:>8.4f} {a_mrr_val:>8.4f} {a_prec:>8.4f} {a_avg:>8.2f}")
+        print(f"    {'After (GaOTTT)':18s} {a_ndcg:>8.4f} {a_mrr_val:>8.4f} {a_prec:>8.4f} {a_avg:>8.2f}")
         sign = "+" if delta_ndcg >= 0 else ""
         print(f"    {'Delta':18s} {sign}{delta_ndcg:>7.4f} {'':8s} {'':8s} {delta_avg:>+8.2f}")
         print(f"    Before scores: {b_rel}")
@@ -295,7 +295,7 @@ def print_session_report(session_data: dict, scores: dict, top_k: int) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GER-RAG 評価メトリクス算出")
+    parser = argparse.ArgumentParser(description="GaOTTT 評価メトリクス算出")
     parser.add_argument("--dir", default="eval_output", help="eval_export.py の出力ディレクトリ")
     parser.add_argument("--output", default=None, help="結果をJSONに保存")
     args = parser.parse_args()

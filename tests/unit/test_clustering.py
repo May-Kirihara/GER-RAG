@@ -1,6 +1,6 @@
 import numpy as np
 
-from ger_rag.core.clustering import (
+from gaottt.core.clustering import (
     cluster_by_similarity,
     find_merge_candidates,
 )

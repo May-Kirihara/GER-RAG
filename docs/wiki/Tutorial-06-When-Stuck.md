@@ -1,4 +1,4 @@
-# 🌱 はじめての GER-RAG (6/6) — 困ったとき
+# 🌱 はじめての GaOTTT (6/6) — 困ったとき
 
 詰まったらここを見てください。よくあるつまずきと対処を、原因の心当たりが少なくても見つけられるようにまとめます。
 
@@ -22,7 +22,7 @@
 
 ### `command not found: python3` / `python3 が見つかりません`
 
-→ Python が入っていません。[Tutorial-02 のステップ 2](Tutorial-02-Install-GER-RAG.md) に戻って、お使いの OS の手順で Python をインストールしてください。
+→ Python が入っていません。[Tutorial-02 のステップ 2](Tutorial-02-Install-GaOTTT.md) に戻って、お使いの OS の手順で Python をインストールしてください。
 
 インストール後、**ターミナルを必ず開き直す** ことが重要です。
 
@@ -91,17 +91,17 @@ ls /Users/あなたのユーザー名/GER-RAG/.venv/bin/python
 
 ファイルが見つかれば OK。`No such file or directory` なら、パスが間違っているか、Tutorial-02 のインストールが完了していません。
 
-### 🔨 は出るが `ger-rag-memory` が無い
+### 🔨 は出るが `gaottt` が無い
 
-設定ファイルの `mcpServers` の中の名前が `ger-rag-memory` になっているか確認。
+設定ファイルの `mcpServers` の中の名前が `gaottt` になっているか確認。
 
-### 🔨 をクリックすると `ger-rag-memory` がエラー表示
+### 🔨 をクリックすると `gaottt` がエラー表示
 
-GER-RAG 自体の起動でコケています。手動で起動してエラーを見ましょう:
+GaOTTT 自体の起動でコケています。手動で起動してエラーを見ましょう:
 
 ```bash
 cd ~/GER-RAG
-.venv/bin/python -m ger_rag.server.mcp_server
+.venv/bin/python -m gaottt.server.mcp_server
 ```
 
 エラー全文を Claude に見せて聞いてください。
@@ -113,7 +113,7 @@ cd ~/GER-RAG
 ### Claude が記憶ツールを呼んでくれない
 
 - 明示的に「`remember` で覚えておいて」「`recall` で確認して」と頼んでみる
-- それでも呼ばないなら、CLAUDE.md やプロジェクト指示で「GER-RAG memory を積極的に使って」と書いておく
+- それでも呼ばないなら、CLAUDE.md やプロジェクト指示で「GaOTTT memory を積極的に使って」と書いておく
 
 ### `recall` しても何も出てこない
 
@@ -142,21 +142,21 @@ cd ~/GER-RAG
 Claude Desktop を終了してから、ターミナルで:
 
 ```bash
-rm ~/.local/share/ger-rag/ger_rag.db
-rm ~/.local/share/ger-rag/ger_rag.faiss
-rm ~/.local/share/ger-rag/ger_rag.faiss.ids
+rm ~/.local/share/gaottt/gaottt.db
+rm ~/.local/share/gaottt/gaottt.faiss
+rm ~/.local/share/gaottt/gaottt.faiss.ids
 ```
 
 次に Claude を起動すると **空っぽの状態** から始まります。
 
-### GER-RAG 自体を完全アンインストール
+### GaOTTT 自体を完全アンインストール
 
 ```bash
 rm -rf ~/GER-RAG          # ソースコード
-rm -rf ~/.local/share/ger-rag/   # 記憶データ
+rm -rf ~/.local/share/gaottt/   # 記憶データ
 ```
 
-そして `claude_desktop_config.json` から `ger-rag-memory` の項目を削除。
+そして `claude_desktop_config.json` から `gaottt` の項目を削除。
 
 これで完全にきれいになります。
 
@@ -174,7 +174,7 @@ rm -rf ~/.local/share/ger-rag/   # 記憶データ
 
 ここまで読んでくれてありがとうございます。
 
-GER-RAG はまだ若いプロジェクトで、想定しきれていないつまずきが必ずあります。**詰まったのはあなたのせいではありません**。むしろ「ここで詰まりました」と教えてもらえると、次の人が楽になります。
+GaOTTT はまだ若いプロジェクトで、想定しきれていないつまずきが必ずあります。**詰まったのはあなたのせいではありません**。むしろ「ここで詰まりました」と教えてもらえると、次の人が楽になります。
 
 楽しい記憶宇宙を、ゆっくり育てていってください 🌌
 

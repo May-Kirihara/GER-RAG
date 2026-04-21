@@ -1,6 +1,6 @@
-# Guide — Using GER-RAG as Long-Term Memory
+# Guide — Using GaOTTT as Long-Term Memory
 
-GER-RAG を **AI エージェントの外部長期記憶** として使う基本フロー。
+GaOTTT を **AI エージェントの外部長期記憶** として使う基本フロー。
 
 ## 想定シナリオ
 
@@ -65,7 +65,7 @@ remember(
 
 ## ファイル一括取り込み
 
-既にあるノート、書籍、ログを GER-RAG の重力場に投入:
+既にあるノート、書籍、ログを GaOTTT の重力場に投入:
 
 ```bash
 # 直接 CLI

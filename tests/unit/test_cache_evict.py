@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ger_rag.core.types import NodeState
-from ger_rag.store.cache import CacheLayer
+from gaottt.core.types import NodeState
+from gaottt.store.cache import CacheLayer
 
 
 def test_evict_drops_node_displacement_velocity_and_edges():

@@ -1,4 +1,4 @@
-"""GER-RAG 3D Visualization — Cosmic View
+"""GaOTTT 3D Visualization — Cosmic View
 
 ドキュメントを宇宙空間の恒星として可視化する。
 各ノードの温度が恒星の色温度に対応し、質量が恒星のサイズに対応する。
@@ -22,10 +22,10 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from ger_rag.config import GERConfig
-from ger_rag.core.gravity import compute_virtual_position
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.config import GaOTTTConfig
+from gaottt.core.gravity import compute_virtual_position
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.sqlite_store import SqliteStore
 
 
 # -----------------------------------------------------------------------
@@ -87,7 +87,7 @@ def reduce_to_3d(vectors: np.ndarray, method: str = "pca") -> np.ndarray:
         return PCA(n_components=3).fit_transform(vectors)
 
 
-async def load_data(config: GERConfig):
+async def load_data(config: GaOTTTConfig):
     faiss_index = FaissIndex(dimension=config.embedding_dim)
     faiss_index.load(config.faiss_index_path)
 
@@ -131,7 +131,7 @@ def compute_bh_centroids_3d(
     coords_3d: np.ndarray,
     cooccurrence_neighbors: dict[str, dict[str, float]],
     masses: np.ndarray,
-    config: GERConfig,
+    config: GaOTTTConfig,
 ) -> list[dict]:
     """Compute BH centroid positions in 3D space for visualization.
 
@@ -447,7 +447,7 @@ def build_single_figure(coords_3d, ids, props, edges, velocities_3d, config,
 
     fig.update_layout(
         title=dict(text=(
-            f"<span style='font-size:20px'>GER-RAG Cosmos {title_suffix}</span><br>"
+            f"<span style='font-size:20px'>GaOTTT Cosmos {title_suffix}</span><br>"
             f"<sub style='color:#888'>{len(ids)} stars | {len(edges)} filaments | "
             f"Displaced: {displaced} | Moving: {moving} | "
             f"High mass: {high_mass} | Max v: {max_vel:.4f}</sub>"
@@ -500,7 +500,7 @@ def build_comparison_figure(orig_3d, virtual_3d, ids, props, edges, velocities_3
 
     fig.update_layout(
         title=dict(text=(
-            f"<span style='font-size:20px'>GER-RAG Cosmos — Original vs Gravitational Field</span><br>"
+            f"<span style='font-size:20px'>GaOTTT Cosmos — Original vs Gravitational Field</span><br>"
             f"<sub style='color:#888'>{len(ids)} stars | {len(edges)} filaments | "
             f"Displaced: {displaced} | Moving: {moving} | Max velocity: {max_vel:.4f}</sub>"
         )),
@@ -547,16 +547,16 @@ def project_velocities_to_3d(ids, velocities, vectors, method, reducer_or_compon
 # -----------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="GER-RAG Cosmic 3D Visualization")
+    parser = argparse.ArgumentParser(description="GaOTTT Cosmic 3D Visualization")
     parser.add_argument("--method", choices=["pca", "umap"], default="pca")
     parser.add_argument("--open", action="store_true", help="Open in browser")
-    parser.add_argument("--output", default="ger_rag_3d.html")
+    parser.add_argument("--output", default="gaottt_3d.html")
     parser.add_argument("--sample", type=int, default=0, help="Sample N nodes (0=all)")
     parser.add_argument("--compare", action="store_true",
                         help="Side-by-side: original vs virtual coordinates")
     args = parser.parse_args()
 
-    config = GERConfig.from_config_file()
+    config = GaOTTTConfig.from_config_file()
 
     print("Loading data...")
     vectors, ids, state_map, doc_map, edges, displacements, velocities, cooc_neighbors = asyncio.run(load_data(config))

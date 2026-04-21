@@ -1,6 +1,6 @@
 import math
 
-from ger_rag.core.scorer import compute_certainty_boost, compute_emotion_boost
+from gaottt.core.scorer import compute_certainty_boost, compute_emotion_boost
 
 
 def test_emotion_boost_uses_absolute_value():

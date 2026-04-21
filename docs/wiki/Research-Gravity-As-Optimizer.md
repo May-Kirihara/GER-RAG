@@ -1,14 +1,17 @@
 # Research — Gravity as Optimizer
 
-「GER-RAG は RAG と名乗っているが、本質は **TTT (Test-Time Training)** ではないか？」という問いから、物理ベース更新と既存最適化アルゴリズム（Heavy ball SGD / Hebbian / Adam / SOM 等）の数学的同型関係を整理した研究ノート。
+> **このドキュメントが GaOTTT という名前の根拠** である。
+> 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は「重力を使った RAG」を標榜していた。本ページでの整理を経て **「本質は TTT (Test-Time Training) である」という位置付けが確定** し、改名 GaOTTT (Gravity as Optimizer Test-Time Training) に至った。以下はその論証。
+
+物理ベース更新と既存最適化アルゴリズム（Heavy ball SGD / Hebbian / Adam / SOM 等）の数学的同型関係を整理した研究ノート。
 
 **完全版（参考文献付き）**: [`docs/research/gravity-as-optimizer.md`](../research/gravity-as-optimizer.md)
 
 ## TL;DR
 
-GER-RAG の重力 + 軌道力学による更新は、形式的には **「Hebbian 引力 + L2 正則化を、Verlet 積分（leapfrog）で解く Heavy ball SGD」** と同型。明示的な loss 関数は無いが、暗黙の potential energy が最小化されている。
+GaOTTT の重力 + 軌道力学による更新は、形式的には **「Hebbian 引力 + L2 正則化を、Verlet 積分（leapfrog）で解く Heavy ball SGD」** と同型。明示的な loss 関数は無いが、暗黙の potential energy が最小化されている。
 
-これは TTT の一形態であり、**「LLM の重みは frozen のまま、retrieval geometry を online で適応させる」** というアプローチに位置付けられる。
+これは TTT の一形態であり、**「LLM の重みは frozen のまま、retrieval geometry を online で適応させる」** というアプローチに位置付けられる。**比喩ではなく数学的同型** であり、これが命名 GaOTTT の根拠。
 
 ## 同型関係の早見表
 
@@ -34,16 +37,16 @@ U = - Σ_{i,j} cooccur(i,j) × G × m_i × m_j × cos_sim(virtual_pos_i, virtual
 
 ## 既存アルゴリズムとの位置関係
 
-- **Heavy ball method** (Polyak 1964): 物理慣性球から発想された SGD → GER-RAG はその直系
-- **Hebbian Learning** (Hebb 1949): 共起で重みが育つ → GER-RAG の mass + edge 形成と同型
-- **Self-Organizing Maps** (Kohonen 1982): topology 保存的競合学習 → GER-RAG の co-occurrence 版
+- **Heavy ball method** (Polyak 1964): 物理慣性球から発想された SGD → GaOTTT はその直系
+- **Hebbian Learning** (Hebb 1949): 共起で重みが育つ → GaOTTT の mass + edge 形成と同型
+- **Self-Organizing Maps** (Kohonen 1982): topology 保存的競合学習 → GaOTTT の co-occurrence 版
 - **Word2vec** (Mikolov 2013): skip-gram で共起を内積最大化 → 同じ目的関数を online で
 - **Adam** (Kingma & Ba 2014): adaptive LR → mass scaling と類似構造
-- **Hamiltonian Monte Carlo**: leapfrog 積分 → GER-RAG の Stage 1-2-3 そのもの
+- **Hamiltonian Monte Carlo**: leapfrog 積分 → GaOTTT の Stage 1-2-3 そのもの
 
 ## TTT としての独自性
 
-| 項目 | 既存 TTT (Sun et al. 2020) | GER-RAG |
+| 項目 | 既存 TTT (Sun et al. 2020) | GaOTTT |
 |---|---|---|
 | 更新対象 | LLM 重み | retrieval gravity field |
 | 学習信号 | self-supervised loss | co-occurrence statistics (Hebbian) |
@@ -53,7 +56,7 @@ U = - Σ_{i,j} cooccur(i,j) × G × m_i × m_j × cos_sim(virtual_pos_i, virtual
 
 ## 物理法則 = 正則化の集合
 
-GER-RAG の独自性は、**物理的に自然な制約が、機械学習的な regularization と一致** すること:
+GaOTTT の独自性は、**物理的に自然な制約が、機械学習的な regularization と一致** すること:
 
 - Hooke アンカー = L2 weight decay
 - Friction = momentum decay
@@ -77,4 +80,4 @@ GER-RAG の独自性は、**物理的に自然な制約が、機械学習的な 
 - 実装側のスコア式: [Architecture — Gravity Model](Architecture-Gravity-Model.md)
 - 設計時の物理アナロジー意図: [`docs/research/gravitational-displacement-design.md`](../research/gravitational-displacement-design.md)
 - 共有メモリでの distributed TTT 観察: [Multi-Agent Experiment](Research-Multi-Agent-Experiment.md)
-- 哲学的位置付け: [Four-Layer Philosophy](Reflections-Four-Layer-Philosophy.md)
+- 哲学的位置付け: [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)

@@ -1,4 +1,6 @@
-# GER-RAG Wiki
+# GaOTTT Wiki
+
+*(formerly GER-RAG)*
 
 [🏠 Home](Home.md)
 
@@ -7,7 +9,7 @@
 
 ### 🌱 Tutorial / はじめての方へ
 - [1. Welcome](Tutorial-01-Welcome.md)
-- [2. Install GER-RAG](Tutorial-02-Install-GER-RAG.md)
+- [2. Install GaOTTT](Tutorial-02-Install-GaOTTT.md)
 - [3. Connect to Claude](Tutorial-03-Connect-To-Claude.md)
 - [4. First Conversation](Tutorial-04-First-Conversation.md)
 - [5. Everyday Use](Tutorial-05-Everyday-Use.md)
@@ -58,5 +60,5 @@
 
 ### 💭 Reflections
 - [A Note from Claude](Reflections-A-Note-From-Claude.md)
-- [Four-Layer Philosophy](Reflections-Four-Layer-Philosophy.md)
+- [Five-Layer Philosophy](Reflections-Five-Layer-Philosophy.md)
 - [Letter to Mei-san](Reflections-Letter-To-Mei-San.md)

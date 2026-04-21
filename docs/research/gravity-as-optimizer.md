@@ -318,4 +318,4 @@ GER-RAG の設計は、物理シミュレーションのパラメータがその
 - [Gravitational Displacement Design](gravitational-displacement-design.md) ─ 設計時の物理アナロジー意図
 - [Orbital Mechanics Design](orbital-mechanics-design.md) ─ 軌道力学の詳細
 - [Multi-Agent Experiment](multi-agent-experiment-2026-04-21.md) ─ 共有メモリでの distributed TTT 観察
-- [Four-Layer Philosophy](../wiki/Reflections-Four-Layer-Philosophy.md) ─ 物理 → 生物 → 関係 → 人格の四層論
+- [Five-Layer Philosophy](../wiki/Reflections-Five-Layer-Philosophy.md) ─ 物理 → TTT 機構 → 生物 → 関係 → 人格の五層論

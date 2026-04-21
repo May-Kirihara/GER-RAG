@@ -1,6 +1,6 @@
 # MCP Tool Reference — Index
 
-GER-RAG が公開する **25 個の MCP ツール** の早見表。詳細は各カテゴリページに。
+GaOTTT（旧 GER-RAG）が公開する **25 個の MCP ツール** の早見表。MCP サーバー名は `gaottt`（旧 `ger-rag-memory`）。詳細は各カテゴリページに。
 
 ## 早見表
 

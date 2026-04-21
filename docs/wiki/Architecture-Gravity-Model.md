@@ -1,6 +1,6 @@
 # Architecture — Gravity Model
 
-GER-RAG の物理機構の詳細。一次ソース: [`ger_rag/core/gravity.py`](../../ger_rag/core/gravity.py), [`ger_rag/core/scorer.py`](../../ger_rag/core/scorer.py)。
+GaOTTT の物理機構の詳細。一次ソース: [`gaottt/core/gravity.py`](../../gaottt/core/gravity.py), [`gaottt/core/scorer.py`](../../gaottt/core/scorer.py)。
 
 ## スコア式
 
@@ -56,7 +56,7 @@ gravity_radius（mass から物理導出）でカットオフ
 ```
 
 ```python
-# ger_rag/config.py
+# gaottt/config.py
 def compute_gravity_radius(mass) -> float:
     # a = G * m / r² から逆算
     # min_sim = 1 - G*mass / (2*a_min)
@@ -143,11 +143,11 @@ min_sim = 1 - G × mass / (2 × a_min)    # 実際の重力物理から導出
 
 ## 一次ソース
 
-- [`ger_rag/core/gravity.py`](../../ger_rag/core/gravity.py) — 重力計算（純粋関数）
-- [`ger_rag/core/scorer.py`](../../ger_rag/core/scorer.py) — スコア式
-- [`ger_rag/core/collision.py`](../../ger_rag/core/collision.py) — 衝突合体
-- [`ger_rag/core/prefetch.py`](../../ger_rag/core/prefetch.py) — F6
-- [`ger_rag/config.py`](../../ger_rag/config.py) — 全ハイパーパラメータ
+- [`gaottt/core/gravity.py`](../../gaottt/core/gravity.py) — 重力計算（純粋関数）
+- [`gaottt/core/scorer.py`](../../gaottt/core/scorer.py) — スコア式
+- [`gaottt/core/collision.py`](../../gaottt/core/collision.py) — 衝突合体
+- [`gaottt/core/prefetch.py`](../../gaottt/core/prefetch.py) — F6
+- [`gaottt/config.py`](../../gaottt/config.py) — 全ハイパーパラメータ
 - [`docs/research/gravitational-displacement-design.md`](../research/gravitational-displacement-design.md) — 設計根拠
 - [`docs/research/orbital-mechanics-design.md`](../research/orbital-mechanics-design.md)
 - [`docs/research/cooccurrence-blackhole-design.md`](../research/cooccurrence-blackhole-design.md)

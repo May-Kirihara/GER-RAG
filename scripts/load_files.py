@@ -1,4 +1,4 @@
-"""Load files from a directory into GER-RAG via the /index API.
+"""Load files from a directory into GaOTTT via the /index API.
 
 自炊した書籍のmd、メモのtxt、データのcsvなどを一括取り込み。
 
@@ -31,7 +31,7 @@ from pathlib import Path
 
 import httpx
 
-from ger_rag.ingest.loader import ingest_path
+from gaottt.ingest.loader import ingest_path
 
 DEFAULT_URL = "http://localhost:8000"
 DEFAULT_BATCH = 50
@@ -53,7 +53,7 @@ def send_batch(client: httpx.Client, url: str, docs: list[dict]) -> tuple[int, i
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Load files into GER-RAG (md, txt, csv)",
+        description="Load files into GaOTTT (md, txt, csv)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -63,7 +63,7 @@ def main():
         ),
     )
     parser.add_argument("path", help="File or directory to ingest")
-    parser.add_argument("--url", default=DEFAULT_URL, help="GER-RAG server URL")
+    parser.add_argument("--url", default=DEFAULT_URL, help="GaOTTT server URL")
     parser.add_argument("--pattern", default="*.md,*.txt",
                         help="Glob patterns (comma-separated, default: '*.md,*.txt')")
     parser.add_argument("--recursive", "-r", action="store_true",

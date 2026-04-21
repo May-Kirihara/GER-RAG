@@ -1,9 +1,9 @@
 {                                                                                                                                                    
-    "mcpServers": {                                                                                                                                    
-      "ger-rag-memory": {                                                                                                                              
-        "command": "/path/to/your/GER-RAG/.venv/bin/python",     
-        "args": ["-m", "ger_rag.server.mcp_server"],   
-        "cwd": "/path/to/your/GER-RAG"                   
-      }                                                                                                                                                
-    }                                         
+    "mcpServers": {
+      "gaottt": {
+        "command": "/path/to/your/GaOTTT/.venv/bin/python",
+        "args": ["-m", "gaottt.server.mcp_server"],
+        "cwd": "/path/to/your/GaOTTT"
+      }
+    }
   }

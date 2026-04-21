@@ -1,6 +1,6 @@
 # Operations — Server Setup
 
-GER-RAG の環境構築、データ投入、2 種類のサーバー（REST と MCP）の起動・停止・登録方法。
+GaOTTT の環境構築、データ投入、2 種類のサーバー（REST と MCP）の起動・停止・登録方法。
 
 ## 環境要件
 
@@ -40,10 +40,10 @@ uv pip install -e ".[dev]"
 
 ```bash
 # 起動
-.venv/bin/uvicorn ger_rag.server.app:app --host 0.0.0.0 --port 8000
+.venv/bin/uvicorn gaottt.server.app:app --host 0.0.0.0 --port 8000
 
 # 開発時（自動リロード）
-.venv/bin/uvicorn ger_rag.server.app:app --reload
+.venv/bin/uvicorn gaottt.server.app:app --reload
 
 # 停止: Ctrl+C → graceful shutdown → dirty フラッシュ → FAISS 保存
 ```
@@ -56,10 +56,10 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 ```bash
 # stdio (Claude Code / Claude Desktop)
-.venv/bin/python -m ger_rag.server.mcp_server
+.venv/bin/python -m gaottt.server.mcp_server
 
 # SSE (リモートクライアント)
-.venv/bin/python -m ger_rag.server.mcp_server --transport sse --port 8001
+.venv/bin/python -m gaottt.server.mcp_server --transport sse --port 8001
 ```
 
 公開ツール（25 個）:
@@ -78,9 +78,9 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 ```json
 {
   "mcpServers": {
-    "ger-rag-memory": {
+    "gaottt": {
       "command": "/path/to/GER-RAG/.venv/bin/python",
-      "args": ["-m", "ger_rag.server.mcp_server"],
+      "args": ["-m", "gaottt.server.mcp_server"],
       "cwd": "/path/to/GER-RAG"
     }
   }
@@ -94,12 +94,12 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 ```json
 {
   "mcp": {
-    "ger-rag-memory": {
+    "gaottt": {
       "type": "local",
       "command": [
         "/path/to/GER-RAG/.venv/bin/python",
         "-m",
-        "ger_rag.server.mcp_server"
+        "gaottt.server.mcp_server"
       ]
     }
   }
@@ -114,13 +114,13 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 
 | OS | データディレクトリ | 設定ファイル |
 |---|---|---|
-| Linux/macOS | `~/.local/share/ger-rag/` | `~/.config/ger-rag/config.json` |
+| Linux/macOS | `~/.local/share/gaottt/` | `~/.config/ger-rag/config.json` |
 | Windows | `%LOCALAPPDATA%\ger-rag\` | `%APPDATA%\ger-rag\config.json` |
 
 カスタマイズ:
 ```bash
-export GER_RAG_DATA_DIR=/path/to/data
-export GER_RAG_CONFIG=/path/to/config.json
+export GAOTTT_DATA_DIR=/path/to/data
+export GAOTTT_CONFIG=/path/to/config.json
 ```
 
 ## データ投入

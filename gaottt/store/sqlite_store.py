@@ -9,8 +9,8 @@ import aiosqlite
 import msgpack
 import numpy as np
 
-from ger_rag.core.types import CooccurrenceEdge, DirectedEdge, NodeState
-from ger_rag.store.base import StoreBase
+from gaottt.core.types import CooccurrenceEdge, DirectedEdge, NodeState
+from gaottt.store.base import StoreBase
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (

@@ -7,40 +7,40 @@ import uuid
 
 import numpy as np
 
-from ger_rag.config import GERConfig
-from ger_rag.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
-from ger_rag.core.collision import MergeOutcome, merge_pair, pick_survivor
-from ger_rag.core.gravity import (
+from gaottt.config import GaOTTTConfig
+from gaottt.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
+from gaottt.core.collision import MergeOutcome, merge_pair, pick_survivor
+from gaottt.core.gravity import (
     compute_virtual_position,
     propagate_gravity_wave,
     update_orbital_state,
 )
-from ger_rag.core.prefetch import PrefetchCache, PrefetchPool
-from ger_rag.core.scorer import (
+from gaottt.core.prefetch import PrefetchCache, PrefetchPool
+from gaottt.core.scorer import (
     compute_certainty_boost,
     compute_decay,
     compute_emotion_boost,
     compute_mass_boost,
 )
-from ger_rag.core.types import (
+from gaottt.core.types import (
     CooccurrenceEdge,
     DirectedEdge,
     NodeState,
     QueryResultItem,
 )
-from ger_rag.embedding.ruri import RuriEmbedder
-from ger_rag.graph.cooccurrence import CooccurrenceGraph
-from ger_rag.index.faiss_index import FaissIndex
-from ger_rag.store.cache import CacheLayer
-from ger_rag.store.sqlite_store import SqliteStore
+from gaottt.embedding.ruri import RuriEmbedder
+from gaottt.graph.cooccurrence import CooccurrenceGraph
+from gaottt.index.faiss_index import FaissIndex
+from gaottt.store.cache import CacheLayer
+from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
 
 
-class GEREngine:
+class GaOTTTEngine:
     def __init__(
         self,
-        config: GERConfig,
+        config: GaOTTTConfig,
         embedder: RuriEmbedder,
         faiss_index: FaissIndex,
         cache: CacheLayer,

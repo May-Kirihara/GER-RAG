@@ -1,6 +1,6 @@
 # Plans — Roadmap
 
-GER-RAG の Phase 進捗と未実装機能の俯瞰。
+GaOTTT の Phase 進捗と未実装機能の俯瞰。
 
 ## 進捗サマリ
 

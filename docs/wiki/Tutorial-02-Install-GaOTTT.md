@@ -1,8 +1,10 @@
-# 🌱 はじめての GER-RAG (2/6) — インストール
+# 🌱 はじめての GaOTTT (2/6) — インストール
 
-このページでは、パソコンに GER-RAG を入れます。
+このページでは、パソコンに GaOTTT（旧 GER-RAG）を入れます。
 
-← [前: Welcome](Tutorial-01-Welcome.md) ｜ → [次: LLM に接続](Tutorial-03-Connect-To-LLM.md)
+> **改名お知らせ**: 旧名 GER-RAG (Gravity-Based Event-Driven RAG) は 2026-04 に GaOTTT (Gravity as Optimizer Test-Time Training) に改名されました。GitHub リポジトリ URL の改名は作業中（`GER-RAG.git` はリダイレクトで引き続き利用可）。このページの手順もそのまま動きます。
+
+← [前: Welcome](Tutorial-01-Welcome.md) ｜ → [次: LLM に接続](Tutorial-03-Connect-To-Claude.md)
 
 ---
 
@@ -98,9 +100,9 @@ uv --version
 
 ---
 
-## ステップ 4: GER-RAG をダウンロード
+## ステップ 4: GaOTTT をダウンロード
 
-GER-RAG のソースコードを、自分のパソコンに持ってきます。
+GaOTTT のソースコードを、自分のパソコンに持ってきます。
 
 ```bash
 cd ~
@@ -109,6 +111,8 @@ cd GER-RAG
 ```
 
 > 💡 `git` も入ってない場合: Mac は `xcode-select --install`、Windows は https://git-scm.com/download/win から入れてください。
+>
+> 📝 上記 URL は改名前のものですが、GitHub が自動でリダイレクトしてくれるので問題ありません。
 
 ### こう見えたら成功 ✅
 
@@ -117,7 +121,7 @@ $ cd GER-RAG
 GER-RAG $
 ```
 
-ターミナルの先頭が `GER-RAG` っぽい表示になれば、フォルダの中に入れています。
+ターミナルの先頭が `GER-RAG` っぽい表示になれば、フォルダの中に入れています（フォルダ名は近日中に GaOTTT に変わる予定）。
 
 ---
 
@@ -142,16 +146,16 @@ uv pip install -e ".[dev]"
 
 ## ステップ 6: 動作確認
 
-GER-RAG が動くかちょっとだけ試します:
+GaOTTT が動くかちょっとだけ試します:
 
 ```bash
-.venv/bin/python -c "from ger_rag.config import GERConfig; print('GER-RAG is ready!')"
+.venv/bin/python -c "from gaottt.config import GaOTTTConfig; print('GaOTTT is ready!')"
 ```
 
 ### こう見えたら成功 ✅
 
 ```
-GER-RAG is ready!
+GaOTTT is ready!
 ```
 
 このメッセージが出れば、**インストール完了です** 🎉
@@ -160,17 +164,17 @@ GER-RAG is ready!
 
 ## 次のステップ
 
-これで GER-RAG はパソコンに入りました。
-次は LLM Desktop に GER-RAG を繋ぎます。
+これで GaOTTT はパソコンに入りました。
+次は LLM Desktop に GaOTTT を繋ぎます。
 
-→ [次へ: LLM に接続](Tutorial-03-Connect-To-LLM.md)
+→ [次へ: LLM に接続](Tutorial-03-Connect-To-Claude.md)
 
 ---
 
 ### 💡 何が起きたか（興味があれば）
 
-- `~/GER-RAG` フォルダに、GER-RAG 一式が入りました
-- `.venv` フォルダの中に、GER-RAG だけが使う Python 環境ができました（あなたのパソコン全体に影響しません）
+- `~/GER-RAG` フォルダに、GaOTTT 一式が入りました（フォルダ名は `GaOTTT` に変わる予定）
+- `.venv` フォルダの中に、GaOTTT だけが使う Python 環境ができました（あなたのパソコン全体に影響しません）
 - 初回のインストールで、約 1〜2GB のファイルがダウンロードされています
 
 不要になったら `~/GER-RAG` フォルダを丸ごと削除すれば、すべて綺麗に消えます。
