@@ -1,4 +1,4 @@
-"""Load documents.csv into GER-RAG via the /index API.
+"""Load documents.csv into GaOTTT via the /index API.
 
 Usage:
     python scripts/load_csv.py [--url URL] [--batch-size N] [--max-chunk-chars N]
@@ -135,8 +135,8 @@ def send_batch(client: httpx.Client, url: str, docs: list[dict]) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Load documents.csv into GER-RAG")
-    parser.add_argument("--url", default=DEFAULT_URL, help="GER-RAG server URL")
+    parser = argparse.ArgumentParser(description="Load documents.csv into GaOTTT")
+    parser.add_argument("--url", default=DEFAULT_URL, help="GaOTTT server URL")
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
     parser.add_argument("--max-chunk-chars", type=int, default=MAX_CHUNK_CHARS)
     parser.add_argument("--csv", default="input/documents.csv", help="Path to CSV")

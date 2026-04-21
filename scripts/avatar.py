@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GER-RAG Avatar: Self-representing AI assistant using gravitational memory."""
+"""GaOTTT Avatar: Self-representing AI assistant using gravitational memory."""
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,7 +29,7 @@ class AvatarCapability:
     description: str
 
 
-class GER_RAG_Avatar:
+class GaOTTT_Avatar:
     def __init__(self, mcp_url: str = "http://localhost:8001/mcp"):
         self.mcp_url = mcp_url
         self.session: ClientSession | None = None
@@ -96,7 +96,7 @@ class GER_RAG_Avatar:
             "model": "glm-5",
             "model_id": "zai-coding-plan/glm-5",
             "role": "AI software engineering assistant",
-            "memory_system": "GER-RAG (Gravitational Entanglement Relevance)",
+            "memory_system": "GaOTTT (Gravity as Optimizer Test-Time Training)",
             "platform": "opencode CLI",
         }
 
@@ -121,7 +121,7 @@ class GER_RAG_Avatar:
 
     def describe(self) -> str:
         lines = [
-            "# GER-RAG Avatar",
+            "# GaOTTT Avatar",
             "",
             "## Identity",
         ]
@@ -157,7 +157,7 @@ class GER_RAG_Avatar:
             return []
         try:
             result = await self.session.call_tool(
-                "ger-rag-memory_recall", {"query": query, "top_k": 5}
+                "gaottt_recall", {"query": query, "top_k": 5}
             )
             return result.content if hasattr(result, "content") else []
         except Exception:
@@ -168,7 +168,7 @@ class GER_RAG_Avatar:
             return
         try:
             await self.session.call_tool(
-                "ger-rag-memory_remember",
+                "gaottt_remember",
                 {
                     "content": content,
                     "source": "agent",
@@ -179,11 +179,11 @@ class GER_RAG_Avatar:
             pass
 
     def __repr__(self) -> str:
-        return f"GER_RAG_Avatar(model={self._identity['model']}, traits={len(self._traits)}, capabilities={len(self._capabilities)})"
+        return f"GaOTTT_Avatar(model={self._identity['model']}, traits={len(self._traits)}, capabilities={len(self._capabilities)})"
 
 
 def main():
-    avatar = GER_RAG_Avatar()
+    avatar = GaOTTT_Avatar()
     print(avatar.describe())
     print()
     print("---")

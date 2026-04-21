@@ -1,6 +1,6 @@
-"""Step 1: GER-RAG評価データ書き出し
+"""Step 1: GaOTTT評価データ書き出し
 
-サーバーにクエリを投げ、静的RAG順位とGER-RAG順位の両方を記録し、
+サーバーにクエリを投げ、静的RAG順位とGaOTTT順位の両方を記録し、
 LLM判定用のプロンプトファイルを生成する。
 
 Usage:
@@ -139,7 +139,7 @@ def get_node_info(client: httpx.Client, url: str, node_id: str) -> dict:
 
 
 def collect_comparison_data(url: str, top_k: int) -> list[dict]:
-    """各クエリに対しGER-RAG順と静的順の結果を収集する。"""
+    """各クエリに対しGaOTTT順と静的順の結果を収集する。"""
     records = []
 
     with httpx.Client() as client:
@@ -298,7 +298,7 @@ def collect_session_data(url: str, top_k: int, rounds: int) -> list[dict]:
 def generate_judge_prompt(records: list[dict], out_path: str) -> None:
     """LLMに渡す判定プロンプトをMarkdownとして書き出す。"""
     lines = [
-        "# GER-RAG 関連度判定",
+        "# GaOTTT 関連度判定",
         "",
         "以下の各クエリに対して、検索結果の各ドキュメントの関連度を0-3のスケールで判定してください。",
         "",
@@ -342,7 +342,7 @@ def generate_judge_prompt(records: list[dict], out_path: str) -> None:
             lines.append(f"> {content}")
             lines.append("")
 
-        lines.append(f"### {qid} GER-RAG順位 (dynamic scoring)")
+        lines.append(f"### {qid} GaOTTT順位 (dynamic scoring)")
         lines.append("")
         for doc in rec["ger_ranking"]:
             content = doc["content"].replace("\n", " ").strip()
@@ -360,7 +360,7 @@ def generate_judge_prompt(records: list[dict], out_path: str) -> None:
 def generate_session_prompt(records: list[dict], out_path: str) -> None:
     """セッション適応性のBefore/After判定プロンプトを書き出す。"""
     lines = [
-        "# GER-RAG セッション適応性 関連度判定",
+        "# GaOTTT セッション適応性 関連度判定",
         "",
         "各シナリオで、異なるトピックの交互クエリを大量に実行した前後で",
         "観測クエリの検索結果がどう変わったかを判定してください。",
@@ -413,7 +413,7 @@ def generate_session_prompt(records: list[dict], out_path: str) -> None:
             lines.append("")
 
         # After
-        lines.append(f"### {sid} After（トレーニング後 = GER-RAG動的状態蓄積済み）")
+        lines.append(f"### {sid} After（トレーニング後 = GaOTTT動的状態蓄積済み）")
         lines.append("")
         for doc in rec["after"]:
             content = doc["content"].replace("\n", " ").strip()
@@ -454,7 +454,7 @@ def generate_session_prompt(records: list[dict], out_path: str) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GER-RAG 評価データ書き出し")
+    parser = argparse.ArgumentParser(description="GaOTTT 評価データ書き出し")
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--session", action="store_true",
@@ -462,7 +462,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=20,
                         help="Training rounds per scenario (default: 20)")
     parser.add_argument("--skip-comparison", action="store_true",
-                        help="Skip static vs GER-RAG comparison")
+                        help="Skip static vs GaOTTT comparison")
     parser.add_argument("--out-dir", default="eval_output")
     args = parser.parse_args()
 

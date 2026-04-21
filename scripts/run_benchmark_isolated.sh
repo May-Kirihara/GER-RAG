@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run the GER-RAG benchmark suite against an isolated bench DB so the
-# user's production memory at ~/.local/share/ger-rag/ is never touched.
+# Run the GaOTTT benchmark suite against an isolated bench DB so the
+# user's production memory at ~/.local/share/gaottt/ (or legacy
+# ~/.local/share/ger-rag/) is never touched.
 #
 # Usage:  scripts/run_benchmark_isolated.sh [doc_limit]
 #   doc_limit defaults to 200. Pass 0 for the full corpus (slow).
@@ -8,7 +9,7 @@ set -euo pipefail
 
 DOC_LIMIT="${1:-200}"
 PORT="${BENCH_PORT:-8765}"
-BENCH_DIR="${BENCH_DIR:-/tmp/ger-rag-bench}"
+BENCH_DIR="${BENCH_DIR:-/tmp/gaottt-bench}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PROJECT_ROOT}/.venv/bin/python"
 URL="http://127.0.0.1:${PORT}"
@@ -19,11 +20,11 @@ mkdir -p "${BENCH_DIR}"
 
 cat <<EOF
 ================================================================
-  GER-RAG isolated benchmark
+  GaOTTT isolated benchmark
   bench dir : ${BENCH_DIR}
   port      : ${PORT}
   doc limit : ${DOC_LIMIT}
-  prod DB at ~/.local/share/ger-rag/ is NOT touched.
+  prod DB at ~/.local/share/gaottt/ (and legacy ger-rag/) is NOT touched.
 ================================================================
 EOF
 
@@ -38,11 +39,11 @@ trap cleanup EXIT
 
 cd "${PROJECT_ROOT}"
 
-export GER_RAG_DATA_DIR="${BENCH_DIR}"
-unset GER_RAG_CONFIG  # ignore prod config file if any
+export GAOTTT_DATA_DIR="${BENCH_DIR}"
+unset GAOTTT_CONFIG GER_RAG_CONFIG  # ignore prod config files if any
 
 echo "[1/4] Starting uvicorn on port ${PORT} (model load may take 10-30s)..."
-"${PYTHON}" -m uvicorn ger_rag.server.app:app \
+"${PYTHON}" -m uvicorn gaottt.server.app:app \
     --host 127.0.0.1 --port "${PORT}" \
     >"${LOG_FILE}" 2>&1 &
 SERVER_PID=$!
