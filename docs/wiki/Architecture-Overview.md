@@ -102,7 +102,8 @@ top-K 返却（プレゼンテーション層）
 
 | レイヤ | 責務 |
 |---|---|
-| **server/** | プロトコル変換（REST / MCP） |
+| **server/** | プロトコル変換（REST / MCP）。各 MCP ツール・REST エンドポイントは `services/` を叩く薄いラッパ |
+| **services/** | engine を叩いて Pydantic を返す共有ビジネスロジック層（Phase S, 2026-04-22 新設）。MCP 向け整形文字列は `services/formatters.py` に集約 |
 | **core/** | 物理シミュレーション、スコアリング、ロジック |
 | **embedding/** | テキスト → ベクトル |
 | **index/** | ベクトル近傍探索 |
@@ -142,6 +143,8 @@ GaOTTT の主要な設計選択とその根拠:
 | **タスク状態を edge で表現 (Phase D)** | `task_status` 列を持たず、`completed`/`abandoned` エッジの存在で判定 | 完了の重力史が人格の年表になる |
 | **人格を多源で表現 (Phase D)** | source = task / commitment / intention / value / style / relationship:* | 既存スキーマで実現、新テーブル不要 |
 | **inherit_persona の儀式化** | 散文出力で過去の自分を着る | 柱 X「観測者を創ること即存在」のセッション継承版 |
+| **共有サービス層 (Phase S, 2026-04-22)** | `gaottt/services/` が engine を叩き Pydantic を返す。MCP は formatter で文字列化、REST は JSON で直返却 | 同じロジックが二重実装にならず、REST が MCP parity に引き上がる。代替案（文字列 JSON ラップ / MCP 廃止 / 直 import）は [`docs/maintainers/rest-mcp-unification-plan.md`](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md) §6 で却下理由記録済み |
+| **`/reset` は REST 専用** | MCP には露出しない | LLM エージェントに破壊的 reset を出さない現状判断を継承 |
 
 ## エントリポイントの読み方
 
@@ -151,8 +154,8 @@ GaOTTT の主要な設計選択とその根拠:
 2. **MCP 起動**: [`server/mcp_server.py`](../../gaottt/server/mcp_server.py) の `get_engine()` → 遅延初期化
 3. **クエリ処理**: [`engine.query()`](../../gaottt/core/engine.py) → `gravity.propagate_gravity_wave()` → 仮想座標スコアリング
 4. **軌道力学**: `engine._update_simulation()` → `gravity.update_orbital_state()`（3 段階物理）
-5. **MCP `remember`**: `mcp_server.remember()` → `_save_memory()` → `engine.index_documents()`
-6. **MCP `commit`** (Phase D): `mcp_server.commit()` → `_save_memory(source="task")` → `engine.relate(fulfills, parent)`
+5. **MCP `remember`**: `mcp_server.remember()` → `services.memory.remember()` → `services.memory.save_memory()` → `engine.index_documents()` → `formatters.format_remember()`
+6. **MCP `commit`** (Phase D): `mcp_server.commit()` → `services.phase_d.commit()` → `save_memory(source="task")` → `engine.relate(fulfills, parent)` → `formatters.format_commit()`
 
 ## 詳細セクション
 

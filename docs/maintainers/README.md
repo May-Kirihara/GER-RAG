@@ -13,6 +13,7 @@
 | [Rename Plan: GER-RAG → GaOTTT](rename-to-gaottt-plan.md) | 改名プロジェクトの全 Phase の作業計画と決定事項 |
 | [Rename Handover (Session 1-3)](rename-handover.md) | 改名プロジェクトの各セッション引き継ぎ・完了記録 |
 | [Session Handover — 2026-04-21](handover.md) | 改名後のドキュメント温度調整 + bootstrap_report 実装セッションの引き継ぎ |
+| [REST × MCP Unification Plan](rest-mcp-unification-plan.md) | REST API を MCP parity まで引き上げ、共有サービス層に集約するリファクタ計画（Phase S0-S6） |
 
 ## 将来追加されうる項目
 
