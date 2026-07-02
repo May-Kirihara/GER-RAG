@@ -74,13 +74,14 @@ async def _virtual_faiss_save_loop(self) -> None:
 - 一時的な bulk 書き換え（Stage 0 priming 等）の前に、他の MCP server プロセスを `kill` して flush ループを止める。書き込み完了後に再起動。
 - 段階的に運用したい場合は、書き換え対象 node の `last_access` を更新するなど、**通常の write-behind tick で自然に dirty になる経路** を経由する。
 - **構造的解** (2026-05-13): MCP を **streamable-http transport で 1 process だけ常駐** させ、複数 agent (Claude Code / opencode / 他) はその HTTP server に接続して engine を共有する。これで cache 自体が単一になり、bidirectional overwrite の前提が消える。詳細: [Operations — Server Setup](Operations-Server-Setup.md)「起動モード」。stdio mode は legacy として残るが multi-agent 環境では非推奨。
+- **構造的解 (2): owner lease (MV2 — 2026-07-02)**: 同じ `data_dir` を複数プロセスが開くこと自体を機構で防ぐ。`OwnerLease`（`<data_dir>/owner.lock` + `fcntl.flock` guard file）が「1 宇宙 1 書き込みオーナー」を強制し、2 つ目のプロセスの `startup()` が `LeaseHeldError` で落ちる。オーナーは heartbeat（既定 10s 周期）で生存を更新し、heartbeat 停止 > `lease_stale_seconds`（既定 60s）で別プロセスが takeover 可（`--force-takeover` で強制も可）。lease 喪失時（heartbeat read-back で owner_id 不一致検出）は engine が **read-only に遷移**: cache flush / FAISS save の全永続化経路（write-behind loop / final flush / FAISS save loop / virtual FAISS save loop の 4 経路）を `_persist_blocked` latch で skip、mutating operation 14 種は `LeaseLostError` で拒否、`query` / `prefetch` は passive フォールバック（結果返す・field 更新しない）、read 系（`recall(passive=True)` / `get_node` / `reflect`）は継続。standalone 構成は `owner_lease_enabled=False`（default）で無効、supervisor 管理宇宙は `manifest.managed=True` で config に関係なく強制。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 2、[Operations — Tuning](Operations-Tuning.md)「Multiverse owner lease」節。
 
 ### Dream loop（Phase G — Stage 2）
 
 `startup()` で起動するもう一つのバックグラウンドタスク。`config.dream_interval_seconds`（既定 60s）周期で quiet node を synthetic recall し、co-occurrence と gravity 場を時間軸で育てる。
 
 - 並行 task: `_dream_task`（停止 event は `_dream_stop`）
-- shutdown 順: dream → raw faiss save → virtual faiss save → cache write-behind の順で停止
+- shutdown 順: dream → lease heartbeat → raw faiss save → virtual faiss save → cache write-behind の順で停止（MV2 以降: write-behind 停止後に ownership 再検証 → final flush → final FAISS save → lease release）
 - 例外は loop 内で握りつぶし、次 tick で retry
 - `dream_enabled=False` または `dream_interval_seconds=0` で完全 skip
 - マルチプロセス: 各プロセスが独自の dream loop を持つ。同じ DB に対して複数プロセスが synthetic recall を撃つ → mass 加算が二重に進む可能性は理論上あるが、`return_count` は更新しないので saturation は乱れず、運用上の影響は小さい

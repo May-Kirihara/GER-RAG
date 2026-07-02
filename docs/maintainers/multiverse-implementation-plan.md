@@ -9,7 +9,7 @@
 **完了マーク**:
 - ✅ MV0: EmbedderProtocol + 宇宙 manifest（土台、挙動変更ゼロ）— 2026-07-02 完了
 - ✅ MV1: embedding service + RemoteEmbedder — 2026-07-02 完了（Tier 6 数値等価は次セッションで real RURI 実施）
-- ⬜ MV2: owner lease（1 宇宙 1 書き込みオーナーの機構化）
+- ✅ MV2: owner lease（1 宇宙 1 書き込みオーナーの機構化）— 2026-07-02 完了（default OFF、managed 強制、Codex review 3 巡: 2 blocking → 構造的解消、54 test: 21 unit + 33 integration 全緑）
 - ⬜ MV3: universe supervisor + multiverse layout
 - ⬜ MV4: control plane（Postgres）
 - ⬜ MV5: backup / DR（Litestream + runbook + DR drill）

@@ -1253,7 +1253,23 @@ def main():
             "Default 60."
         ),
     )
+    parser.add_argument(
+        "--force-takeover", action="store_true", default=False,
+        help=(
+            "Force-take the owner lease even if another process holds a "
+            "fresh one. Use only when you know the current owner is dead. "
+            "Sets GAOTTT_LEASE_FORCE_TAKEOVER=true for the process (and "
+            "any spawned backend in proxy mode)."
+        ),
+    )
     args = parser.parse_args()
+
+    # MV2 — propagate --force-takeover into the GAOTTT_* env layer so the
+    # generic override loop raises config.lease_force_takeover for both this
+    # process's runtime config and any backend spawned by proxy mode (which
+    # inherits the environment).
+    if args.force_takeover:
+        os.environ["GAOTTT_LEASE_FORCE_TAKEOVER"] = "true"
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")

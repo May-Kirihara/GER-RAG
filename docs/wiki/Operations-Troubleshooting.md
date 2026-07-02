@@ -383,6 +383,26 @@ target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が
 
 **Phase N tuning target**(未着手): RRF-mode を検出して mass term を score scale に正規化するか、rank-based boost に切り替える。詳細: [Plans — Roadmap](Plans-Roadmap.md)。
 
+## `LeaseHeldError` / `LeaseLostError` が出る（MV2 owner lease）
+
+**症状**: engine 起動時に `LeaseHeldError: owner.lock is held by another active process`、または運用中に mutating 操作（`remember` / `forget` / `relate` 等）が `LeaseLostError: Engine is read-only: the write lease was lost to another process` で失敗する。
+
+**原因**: MV2 owner lease（`owner_lease_enabled=True` または `manifest.managed=True` の宇宙）では、同じ `data_dir` に対して書き込めるプロセスは常に 1 つ（1 宇宙 1 書き込みオーナー）。2 つ目のプロセスが `startup()` すると `LeaseHeldError`。オーナーの heartbeat が `lease_stale_seconds`（既定 60s）以上止まると別プロセスが takeover 可能になり、元オーナーは次 heartbeat で `LeaseLostError`（read-only 遷移）を受ける。
+
+**対処 — `LeaseHeldError`（起動時）**:
+- 保持しているプロセスが生きているなら、それを使う（2 つ目を開かない）
+- 保持プロセスがクラッシュした確証があるなら `--force-takeover`（または `GAOTTT_LEASE_FORCE_TAKEOVER=true`）で起動 → stale lease を奪取
+- **standalone 構成で不要なら**: `owner_lease_enabled=False`（default）のままならそもそも発動しない。managed 宇宙（supervisor 管理下）は `manifest.json` の `managed` を `false` に書き換えることで回避可能だが、事故防御を外す操作なので runbook でのみ案内
+
+**対処 — `LeaseLostError`（運用中）**:
+- 別プロセス（supervisor 経由の respawn 等）が takeover した。現在のオーナー経由で再接続する
+- read 系（`recall(passive=True)` / `get_node` / `reflect`）は引き続き成功する。mutating 操作のみ拒否されている
+- engine の shutdown は安全（stale write しない、他者 lock を消さない）
+
+**注意**: lease 機構は **local filesystem の POSIX semantics**（`O_EXCL` / `fcntl.flock` / `os.replace`）に依存する。NFS / CIFS 等 network filesystem 上の `data_dir` では信頼できない — v1 は local FS のみサポート。
+
+→ 関連: [Architecture — Concurrency](Architecture-Concurrency.md)「構造的解 (2): owner lease」、[Operations — Tuning](Operations-Tuning.md)「Multiverse owner lease」節
+
 ## 診断ツール一覧 (read-only)
 
 retrieval / mass / displacement の挙動を読み解くための副作用なしスクリプト群。本番 DB に対して安全に走らせて良い (write しない、cache を汚さない)。

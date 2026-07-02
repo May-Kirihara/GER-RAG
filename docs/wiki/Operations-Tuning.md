@@ -436,6 +436,23 @@ embedding model（RURI）のロードを engine プロセスから分離し、�
 
 > **起動方法**: `python -m gaottt.embedding.service --host 127.0.0.1 --port 7879 --model cl-nagoya/ruri-v3-310m`。**非 localhost への bind は拒否**（認証を持たない service なので `/encode` が外部に露出するのを防ぐ）。systemd 雛形: `deploy/gaottt-embedder.service`。詳細は [Operations — Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節
 
+## Multiverse owner lease (MV2 — 2026-07-02)
+
+同じ `data_dir` を複数プロセスが開いて write-behind が後勝ちする事故クラス（[bidirectional cache overwrite](Architecture-Concurrency.md) / [FAISS reverse-overwrite](Operations-Troubleshooting.md)）を機構で閉じる。1 宇宙 1 書き込みオーナーを強制し、lease 喪失時は read-only 遷移する。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 2、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV2。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| owner_lease_enabled | `False` | **standalone 構成向け**。`True` で lease を有効化。**managed 宇宙（`manifest.managed=True`）はこの knob に関わらず強制** — supervisor 管理下の宇宙をどの entry point から開いても lease が効く |
+| lease_force_takeover | `False` | takeover の canonical 経路。`GAOTTT_LEASE_FORCE_TAKEOVER=true` または CLI `--force-takeover`（mcp_server）で立てる。stale でない（fresh な heartbeat の）lease でも強制奪取する |
+| lease_heartbeat_seconds | `10.0` | lease オーナーの生存通知周期（秒）。この周期で `owner.lock` の `heartbeat_at` を更新 |
+| lease_stale_seconds | `60.0` | heartbeat がこの秒数以上停止した lease は stale と判定され、別プロセスが takeover 可能になる。`now - heartbeat_at > lease_stale_seconds`（厳密 `>`、`==` は stale ではない） |
+
+> **lease 喪失時の挙動**: heartbeat read-back で `owner_id` 不一致を検出すると、engine は即座に read-only に遷移する。cache flush / FAISS save の全永続化経路（4 経路）を `_persist_blocked` latch で skip、mutating operation 14 種は `LeaseLostError` で拒否、`query` / `prefetch` は passive フォールバック（結果を返すが field を更新しない）。read 系（`recall(passive=True)` / `get_node` / `reflect`）は継続。詳細: [Operations — Troubleshooting](Operations-Troubleshooting.md)「LeaseHeldError / LeaseLostError が出る」
+
+> **filesystem 要件**: lease 機構は `O_CREAT\|O_EXCL` / `fcntl.flock` / `os.replace` の POSIX semantics に依存する。NFS / CIFS 等 network filesystem 上では信頼できない — v1 は local FS のみサポート
+
+> **default OFF の理由と昇格計画**: 既存 standalone 構成の挙動を変えないため OFF で導入。managed 宇宙は上記のとおり manifest で強制。この機構は standalone でも事故防止に有効（reverse-overwrite incident の再発防止と同型）なので、1-2 週の dogfooding 後に code default ON への昇格を判断する
+
 ---
 
 ## チューニングの典型シナリオ

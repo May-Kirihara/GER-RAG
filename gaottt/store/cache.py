@@ -99,6 +99,13 @@ class CacheLayer:
         # Kept on the cache (not the engine) so unit tests that mutate
         # displacement without an engine still set it consistently.
         self.virtual_faiss_dirty: bool = False
+        # MV2 — lease-loss read-only latch. Flipped True by the engine when
+        # its heartbeat detects the owner changed. ``flush_to_store`` honours
+        # it so dirty cache never reaches SQLite after a takeover (prevents
+        # reverse-overwriting the new owner's state). Write-behind loop,
+        # shutdown final flush, and every explicit flush all route through
+        # ``flush_to_store``, so this single gate covers them.
+        self.persist_blocked: bool = False
         self._flush_interval = flush_interval
         self._flush_threshold = flush_threshold
         self._write_behind_task: asyncio.Task | None = None
@@ -561,6 +568,8 @@ class CacheLayer:
     # --- Flush to store ---
 
     async def flush_to_store(self, store: StoreBase) -> None:
+        if self.persist_blocked:
+            return  # read-only: lease lost, no writes to SQLite
         if self.dirty_nodes:
             dirty_states = [
                 self.node_cache[nid]

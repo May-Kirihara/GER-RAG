@@ -138,6 +138,24 @@ class GaOTTTConfig:
     # and always raises — it protects index integrity, not identity.
     manifest_check_enabled: bool = True
 
+    # ---- Owner lease (single-owner coordination, WP-2) -----------------------
+    # Ops / coordination layer, NOT physics. When ``owner_lease_enabled`` the
+    # engine (WP-4) wraps its startup in an ``OwnerLease`` that coordinates
+    # exclusive ownership of the data directory across processes via
+    # ``owner.lock`` + ``owner.lock.guard`` (flock). The lease implementation
+    # lives in ``gaottt/store/lease.py``; these knobs only configure it.
+    # Defaults keep the feature OFF so existing deployments are bit-exact until
+    # an operator opts in. Env via the generic loop: GAOTTT_<UPPER>.
+    owner_lease_enabled: bool = False
+    # Acquire supersedes an otherwise-active owner without staleness checks —
+    # escape hatch for a wedged owner whose heartbeat is still fresh.
+    lease_force_takeover: bool = False
+    # heartbeat_loop write cadence (seconds). Must stay comfortably below
+    # lease_stale_seconds so a live owner is never misjudged stale.
+    lease_heartbeat_seconds: float = 10.0
+    # A lock whose heartbeat is older than this (strict ``>``) is takeable.
+    lease_stale_seconds: float = 60.0
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 

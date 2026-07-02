@@ -45,6 +45,7 @@ from gaottt.graph.cooccurrence import CooccurrenceGraph
 from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
+from gaottt.store.lease import LeaseLostError, OwnerLease
 from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
@@ -138,6 +139,20 @@ class GaOTTTEngine:
         # dream_enabled=False or dream_interval_seconds<=0.
         self._dream_task: asyncio.Task | None = None
         self._dream_stop: asyncio.Event | None = None
+        # MV2 — engine-wide persist block. Latched True when the lease
+        # heartbeat detects the owner changed (another process took over).
+        # Gates cache flush + FAISS save + mutating method entry (read-only
+        # transition). Mirrored onto ``cache.persist_blocked`` so the
+        # write-behind / virtual-FAISS loops pick it up through their
+        # existing flush / safe-to-persist paths. Default OFF: when
+        # ``owner_lease_enabled`` and ``manifest.managed`` are both False
+        # (the standalone default) no lease is ever acquired and this latch
+        # stays False forever.
+        self._persist_blocked: bool = False
+        self._lease: OwnerLease | None = None
+        self._lease_task: asyncio.Task | None = None
+        self._lease_stop: asyncio.Event | None = None
+        self._lease_lost_warned: bool = False
 
     async def startup(self) -> None:
         # MV0 — universe manifest hard gate. Runs before any store / FAISS
@@ -168,6 +183,17 @@ class GaOTTTEngine:
                 manifest.embedding_dim,
                 self.config.embedding_dim,
             )
+        # MV2 — owner lease. Fires when owner_lease_enabled OR manifest.managed.
+        # Both False (standalone default) → skip entirely: no owner.lock, no
+        # heartbeat task, no release on shutdown. This is the "default 不変"
+        # gate — existing deployments that never set the flag are bit-exact.
+        # LeaseHeldError from acquire() propagates unmasked (the caller's
+        # startup fails loudly, signalling "another process owns this dir").
+        if self.config.owner_lease_enabled or manifest.managed:
+            self._lease = OwnerLease(
+                Path(self.config.data_dir), self.config,
+            )
+            self._lease.acquire(force=self.config.lease_force_takeover)
         await self.store.initialize()
         expired = await self.store.expire_due_nodes(time.time())
         if expired:
@@ -210,6 +236,13 @@ class GaOTTTEngine:
         ):
             self._dream_stop = asyncio.Event()
             self._dream_task = asyncio.create_task(self._dream_loop())
+        # MV2 — lease heartbeat: refresh owner.lock on a fixed cadence so a
+        # foreign takeover (stale/force) is detected and the engine latches
+        # read-only. Only started when a lease was acquired and the cadence
+        # is positive.
+        if self._lease is not None and self.config.lease_heartbeat_seconds > 0:
+            self._lease_stop = asyncio.Event()
+            self._lease_task = asyncio.create_task(self._lease_heartbeat_loop())
         logger.info(
             "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
@@ -267,6 +300,16 @@ class GaOTTTEngine:
                 await asyncio.wait_for(self._dream_task, timeout=10.0)
             except asyncio.TimeoutError:
                 self._dream_task.cancel()
+        # MV2 — stop the lease heartbeat before touching FAISS: the order is
+        # dream → lease heartbeat → FAISS save. Signalling stop lets the
+        # loop exit cleanly; the task then awaits like the others.
+        if self._lease_stop is not None:
+            self._lease_stop.set()
+        if self._lease_task is not None:
+            try:
+                await asyncio.wait_for(self._lease_task, timeout=10.0)
+            except asyncio.TimeoutError:
+                self._lease_task.cancel()
         if self._faiss_save_stop is not None:
             self._faiss_save_stop.set()
         if self._faiss_save_task is not None:
@@ -284,6 +327,18 @@ class GaOTTTEngine:
             except asyncio.TimeoutError:
                 self._virtual_faiss_save_task.cancel()
         await self.cache.stop_write_behind()
+        # MV2 — revalidate ownership AFTER write-behind is fully stopped, so
+        # no background flush can race with the latch. The heartbeat loop
+        # stopped above, but write-behind kept running until the line just
+        # above; with it now cancelled+joined, a final read-back of
+        # ``is_active`` is the single remaining place a takeover (between
+        # heartbeat-stop and here) can be detected. ``is_active`` re-reads
+        # owner.lock without bumping heartbeat_at, so it is safe
+        # mid-shutdown. If the owner changed, ``_on_lease_lost`` latches
+        # ``_persist_blocked`` (and the cache's flag), making the manual
+        # final flush below and the FAISS save further down both no-ops.
+        if self._lease is not None and not self._lease.is_active:
+            self._on_lease_lost()
         await self.cache.flush_to_store(self.store)
         # Final synchronous save guarantees durability even if the loop
         # was disabled or skipped a final tick — but still honour the
@@ -327,6 +382,13 @@ class GaOTTTEngine:
                 )
         else:
             self._log_persist_skip(reason)
+        # MV2 — release the owner lease after the final flush + final FAISS
+        # save so the very last writes land before ownership is relinquished.
+        # ``release()`` is owner_id-guarded: if the lease was lost (persist
+        # blocked), the final flush/save were no-ops and release() leaves the
+        # foreign owner's lock intact. A standalone engine (no lease) skips.
+        if self._lease is not None:
+            self._lease.release()
         self._faiss_dirty = False
         await self.store.close()
         logger.info("Engine shut down, state persisted")
@@ -349,6 +411,8 @@ class GaOTTTEngine:
         active count falls in lockstep and ``size/active`` stays healthy — the
         guard does not misfire on intentional deletion.
         """
+        if self._persist_blocked:
+            return False, "persist blocked (lease lost — engine is read-only)"
         if self._faiss_persist_blocked:
             return False, "persist blocked (startup severe-undersize latch)"
         if not self.config.faiss_persist_guard_enabled:
@@ -558,6 +622,8 @@ class GaOTTTEngine:
         """
         if not self.config.orbital_tick_enabled:
             return
+        if self._persist_blocked:
+            return  # read-only: lease lost, skip mass/displacement writes
 
         v_min = self.config.orbital_lively_v_min
         lively: list[tuple[str, float]] = []
@@ -645,11 +711,61 @@ class GaOTTTEngine:
             self.cache.set_displacement(nid, new_disps[nid])
             self.cache.set_velocity(nid, new_vels[nid])
 
+    async def _lease_heartbeat_loop(self) -> None:
+        """MV2 — refresh owner.lock heartbeat until stop or owner loss.
+
+        On each interval the lease re-reads its lock under the guard and
+        bumps ``heartbeat_at`` iff it still owns it. A foreign owner read
+        back (another process took over via stale/force) flips the engine
+        to read-only via ``_on_lease_lost`` and ends the loop.
+        """
+        assert self._lease_stop is not None
+        assert self._lease is not None
+        interval = self.config.lease_heartbeat_seconds
+        while not self._lease_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._lease_stop.wait(), timeout=interval,
+                )
+                break  # stop signalled
+            except asyncio.TimeoutError:
+                pass  # interval elapsed, try a heartbeat tick
+            if not self._lease._refresh_heartbeat():
+                # Owner_id mismatch read back under the guard — we were
+                # displaced. Transition to read-only and stop refreshing
+                # (further writes would clobber the new owner).
+                self._on_lease_lost()
+                break
+
+    def _on_lease_lost(self) -> None:
+        """Latch the read-only transition after the heartbeat detects loss.
+
+        Sets both the engine-wide ``_persist_blocked`` and the cache's
+        ``persist_blocked`` so every persistence route (write-behind flush,
+        FAISS save loop, virtual-FAISS save loop, shutdown final save /
+        flush, mutating method entry) gates on the same signal. The ERROR
+        log fires once per process (``_lease_lost_warned`` latch).
+        """
+        self._persist_blocked = True
+        self.cache.persist_blocked = True
+        if not self._lease_lost_warned:
+            self._lease_lost_warned = True
+            logger.error(
+                "Owner lease lost — heartbeat detected owner_id mismatch. "
+                "Engine transitioning to read-only. Mutating operations "
+                "will raise LeaseLostError. Reads still work."
+            )
+
     # --- US1: Document Indexing ---
 
     async def index_documents(
         self, documents: list[dict],
     ) -> list[str]:
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         hashes = [
             hashlib.sha256(d["content"].encode("utf-8")).hexdigest()
             for d in documents
@@ -945,6 +1061,13 @@ class GaOTTTEngine:
 
         Either explicit argument bypasses the prefetch cache.
         """
+        # MV2 — read-only transition: when the lease was lost, a query still
+        # returns results but must NOT perturb the gravity field. Forcing
+        # ``passive=True`` routes through the existing passive gates (mass /
+        # displacement / co-occurrence / return_count updates all skip on a
+        # passive recall), so the field is observed, never mutated.
+        if self._persist_blocked:
+            passive = True
         k = top_k or self.config.top_k
         if source_filter or persona_context or tag_filter or gamma_override is not None:
             use_cache = False
@@ -989,6 +1112,13 @@ class GaOTTTEngine:
         passive: bool = False,
         multi_source: bool | None = None,
     ) -> list[QueryResultItem]:
+        # MV2 — when the lease was lost, force passive so mass / displacement
+        # / co-occurrence / return_count updates are all skipped. Putting this
+        # guard here (not just in query()) covers ALL callers: query(),
+        # prefetch(), and the dream loop. The query()-level guard above is
+        # now belt-and-suspenders and kept for readability.
+        if self._persist_blocked:
+            passive = True
         k = top_k
         query_vec = self.embedder.encode_query(text)
 
@@ -1521,6 +1651,11 @@ class GaOTTTEngine:
         and excluded from recall/explore/reflect, but remain in the store
         and can be restored.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         if not node_ids:
             return 0
         await self.cache.flush_to_store(self.store)
@@ -1538,6 +1673,11 @@ class GaOTTTEngine:
 
     async def restore(self, node_ids: list[str]) -> int:
         """Un-archive nodes and reload them into the cache."""
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         if not node_ids:
             return 0
         affected = await self.store.set_archived(node_ids, archived=False)
@@ -1568,6 +1708,11 @@ class GaOTTTEngine:
         are not removed (rebuild on next reset), but archived nodes are
         filtered out at query time.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         if not node_ids:
             return 0
         if not hard:
@@ -1646,6 +1791,11 @@ class GaOTTTEngine:
         Reserved edge types are documented in ``KNOWN_EDGE_TYPES``; the API
         does not enforce them so callers can experiment with new relations.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         if src_id == dst_id:
             raise ValueError("Self-relations are not allowed")
         edge = DirectedEdge(
@@ -1662,6 +1812,11 @@ class GaOTTTEngine:
     async def unrelate(
         self, src_id: str, dst_id: str, edge_type: str | None = None,
     ) -> int:
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         deleted = await self.store.delete_directed_edge(src_id, dst_id, edge_type)
         if deleted > 0:
             self.cache.remove_directed_edge(src_id, dst_id, edge_type)
@@ -1691,6 +1846,11 @@ class GaOTTTEngine:
         refresh the timestamp at the existing certainty level.
         Returns the updated state or None if the node doesn't exist.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         state = self.cache.get_node(node_id)
         if state is None:
             states = await self.store.get_node_states([node_id])
@@ -1750,6 +1910,11 @@ class GaOTTTEngine:
         ``node_ids`` is chosen (ties broken by recency).
         Returns one ``MergeOutcome`` per absorbed node.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         unique_ids = list(dict.fromkeys(node_ids))
         if len(unique_ids) < 2:
             return []
@@ -1824,6 +1989,11 @@ class GaOTTTEngine:
               "vectors_after": int,
             }
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         report = {
             "expired": 0,
             "merged_pairs": 0,
@@ -2066,6 +2236,11 @@ class GaOTTTEngine:
         marks virtual FAISS dirty so the next save loop rebuilds it from
         the now-zero displacement state.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         await self.cache.flush_to_store(self.store)
         affected = await self.store.reset_orbital_state()
         self.cache.displacement_cache.clear()
@@ -2101,6 +2276,11 @@ class GaOTTTEngine:
         Flushes pending cache writes first, performs the SQL update, then
         clears the in-memory velocity cache + dirty set.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         await self.cache.flush_to_store(self.store)
         affected = await self.store.reset_velocities()
         self.cache.velocity_cache.clear()
@@ -2125,6 +2305,11 @@ class GaOTTTEngine:
         in-memory cache and invalidates the prefetch cache (mass change
         invalidates every cached recall ranking).
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         await self.cache.flush_to_store(self.store)
         affected = await self.store.reset_masses(value)
         for state in self.cache.node_cache.values():
@@ -2163,6 +2348,11 @@ class GaOTTTEngine:
         Returns a dict ``{seeded, skipped_no_velocity, skipped_already_displaced,
         active_total}`` so callers can verify how the corpus shifted.
         """
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         tol = 1e-6
         seeded = 0
         skipped_no_velocity = 0
@@ -2203,6 +2393,11 @@ class GaOTTTEngine:
     # --- US5: State Reset ---
 
     async def reset(self) -> tuple[int, int]:
+        if self._persist_blocked:
+            raise LeaseLostError(
+                "Engine is read-only: the write lease was lost to another "
+                "process. Reconnect via the current owner to resume writes."
+            )
         nodes_count = len(self.cache.node_cache)
         edges_count = len(self.cache.get_all_edges())
 

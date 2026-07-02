@@ -125,10 +125,15 @@ def _spawn_backend_detached(
         str(idle_timeout),
     ]
     # Linux/macOS: start_new_session detaches. Windows: DETACHED_PROCESS.
+    # Pass an explicit env snapshot so GAOTTT_* overrides (e.g.
+    # GAOTTT_LEASE_FORCE_TAKEOVER from --force-takeover) are observably
+    # forwarded to the detached backend; the default inheritance does the
+    # same in production, but an explicit copy is verifiable + snapshot-safe.
     popen_kwargs: dict = {
         "stdin": subprocess.DEVNULL,
         "stdout": log_file,
         "stderr": subprocess.STDOUT,
+        "env": os.environ.copy(),
     }
     if sys.platform == "win32":
         popen_kwargs["creationflags"] = (
