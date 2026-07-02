@@ -453,6 +453,26 @@ embedding model（RURI）のロードを engine プロセスから分離し、�
 
 > **default OFF の理由と昇格計画**: 既存 standalone 構成の挙動を変えないため OFF で導入。managed 宇宙は上記のとおり manifest で強制。この機構は standalone でも事故防止に有効（reverse-overwrite incident の再発防止と同型）なので、1-2 週の dogfooding 後に code default ON への昇格を判断する
 
+## Multiverse supervisor (MV3 — 2026-07-02)
+
+1 ホストで複数テナントの宇宙を独立 `data_dir` で運用する universe supervisor（port 7880）の knob。supervisor が宇宙 engine を spawn / respawn し、API key でユーザー → 宇宙をルーティングする。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 2、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV3、運用手順は [Operations — Multiverse Setup](Operations-Multiverse-Setup.md)。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| multiverse_root | `""` (空 = 機能不使用) | multiverse のルートディレクトリ。env `GAOTTT_MULTIVERSE_ROOT`。空なら supervisor も shim の supervisor mode も使われない（default 不変）。推奨 `~/.local/share/gaottt-multiverse` |
+| supervisor_port | `7880` | supervisor の HTTP listen port |
+| supervisor_admin_key | `""` | admin API key。env `GAOTTT_SUPERVISOR_ADMIN_KEY` 推奨（config file に書かない）。**空 = supervisor 起動 fail-fast**（unauthenticated admin endpoint を絶対に露出しない） |
+| universe_port_range_start | `7890` | 宇宙 backend の動的 port 割当開始 |
+| universe_port_range_end | `7989` | 宇宙 backend の動的 port 割当終了。`end - start + 1 = 100` が 1 ホストあたりの宇宙数上限（v1 制約） |
+| supervisor_spawn_concurrency | `3` | 同時 spawn 上限（semaphore）。cold respawn spike（朝の始業時刻に多数の宇宙が一斉起床等）対策 |
+| supervisor_readiness_timeout | `90.0` | spawn readiness poll timeout（秒）。FAISS load + BM25 build を含む初回起動を待つ猶予 |
+
+> **★ `backend_token_enabled` knob は作らない**: backend token middleware の発動スイッチは **`GAOTTT_BACKEND_TOKEN` env の有無そのもの**。boolean knob を作ると「token 設定済みだが middleware 無効」の dangerous state が生まれる。`GAOTTT_BACKEND_TOKEN` 未設定 → 素通し（default 不変、既存 7878 単一 backend 無影響）/ 設定済み → 全リクエストで `Authorization: Bearer` 検証。supervisor が spawn 時にこの env を注入する（token は `secrets.token_urlsafe(32)` で生成、`<universe_dir>/backend.token` 0600 に永続化、再起動時に読み戻し）
+
+> **REST 経路は提供しない (v1)**: managed 宇宙は owner lease (MV2) で二重 engine を構造的に拒否するため、REST app (`build_engine()` で独自 engine を立てる) が開けない。宇宙に露出する経路は MCP のみ。テナント管理者の操作は supervisor admin API で提供（MCP/REST parity 鉄則は管理面に適用されない — [Architecture — Overview](Architecture-Overview.md) 設計判断表「Multiverse supervisor は MCP/REST parity 対象外」）
+
+> **信頼境界**: `multiverse_root` は 0700 / `manifest.json` / `owner.lock` / `backend.token` は 0600。同一 OS ユーザー内の manifest 改変は v1 信頼境界外（root / 同一ユーザーを敵とするモデルは v1 で守らない）。NFS / CIFS は lease の POSIX semantics が保証できないため非サポート
+
 ---
 
 ## チューニングの典型シナリオ

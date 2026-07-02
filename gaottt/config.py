@@ -156,6 +156,37 @@ class GaOTTTConfig:
     # A lock whose heartbeat is older than this (strict ``>``) is takeable.
     lease_stale_seconds: float = 60.0
 
+    # ---- MV3 Multiverse supervisor (WP-1) -----------------------------------
+    # Ops / coordination layer for the multiverse: a supervisor process that
+    # owns N universe backends behind per-universe API keys, plus a local
+    # SQLite registry tracking which universe lives at which port. When
+    # ``multiverse_root`` is empty (default) the entire feature is inert —
+    # the standalone single-backend deployment keeps behaving bit-exactly.
+    # The registry implementation lives in ``gaottt/multiverse/registry.py``;
+    # these knobs only configure it (no physics, no store/ edits).
+    # Env via the generic GAOTTT_<UPPER> loop.
+    multiverse_root: str = ""
+    # GAOTTT_MULTIVERSE_ROOT. Empty string = feature unused. When set, the
+    # supervisor + shim treat it as the on-disk multiverse root
+    # (<root>/registry.db, <root>/universes/<id>/, <root>/trash/).
+    supervisor_port: int = 7880
+    # supervisor HTTP listen port (admin + route endpoints).
+    supervisor_admin_key: str = ""
+    # Admin API key. An EMPTY key is a hard fail-fast at supervisor startup —
+    # admin endpoints are never exposed unauthenticated. Set via
+    # GAOTTT_SUPERVISOR_ADMIN_KEY.
+    universe_port_range_start: int = 7890
+    universe_port_range_end: int = 7989
+    # Dynamic per-universe backend port allocation range (inclusive, 100-port
+    # window = 100 universe ceiling). The registry's allocate_port consults
+    # both this range and a live OS bind check.
+    supervisor_spawn_concurrency: int = 3
+    # Upper bound on concurrent backend spawns (semaphore) so a burst of route
+    # requests cannot fork-bomb the host.
+    supervisor_readiness_timeout: float = 90.0
+    # Seconds to wait for a freshly-spawned backend to answer a readiness probe
+    # before declaring the spawn failed.
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 

@@ -43,6 +43,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import anyio
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
@@ -209,6 +210,37 @@ async def _ensure_backend(
 
 
 # -----------------------------------------------------------------------
+# Supervisor routing (multiverse MV3 / WP-4)
+# -----------------------------------------------------------------------
+
+def _route_to_supervisor(
+    supervisor_url: str, api_key: str, timeout: float = 10.0,
+) -> tuple[str, str]:
+    """Resolve a backend ``(url, token)`` via the supervisor's ``POST /route``.
+
+    Returns the upstream MCP URL and the per-universe backend token that must
+    be presented as ``Authorization: Bearer`` on every connection. 401 maps to
+    an "Invalid API key" error (the only auth-failure worth distinguishing for
+    the caller); any other status or transport failure is a generic route
+    failure so the proxy can surface it without leaking supervisor internals.
+    """
+    try:
+        response = httpx.post(
+            f"{supervisor_url.rstrip('/')}/route",
+            json={"api_key": api_key},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Supervisor route failed (unreachable): {exc}") from exc
+    if response.status_code == 401:
+        raise RuntimeError("Invalid API key")
+    if response.status_code != 200:
+        raise RuntimeError(f"Supervisor route failed: {response.status_code}")
+    data = response.json()
+    return data["url"], data["token"]
+
+
+# -----------------------------------------------------------------------
 # stdio ↔ HTTP forwarder
 # -----------------------------------------------------------------------
 
@@ -262,6 +294,9 @@ class _Upstream:
         serialize: bool,
         auto_reconnect: bool,
         instructions_override: str | None,
+        token: str | None = None,
+        supervisor_url: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.url = url
         self._host = host
@@ -271,17 +306,33 @@ class _Upstream:
         self._serialize = serialize
         self._auto_reconnect = auto_reconnect
         self._instructions_override = instructions_override
+        # Supervisor mode: when set, connect() attaches the backend token as a
+        # Bearer header and _reconnect_locked() re-routes via /route instead of
+        # auto-spawning. None/empty on the legacy 7878 path.
+        self._token = token or None
+        self._supervisor_url = supervisor_url or None
+        self._api_key = api_key or None
         self.lock = asyncio.Lock()
         self._stack: contextlib.AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self.instructions: str | None = None
+
+    def _auth_headers(self) -> dict[str, str]:
+        """Bearer headers for the upstream backend token. ``{}`` (legacy) when
+        no token is configured."""
+        if self._token:
+            return {"Authorization": f"Bearer {self._token}"}
+        return {}
 
     async def connect(self) -> None:
         """Open the streamable-http transport + ClientSession and initialize."""
         stack = contextlib.AsyncExitStack()
         try:
             read, write, _ = await stack.enter_async_context(
-                streamablehttp_client(self.url)
+                # `or None` keeps the no-token path byte-identical to the
+                # legacy streamablehttp_client(self.url) call: an empty dict
+                # would also work, but None matches the SDK default exactly.
+                streamablehttp_client(self.url, headers=self._auth_headers() or None)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
             init_result = await session.initialize()
@@ -312,15 +363,23 @@ class _Upstream:
 
     async def _reconnect_locked(self) -> None:
         """Rebuild the upstream session. Caller MUST hold ``self.lock`` so
-        no other coroutine touches the session mid-rebuild. Re-probes via
+        no other coroutine touches the session mid-rebuild.
+
+        Supervisor mode re-resolves URL+token via ``POST /route`` (the
+        supervisor owns spawn/respawn); legacy mode re-probes via
         ``_ensure_backend`` which re-spawns the backend if it died."""
         await self.aclose()
-        self.url = await _ensure_backend(
-            host=self._host,
-            port=self._port,
-            idle_timeout=self._idle_timeout,
-            spawn_log_path=self._spawn_log_path,
-        )
+        if self._supervisor_url:
+            self.url, self._token = _route_to_supervisor(
+                self._supervisor_url, self._api_key,
+            )
+        else:
+            self.url = await _ensure_backend(
+                host=self._host,
+                port=self._port,
+                idle_timeout=self._idle_timeout,
+                spawn_log_path=self._spawn_log_path,
+            )
         await self.connect()
 
     async def call(self, method: str, *args):
@@ -451,6 +510,9 @@ async def _proxy_session(
     port: int = DEFAULT_PORT,
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     spawn_log_path: Path | None = None,
+    token: str | None = None,
+    supervisor_url: str | None = None,
+    api_key: str | None = None,
 ) -> None:
     """Connect to backend, run the stdio proxy, until the agent disconnects."""
     upstream = _Upstream(
@@ -462,6 +524,9 @@ async def _proxy_session(
         serialize=serialize,
         auto_reconnect=auto_reconnect,
         instructions_override=instructions,
+        token=token,
+        supervisor_url=supervisor_url,
+        api_key=api_key,
     )
     await upstream.connect()
     logger.info("Proxy connected to backend; serving stdio")
@@ -505,12 +570,19 @@ async def run_proxy(
     port: int = DEFAULT_PORT,
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     ping_interval: float = DEFAULT_PING_INTERVAL,
+    supervisor_url: str | None = None,
+    api_key: str | None = None,
 ) -> None:
     """High-level entrypoint: ensure backend, run stdio proxy.
 
     The proxy is its own spawned process, so it reads its own config to
     learn the concurrency-hardening flags (the backend's env does not reach
     it). Defaults keep serialization + auto-reconnect ON.
+
+    When ``supervisor_url`` is set the proxy does NOT auto-spawn a backend;
+    instead it resolves the upstream URL + backend token via the supervisor's
+    ``POST /route`` and attaches the token as a Bearer header. Omit both to
+    keep the legacy 7878 auto-spawn behaviour (default 不変).
     """
     # Local import: keep mcp_proxy importable without pulling the full config
     # module at module-load time (it is heavy and not needed for the helpers).
@@ -518,6 +590,30 @@ async def run_proxy(
 
     config = GaOTTTConfig.from_config_file()
     spawn_log_path = _spawn_log_path()
+
+    if supervisor_url:
+        if not api_key:
+            raise RuntimeError(
+                "supervisor_url is set but no api_key was provided "
+                "(set the GAOTTT_API_KEY environment variable)"
+            )
+        url, token = _route_to_supervisor(supervisor_url, api_key)
+        await _proxy_session(
+            url,
+            ping_interval=ping_interval,
+            instructions=None,
+            serialize=config.proxy_serialize_requests_enabled,
+            auto_reconnect=config.proxy_auto_reconnect_enabled,
+            host=host,
+            port=port,
+            idle_timeout=idle_timeout,
+            spawn_log_path=spawn_log_path,
+            token=token,
+            supervisor_url=supervisor_url,
+            api_key=api_key,
+        )
+        return
+
     url = await _ensure_backend(
         host=host,
         port=port,

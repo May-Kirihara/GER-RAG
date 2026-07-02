@@ -10,7 +10,7 @@
 - ✅ MV0: EmbedderProtocol + 宇宙 manifest（土台、挙動変更ゼロ）— 2026-07-02 完了
 - ✅ MV1: embedding service + RemoteEmbedder — 2026-07-02 完了（Tier 6 数値等価は次セッションで real RURI 実施）
 - ✅ MV2: owner lease（1 宇宙 1 書き込みオーナーの機構化）— 2026-07-02 完了（default OFF、managed 強制、Codex review 3 巡: 2 blocking → 構造的解消、54 test: 21 unit + 33 integration 全緑）
-- ⬜ MV3: universe supervisor + multiverse layout
+- ✅ MV3: universe supervisor + multiverse layout — 2026-07-02 完了（supervisor port 7880 + 動的 port 7890–7989 / backend token middleware（`GAOTTT_BACKEND_TOKEN` env の有無で発動、boolean knob 非作成、default 不変）/ shim `--supervisor-url` / registry + reconcile / managed 宇宙は manifest で lease 強制。Codex review 反映: per-universe asyncio.Lock + file lock / OS port bind check / `secrets.compare_digest` / 401 で idle refresh 抑止 / token stale recovery（probe 401 → `backend.token` reread → 再 probe → 不可なら re-spawn）/ admin key 空 = fail-fast / 削除は backend 停止確認後に `trash/` move。REST 経路は提供しない（lease 構造的拒否、supervisor admin API のみ）。docs: [Operations — Multiverse Setup](../wiki/Operations-Multiverse-Setup.md) 新規 + Sidebar/Home + Architecture 設計判断表 + Tuning knob 7 つ + 本マーク）
 - ⬜ MV4: control plane（Postgres）
 - ⬜ MV5: backup / DR（Litestream + runbook + DR drill）
 - ⬜ MV6: 英語宇宙（embedder per universe）
