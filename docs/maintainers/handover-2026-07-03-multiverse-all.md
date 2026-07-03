@@ -288,6 +288,7 @@ CONTROL_TEST_POSTGRES_HOST_PORT=55433 pytest tests/unit/ tests/integration/ -q
 - `docs/maintainers/handover-2026-07-02-multiverse-mv0-mv1.md` — MV0+MV1 個別 handover
 - `docs/maintainers/handover-2026-07-02-multiverse-mv2.md` — MV2 個別 handover
 - `docs/maintainers/handover-2026-07-03-multiverse-mv3.md` — MV3 個別 handover
+- `docs/maintainers/handover-2026-07-03-multiverse-mv4.md` — **MV4 個別 handover**（WP 単位の詳細検証 / 既知の問題 8 件 / MV4.1 着手時の注意 含む）
 - `docs/maintainers/handover-2026-07-03-multiverse-all.md` — **本書（全体 handover、MV4 追記済み）**
 - `control/README.md` — control/ パッケージ概要・起動手順（English、control 独立パッケージ向け）
 
