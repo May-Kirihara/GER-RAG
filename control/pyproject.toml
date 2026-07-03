@@ -1,0 +1,39 @@
+[project]
+name = "control"
+version = "0.1.0"
+description = "MV4 control plane — Postgres-backed aggregator / audit / billing collection point. Independent package; does not depend on the engine package."
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.29.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.3.0",
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# The importable package is the inner control/ directory (the file path from
+# the repo root is control/control/, but its import name is just `control`).
+packages = ["control"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "requires_postgres: requires disposable Postgres via docker-compose (skipped if docker is unavailable)",
+]
+# Same hard per-test deadline philosophy as the root project: a wedged
+# DB operation fails fast with a stack dump instead of hanging the run.
+timeout = 120
+timeout_method = "signal"

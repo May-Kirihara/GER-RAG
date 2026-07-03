@@ -46,6 +46,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 |---|---|
 | サーバー起動・MCP 登録 | [Operations — Server Setup](Operations-Server-Setup.md) |
 | 複数テナントの宇宙を運用する (Multiverse MV3) | [Operations — Multiverse Setup](Operations-Multiverse-Setup.md) |
+| 台帳・監査・usage 収集の control plane を運用する (Multiverse MV4) | [Operations — Control Plane](Operations-Control-Plane.md) |
 | VRAM/RAM/ディスクの必要量を見積もる | [Operations — Resource Requirements](Operations-Resource-Requirements.md) |
 | ハイパーパラメータ調整 | [Operations — Tuning](Operations-Tuning.md) |
 | ファイル・チャット履歴の取り込み | [Operations — Ingestion](Operations-Ingestion.md) |

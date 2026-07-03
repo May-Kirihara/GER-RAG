@@ -187,3 +187,37 @@ curl -X DELETE http://127.0.0.1:7880/admin/universes/<universe_id> \
 | admin endpoint に空キーで起動してしまった | 起動しない（fail-fast）。`GAOTTT_SUPERVISOR_ADMIN_KEY` を設定して再起動 |
 
 → より詳細: [Operations — Troubleshooting](Operations-Troubleshooting.md)、[Operations — Tuning](Operations-Tuning.md)「Multiverse supervisor (MV3)」節
+
+## control plane との連携（MV4 — 2026-07-03）
+
+supervisor は [control plane](Operations-Control-Plane.md)（Postgres-backed、独立プロセス port 7881）と連携して、テナント・宇宙の台帳同期・usage telemetry 送信ができる。control plane は aggregator / audit / billing 収集点で、engine コードには一切接触しない（独立パッケージ `control/`、設計判断 J9）。
+
+### 有効化（3-point gate）
+
+supervisor 起動時に以下の **3 点セット** を設定すると ControlClient が有効になる:
+
+```bash
+GAOTTT_CONTROL_PLANE_URL=http://127.0.0.1:7881 \
+GAOTTT_CONTROL_HOST_ID=<control plane が発行した host_id> \
+GAOTTT_CONTROL_HOST_TOKEN=<control plane が発行した平文 token> \
+GAOTTT_MULTIVERSE_ROOT=~/.local/share/gaottt-multiverse \
+GAOTTT_SUPERVISOR_ADMIN_KEY=<supervisor admin key> \
+/path/to/GaOTTT/.venv/bin/python -m gaottt.multiverse.supervisor
+```
+
+3 点とも設定時のみ ControlClient が構築され、supervisor の lifespan が pull loop（reconcile）と push loop（usage flush）を起動する。**1 つでも欠けたら feature inert** — supervisor は従来通り local-only で動作し（**default 不変**、MV3 完全一致）、既存の MV3 設定は無変更で動き続ける。
+
+### host 登録
+
+control plane に host を登録し、平文 token を一度だけ受け取る（手順は [Operations — Control Plane](Operations-Control-Plane.md) §setup を参照）。`GAOTTT_CONTROL_HOST_TOKEN` は **SECRET** 扱い — log に出さず、supervisor が spawn する backend にも継承させない。
+
+### 連携時の挙動
+
+- **pull（reconcile）**: `control_sync_interval_seconds`（既定 300s）周期で control plane から自ホストの宇宙一覧を取得し、local registry と突き合わせる。local を正として `POST /hosts/{hid}/sync` で報告（J5）。control 側で削除された宇宙が local にある場合は WARNING（即時削除しない、conflict detection）
+- **push（usage）**: `usage_push_interval_seconds`（既定 60s）周期で蓄積した usage counter を batch push。`/route` 解決・宇宙作成・宇宙削除のたびに `arecord_event` で in-memory counter に蓄積（`event_type='route_resolution'` 等）
+- **degraded mode**: control plane 不可時（network error / 5xx）も `/route` / 宇宙作成・削除は local registry で完結（機能停止しない）。usage は spool に蓄積 → 復旧で再送
+- **permanent auth failure (401)**: host token 不正 / revoke は network error とは区別。`_auth_failed` flag で以降の POST 試行を停止、spool 蓄積は継続。`GET /admin/status` で `auth_failed` / `spool_pending` を監視できる
+
+> **★ J1=A (PM 承認済み SoT deviation)**: v1 の usage は **`/route` 解決回数を activity telemetry として集計** したもので、recall / remember / ingest の正確な operation count ではない。billing-grade の正確な operation count は [MV4.1](Plans-Multiverse-Scale-Out.md) で導入予定。詳細: [Operations — Control Plane](Operations-Control-Plane.md)「usage telemetry の意味」節。
+
+連携の全容（API リファレンス / degraded mode / permanent auth failure 復旧手順 / 制限事項 / トラブルシューティング）は [Operations — Control Plane](Operations-Control-Plane.md)、knob 7 つは [Operations — Tuning](Operations-Tuning.md)「Multiverse control plane client (MV4)」節を参照。

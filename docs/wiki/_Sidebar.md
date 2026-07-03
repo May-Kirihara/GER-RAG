@@ -43,6 +43,7 @@
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
 - [Multiverse Setup (MV3)](Operations-Multiverse-Setup.md)
+- [Control Plane (MV4)](Operations-Control-Plane.md)
 - [Resource Requirements (VRAM/RAM/Disk)](Operations-Resource-Requirements.md)
 - [Tuning](Operations-Tuning.md)
 - [Ingestion (files & chat history)](Operations-Ingestion.md)

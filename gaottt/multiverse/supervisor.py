@@ -46,6 +46,12 @@ from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 
 from gaottt.config import GaOTTTConfig
+from gaottt.multiverse.control_client import (
+    ROUTE_RESOLUTION,
+    UNIVERSE_CREATE,
+    UNIVERSE_DELETE,
+    ControlClient,
+)
 from gaottt.multiverse.registry import TRASH_SUBDIR, UNIVERSES_SUBDIR, MultiverseRegistry
 from gaottt.store.manifest import MANIFEST_FILENAME, UniverseManifest, write_manifest
 
@@ -101,6 +107,12 @@ class _UniverseInactive(RuntimeError):
 class CreateUniverseBody(BaseModel):
     owner_label: str
     embedder_id: str | None = None
+    # J11: optional tenant_id for control-plane usage attribution. When
+    # omitted the supervisor resolves to ``config.control_default_tenant_id``
+    # or ``"default"``. The local registry has no tenant column (MV3 schema),
+    # so this field is control-plane metadata only — local behavior is
+    # unchanged when it is absent (default 不変).
+    tenant_id: str | None = None
 
 
 class RouteBody(BaseModel):
@@ -196,12 +208,20 @@ class _Supervisor:
     the backend is pointed at via ``GAOTTT_DATA_DIR``.
     """
 
-    def __init__(self, config: GaOTTTConfig, registry: MultiverseRegistry) -> None:
+    def __init__(
+        self,
+        config: GaOTTTConfig,
+        registry: MultiverseRegistry,
+        control_client: ControlClient | None = None,
+    ) -> None:
         self._config = config
         self._registry = registry
         self._root = Path(config.multiverse_root)
         self._spawn_locks: dict[str, asyncio.Lock] = {}
         self._spawn_semaphore = asyncio.Semaphore(config.supervisor_spawn_concurrency)
+        # MV4 WP-4: optional control-plane client. None = MV3 local-only mode
+        # (default 不変). All call sites guard on ``self._control is not None``.
+        self._control = control_client
         # B2: universe_id -> PID of the backend this supervisor spawned. Lets
         # _stop_backend SIGTERM/SIGKILL a tracked backend instead of moving its
         # data dir out from under a live process. Lost on supervisor restart;
@@ -535,19 +555,28 @@ def _make_admin_checker(config: GaOTTTConfig):
 # ---------------------------------------------------------------------------
 
 def create_supervisor_app(
-    config: GaOTTTConfig, registry: MultiverseRegistry,
+    config: GaOTTTConfig,
+    registry: MultiverseRegistry,
+    control_client: ControlClient | None = None,
 ) -> FastAPI:
     """Build the supervisor FastAPI app.
 
     Raises :class:`RuntimeError` if ``config.supervisor_admin_key`` is empty —
-    admin endpoints must never be exposed unauthenticated."""
+    admin endpoints must never be exposed unauthenticated.
+
+    ``control_client`` is the optional MV4 control-plane client. When None
+    (the default) the supervisor runs in pure MV3 local-only mode — the
+    feature is fully inert (default 不変). When provided, the lifespan starts
+    it after the registry is ready and stops it (with a final usage flush)
+    before the registry closes; the route / create / delete handlers also
+    record activity telemetry via :meth:`ControlClient.arecord_event`."""
     if not config.supervisor_admin_key:
         raise RuntimeError(
             "supervisor_admin_key must be set (non-empty) — refusing to start "
             "a supervisor with unauthenticated admin endpoints"
         )
 
-    sup = _Supervisor(config, registry)
+    sup = _Supervisor(config, registry, control_client)
     root = Path(config.multiverse_root)
 
     @asynccontextmanager
@@ -562,15 +591,26 @@ def create_supervisor_app(
         # aligns it with on-disk state.
         await registry.initialize()
         await registry.reconcile()
+        # MV4: start the control client AFTER the registry is ready so its
+        # first reconcile sees the local state. The client's start() is a
+        # no-op when disabled (3-point gate not set).
+        if control_client is not None:
+            await control_client.start()
         try:
             yield
         finally:
+            # Stop the control client BEFORE registry.close() so its final
+            # flush_usage (in stop()) can still read a valid registry while
+            # building the sync payload.
+            if control_client is not None:
+                await control_client.stop()
             await registry.close()
 
     app = FastAPI(lifespan=lifespan)
     app.state.supervisor = sup
     app.state.config = config
     app.state.registry = registry
+    app.state.control = control_client
 
     check_admin = _make_admin_checker(config)
     admin = APIRouter(dependencies=[Depends(check_admin)])
@@ -620,6 +660,20 @@ def create_supervisor_app(
                 universe_id, body.owner_label, port,
                 resolved_embedder_id, embedder_version,
             )
+            # MV4: attribute the create as control-plane usage telemetry.
+            # tenant_id resolves from the body, then config default, then the
+            # implicit "default" tenant (J11). The local registry has no
+            # tenant column, so this is purely for control-plane accounting —
+            # when no control_client is configured the call is a guarded no-op.
+            if sup._control is not None:
+                resolved_tenant = (
+                    body.tenant_id
+                    or config.control_default_tenant_id
+                    or "default"
+                )
+                await sup._control.arecord_event(
+                    universe_id, UNIVERSE_CREATE, resolved_tenant,
+                )
             # api_key is handed out exactly once; only the hash is persisted.
             return {"universe_id": universe_id, "api_key": plaintext_key, "port": port}
 
@@ -662,6 +716,19 @@ def create_supervisor_app(
                     trash_dir.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(universe_dir), str(trash_dir))
                     await registry.delete_universe(uid)
+                    # MV4: attribute the delete as control-plane usage
+                    # telemetry. Registry rows carry no tenant_id (MV3
+                    # schema), so we use the config default tenant — the
+                    # v1 single-tenant assumption (J11).
+                    if sup._control is not None:
+                        resolved_tenant = (
+                            config.control_default_tenant_id or "default"
+                        )
+                        await sup._control.arecord_event(
+                            uid,
+                            UNIVERSE_DELETE,
+                            resolved_tenant,
+                        )
                 finally:
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
@@ -673,6 +740,19 @@ def create_supervisor_app(
     @admin.get("/admin/universes")
     async def list_universes():
         return await registry.list_universes()
+
+    # -- GET /admin/status ------------------------------------------------
+    # MV4 WP-4: operator-facing supervisor status. Exposes the control
+    # client's permanent-auth-failure state so an operator polling this
+    # endpoint can detect a revoked host token early (review #2 remaining
+    # gap). Parity-exempt — management plane, like /reset and the rest of
+    # the admin surface. When no control_client is configured, returns
+    # ``{"control": None}`` so the shape stays stable across modes.
+    @admin.get("/admin/status")
+    async def admin_status():
+        if sup._control is None:
+            return {"control": None}
+        return {"control": sup._control.auth_failure_state()}
 
     # -- POST /route (universe API key, not admin) ------------------------
 
@@ -695,6 +775,17 @@ def create_supervisor_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="universe not available",
+            )
+        # MV4: record route-resolution activity telemetry AFTER the response
+        # is determined but BEFORE returning (Codex non-blocking #6). Naming
+        # is ``route_resolution`` (not "operation count") — proxy reconnect
+        # can under-count, J1=A. The local registry has no tenant column
+        # (MV3 schema), so v1 uses the config default tenant for route
+        # events (J11). When no control_client is configured, no-op.
+        if sup._control is not None:
+            route_tenant = config.control_default_tenant_id or "default"
+            await sup._control.arecord_event(
+                universe_id, ROUTE_RESOLUTION, route_tenant,
             )
         return {"url": url, "token": token}
 
@@ -723,7 +814,26 @@ def _main() -> None:
             "GAOTTT_MULTIVERSE_ROOT must be set to run the supervisor"
         )
     registry = MultiverseRegistry(Path(config.multiverse_root))
-    app = create_supervisor_app(config, registry)
+
+    # MV4 WP-4: construct the control-plane client only when the 3-point gate
+    # (control_plane_url + control_host_id + control_host_token) is fully
+    # satisfied. Any missing knob → control_client stays None and the
+    # supervisor runs in pure MV3 local-only mode (default 不変). The
+    # ControlClient itself also enforces this gate defensively.
+    control_client: ControlClient | None = None
+    if (
+        config.control_plane_url
+        and config.control_host_id
+        and config.control_host_token
+    ):
+        control_client = ControlClient(config, registry)
+    else:
+        logger.info(
+            "control plane not configured (3-point gate incomplete); "
+            "supervisor running in local-only mode"
+        )
+
+    app = create_supervisor_app(config, registry, control_client)
     port = args.port if args.port is not None else config.supervisor_port
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 

@@ -473,6 +473,26 @@ embedding model（RURI）のロードを engine プロセスから分離し、�
 
 > **信頼境界**: `multiverse_root` は 0700 / `manifest.json` / `owner.lock` / `backend.token` は 0600。同一 OS ユーザー内の manifest 改変は v1 信頼境界外（root / 同一ユーザーを敵とするモデルは v1 で守らない）。NFS / CIFS は lease の POSIX semantics が保証できないため非サポート
 
+## Multiverse control plane client (MV4 — 2026-07-03)
+
+supervisor が Postgres-backed control plane（port 7881、独立プロセス）と同期・usage telemetry を送信するための knob。control plane は aggregator / audit / billing 収集点で、engine コードには一切接触しない（設計判断 J9）。詳細: [Operations — Control Plane](Operations-Control-Plane.md)、[Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 3、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV4。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| control_plane_url | `""` (空 = control plane 不使用) | control plane の URL。env `GAOTTT_CONTROL_PLANE_URL`（例 `http://127.0.0.1:7881`） |
+| control_host_id | `""` | control plane 側で発行された host_id。env `GAOTTT_CONTROL_HOST_ID` |
+| control_host_token | `""` | **SECRET** — control plane 側で発行された平文 host token。env `GAOTTT_CONTROL_HOST_TOKEN`。log に出さない、spawn される backend にも継承させない（supervisor 自身のみが使う） |
+| control_default_tenant_id | `""` (空 = 単一暗黙 tenant `"default"`、J11) | local 宇宙が報告する tenant_id。env `GAOTTT_CONTROL_DEFAULT_TENANT_ID`。未設定なら `"default"` を使用（`001_initial.sql` が bootstrap INSERT する tenant、FK 解決済み） |
+| control_sync_interval_seconds | `300.0` | pull（reconcile）周期（秒）。env `GAOTTT_CONTROL_SYNC_INTERVAL_SECONDS` |
+| usage_push_interval_seconds | `60.0` | usage flush 周期（秒）。env `GAOTTT_USAGE_PUSH_INTERVAL_SECONDS` |
+| usage_spool_dir | `""` | usage spool ディレクトリ。env `GAOTTT_USAGE_SPOOL_DIR`。空 = `<multiverse_root>/logs/usage-spool/` に解決（`multiverse_root` も空なら usage push 無効化、durability target 無し） |
+
+> **★ 発動条件 — 3-point gate**: `control_plane_url` AND `control_host_id` AND `control_host_token` の **3 点とも設定時のみ** ControlClient が有効。1 つでも欠けたら WARNING log + control 不使用（supervisor は従来通り local-only、**default 不変**、MV3 完全一致）。gate は `ControlClient.__init__` と supervisor `_main()` の両方でチェックされる。
+
+> **★ `control_host_token` は SECRET 扱い**: `_build_spawn_env` と同様に log に出さない。supervisor が spawn する backend プロセスの env にも **継承させない** — supervisor 自身のみが読む。
+
+> **★ J1=A (PM 承認済み SoT deviation)**: v1 の usage は **`/route` 解決回数を activity telemetry として集計** したもので、recall / remember / ingest の正確な operation count ではない（`event_type='route_resolution'`）。billing-grade の正確な operation count は [MV4.1](Plans-Multiverse-Scale-Out.md) で導入予定。詳細: [Operations — Control Plane](Operations-Control-Plane.md)「usage telemetry の意味」節。
+
 ---
 
 ## チューニングの典型シナリオ

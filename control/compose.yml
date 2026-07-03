@@ -1,0 +1,23 @@
+# Disposable Postgres for GaOTTT control plane development and tests (MV4 WP-1).
+#
+# Usage:
+#   docker compose -f control/compose.yml up -d
+#   docker compose -f control/compose.yml down
+#
+# This is intentionally DISPOSABLE: no named volume is declared, so `down`
+# (without -v) already destroys all data. Never use this for production data.
+# Port 55432 is chosen to avoid colliding with any host-local Postgres on 5432.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gaottt_control
+      POSTGRES_USER: gaottt
+      POSTGRES_PASSWORD: dev-only
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gaottt -d gaottt_control"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

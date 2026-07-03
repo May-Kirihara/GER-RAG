@@ -187,6 +187,45 @@ class GaOTTTConfig:
     # Seconds to wait for a freshly-spawned backend to answer a readiness probe
     # before declaring the spawn failed.
 
+    # ---- MV4 Control plane client (WP-3) -----------------------------------
+    # Ops / coordination layer for the control plane (Postgres-backed
+    # aggregator/audit/billing surface). The supervisor's ControlClient uses
+    # these to pull universe state from / push usage telemetry to the control
+    # plane over localhost HTTP.
+    #
+    # FEATURE IS INERT unless ``control_plane_url`` AND ``control_host_id``
+    # AND ``control_host_token`` are ALL set (3-point gate). When any of the
+    # three is empty, ControlClient is fully disabled and the supervisor keeps
+    # running local-only (default 不変). The 3-point gate is checked in
+    # ControlClient.__init__; the individual knobs here are plain scalars so
+    # the generic env-override loop wires them automatically.
+    #
+    # SECRET: ``control_host_token`` is a plaintext credential issued once by
+    # ``POST /admin/hosts`` (only its SHA-256 hash lives in the control DB).
+    # NEVER log it, and do NOT inherit it into spawned backend processes —
+    # only the supervisor itself reads this knob.
+    #
+    # ``usage_spool_dir`` empty defaults to
+    # ``<multiverse_root>/logs/usage-spool/`` when ``multiverse_root`` is set
+    # (resolved lazily inside ControlClient, NOT here, so this knob stays a
+    # plain str). When BOTH ``usage_spool_dir`` and ``multiverse_root`` are
+    # empty, usage push is disabled (no spool directory → no durability).
+    control_plane_url: str = ""
+    # GAOTTT_CONTROL_PLANE_URL. Empty = control plane not used (feature off).
+    control_host_id: str = ""
+    # GAOTTT_CONTROL_HOST_ID. The host_id issued by the control plane.
+    control_host_token: str = ""
+    # GAOTTT_CONTROL_HOST_TOKEN. SECRET — plaintext host credential.
+    control_default_tenant_id: str = ""
+    # GAOTTT_CONTROL_DEFAULT_TENANT_ID. Empty = implicit single tenant
+    # "default" (J11). When set, all local universes report under this tenant.
+    control_sync_interval_seconds: float = 300.0
+    # GAOTTT_CONTROL_SYNC_INTERVAL_SECONDS. Pull/reconcile cadence (seconds).
+    usage_push_interval_seconds: float = 60.0
+    # GAOTTT_USAGE_PUSH_INTERVAL_SECONDS. Usage flush cadence (seconds).
+    usage_spool_dir: str = ""
+    # GAOTTT_USAGE_SPOOL_DIR. Empty = <multiverse_root>/logs/usage-spool/.
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 
