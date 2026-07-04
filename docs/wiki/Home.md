@@ -45,6 +45,8 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 | やりたいこと | 行き先 |
 |---|---|
 | サーバー起動・MCP 登録 | [Operations — Server Setup](Operations-Server-Setup.md) |
+| Multiverse 全体の運用フローと評価方法を見る | [Operations — Multiverse 運用プレイブック](Operations-Multiverse-Operations.md) |
+| Multiverse で異変に気づいたら 1 分で診る | [Operations — Multiverse クイック健康チェック](Operations-Multiverse-Quick-Check.md) |
 | 複数テナントの宇宙を運用する (Multiverse MV3) | [Operations — Multiverse Setup](Operations-Multiverse-Setup.md) |
 | 台帳・監査・usage 収集の control plane を運用する (Multiverse MV4) | [Operations — Control Plane](Operations-Control-Plane.md) |
 | 宇宙単位のバックアップと災害復旧 (Multiverse MV5) | [Operations — Backup & DR](Operations-Backup-Multiverse.md) |

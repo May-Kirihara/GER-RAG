@@ -42,6 +42,8 @@
 
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
+- [Multiverse 運用プレイブック（統合）](Operations-Multiverse-Operations.md)
+- [Multiverse クイック健康チェック（パニック時）](Operations-Multiverse-Quick-Check.md)
 - [Multiverse Setup (MV3)](Operations-Multiverse-Setup.md)
 - [Control Plane (MV4)](Operations-Control-Plane.md)
 - [Backup & DR (MV5)](Operations-Backup-Multiverse.md)
