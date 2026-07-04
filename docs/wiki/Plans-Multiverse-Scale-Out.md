@@ -3,9 +3,9 @@
 > 対象: デプロイ層・インフラ層（engine / physics / observation 層は **完全不変**）
 > 言語: 日本語（保守・計画ドキュメント）
 > 関連: [Architecture — Concurrency](Architecture-Concurrency.md), [Operations — Server Setup](Operations-Server-Setup.md), [Operations — Resource Requirements](Operations-Resource-Requirements.md), [Guides — Per-Project DBs](Guides-Per-Project-DBs.md), [Plans — Roadmap](Plans-Roadmap.md)
-> 状態: 🟡 **起草 (2026-07-02)** — ブレスト収束、実装未着手。同日 Codex CLI (`codex exec`) による独立レビューを実施し、指摘 10 件（dimension wiring / Stage 依存関係 / ownership lease / DR 前提 / リソース試算等）を反映済み
+> 状態: 🟢 **MV0〜MV5 実装済み（2026-07-04）** / MV6 未着手。ブレスト収束。同日 Codex CLI (`codex exec`) による独立レビューを実施し、指摘 10 件（dimension wiring / Stage 依存関係 / ownership lease / DR 前提 / リソース試算等）を反映済み。Stage 4（バックアップ/DR）は 2026-07-04 に実装済み (MV5)。
 > 実装者向け作業計画: [multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md)（MV0–MV6、ファイル単位の変更一覧・テスト・acceptance 付き）
-> 最終更新: 2026-07-02
+> 最終更新: 2026-07-04（MV5 実装済み）
 
 ## 0. 背景と確定事項
 
@@ -131,9 +131,9 @@
 
 **所要**: 大（1〜2 週）— 新規開発の本体
 
-### Stage 4 — バックアップ / DR（Litestream）
+### Stage 4 — バックアップ / DR（Litestream）✅ 実装済み (MV5, 2026-07-04)
 
-**目的**: 宇宙ごとの継続バックアップと、退会・エクスポートの運用。
+**目的**: 宇宙ごとの継続バックアップと、退会・エクスポートの運用。実装詳細は [Operations — Backup & DR](Operations-Backup-Multiverse.md) と [multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV5 を参照。
 
 **実装スケッチ**:
 

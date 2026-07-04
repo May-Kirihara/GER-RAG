@@ -493,6 +493,18 @@ supervisor が Postgres-backed control plane（port 7881、独立プロセス）
 
 > **★ J1=A (PM 承認済み SoT deviation)**: v1 の usage は **`/route` 解決回数を activity telemetry として集計** したもので、recall / remember / ingest の正確な operation count ではない（`event_type='route_resolution'`）。billing-grade の正確な operation count は [MV4.1](Plans-Multiverse-Scale-Out.md) で導入予定。詳細: [Operations — Control Plane](Operations-Control-Plane.md)「usage telemetry の意味」節。
 
+## Multiverse backup (MV5 — 2026-07-04)
+
+supervisor が universe 作成/削除の成功経路で litestream 設定ファイル（`dbs:` ブロック）を再生成するための knob。設定時、supervisor は `<multiverse_root>/universes/*/` を scan し純粋関数で YAML を生成、atomic write（`tmp + fsync + os.replace`）で指定パスへ書く。失敗は ERROR log のみで supervisor 応答に影響しない（best-effort）。詳細: [Operations — Backup & DR](Operations-Backup-Multiverse.md)、[Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 4、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV5。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| litestream_config_path | `""` (空 = hook 不使用) | litestream 設定ファイルの出力パス。env `GAOTTT_LITESTREAM_CONFIG_PATH`（例 `/etc/litestream/gaottt.yml`）。空なら hook は一切呼ばれず、MV3/MV4 構成は 1 行も変わらず動く（**default 不変**）。設定時は `POST /admin/universes` と `DELETE /admin/universes/{uid}` の成功経路で再生成 |
+
+> **★ `backup_gen_timeout_seconds` knob は意図的に未設置**: hook は subprocess ではなく direct import の純粋関数呼び出しなので timeout は不要。knob を置くと「subprocess で動く」と誤解を招くため（Codex review round-2 #5）。
+
+> **★ scan + write は `_backup_hook_lock` で直列化**: 並行 create/delete hook が out-of-order に完了しても、最後の writer の scan 時点の on-disk 状態が最終 YAML になる（stale write の構造的排除）。hook は best-effort で、例外は ERROR log のみ（supervisor 応答は成功のまま）。spawn env（`_build_spawn_env`）には litestream / backup 関連 knob は **一切漏れない**（supervisor プロセス内のみで動く）。
+
 ---
 
 ## チューニングの典型シナリオ

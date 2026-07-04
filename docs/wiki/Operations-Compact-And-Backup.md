@@ -75,3 +75,7 @@ rm ~/.local/share/gaottt/gaottt.faiss.ids
 ```
 
 → 関連: [Tuning](Operations-Tuning.md), [Architecture — Storage & Schema](Architecture-Storage-And-Schema.md)
+
+## Multiverse のバックアップ（MV5）
+
+上記は standalone（単一ユーザー）構成のバックアップ手順。**multiverse 構成（MV3 supervisor で複数テナントの宇宙を運用する場合）** は、宇宙ごとに Litestream で SQLite WAL を継続レプリケーションし、manifest.json と合わせた 2 点セットから復旧する専用手順が別ページにある。詳細（スコープ / 2 点セット / supervisor hook / DR runbook / 四半期 drill / 商用導入前チェックリスト）は [Operations — Backup & DR (MV5)](Operations-Backup-Multiverse.md) を参照。

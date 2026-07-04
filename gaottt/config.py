@@ -226,6 +226,21 @@ class GaOTTTConfig:
     usage_spool_dir: str = ""
     # GAOTTT_USAGE_SPOOL_DIR. Empty = <multiverse_root>/logs/usage-spool/.
 
+    # ---- MV5 Multiverse backup hook (supervisor regenerates litestream cfg) -
+    # When non-empty, the supervisor's create_universe / delete_universe
+    # success paths call the pure ``generate_litestream_config`` (from
+    # ``gaottt.multiverse.backup``) and atomically write the resulting YAML
+    # to this path. Empty (default) = the hook is fully inert — existing
+    # MV3/MV4 deployments keep behaving bit-exactly (default 不変). The hook
+    # is best-effort: any exception is ERROR-logged and swallowed so a
+    # backup misconfiguration can never fail a create/delete. The scan+write
+    # is serialized in a dedicated ``_backup_hook_lock`` so concurrent
+    # create/delete hooks cannot produce a stale-write YAML. Env:
+    # GAOTTT_LITESTREAM_CONFIG_PATH. (Note: no ``backup_gen_timeout_seconds``
+    # knob — the hook is a direct import-based call, not a subprocess, so no
+    # timeout is needed; adding one would mislead operators.)
+    litestream_config_path: str = ""
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 

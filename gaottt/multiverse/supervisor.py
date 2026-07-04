@@ -232,6 +232,12 @@ class _Supervisor:
         # reserve the same port before either INSERTs it. (The partial UNIQUE
         # index on universes.port is the DB-level backstop.)
         self._create_lock = asyncio.Lock()
+        # MV5: serialize the backup hook's scan+atomic-write so concurrent
+        # create/delete hooks form an ordered series. Without this, two hooks
+        # could each scan on-disk state out of order and the later scan's
+        # (older) result could win via os.replace — a stale write. The lock
+        # keeps scan+write in ONE critical section (round-2 review B2).
+        self._backup_hook_lock = asyncio.Lock()
 
     # -- paths & tokens ----------------------------------------------------
 
@@ -278,6 +284,49 @@ class _Supervisor:
             "GAOTTT_BACKEND_TOKEN": token,
         })
         return env
+
+    # -- MV5 backup hook ---------------------------------------------------
+
+    async def _run_backup_hook(self) -> None:
+        """Regenerate the litestream config YAML after a create/delete.
+
+        Best-effort, default-inert, scan+write serialized:
+
+        * Returns immediately when ``litestream_config_path`` is empty (the
+          default) — the hook is fully off for MV3/MV4-only deployments.
+        * Acquires ``_backup_hook_lock`` and, INSIDE the single critical
+          section, scans on-disk state via the pure
+          :func:`generate_litestream_config` then atomic-writes the result
+          (tmp + fsync + os.replace). Holding the lock across both scan and
+          write is what prevents a stale-write: out-of-order completion of
+          two concurrent hooks cannot let an older scan's result land last,
+          because each hook rescans the latest on-disk state inside its own
+          locked section (Codex review round-2 B2).
+        * Any exception → ERROR log only. A backup misconfiguration must
+          never fail the create/delete HTTP response (D2 best-effort).
+
+        The pure function is imported lazily so a broken ``backup`` module
+        never prevents supervisor import, and so tests can monkeypatch it.
+        """
+        target = self._config.litestream_config_path
+        if not target:
+            return
+        from gaottt.multiverse.backup import (
+            atomic_write_text,
+            generate_litestream_config,
+        )
+
+        async with self._backup_hook_lock:
+            try:
+                # scan + atomic-write in ONE critical section (stale-write
+                # fence). The rescan inside the lock sees the on-disk state
+                # as of this hook's turn — including this create/delete's
+                # own filesystem effect (dir creation / trash move), which
+                # already completed before the hook fired.
+                yaml_text = generate_litestream_config(self._root)
+                atomic_write_text(Path(target), yaml_text)
+            except Exception as exc:  # noqa: BLE001 — best-effort hook
+                logger.error("backup hook failed: %s", exc)
 
     # -- spawn -------------------------------------------------------------
 
@@ -404,6 +453,11 @@ class _Supervisor:
                 f"universe {uid} backend did not become ready within "
                 f"{self._config.supervisor_readiness_timeout}s"
             )
+        # MV5 (Codex FINAL B1): the fresh backend just created gaottt.db on
+        # disk. create_universe's own hook fired before the db existed, so
+        # rescan here to close the new-universe config lag. No-op when the
+        # litestream knob is unset (default-invariant).
+        await self._run_backup_hook()
         return url, fresh
 
     # -- stop (delete path) ------------------------------------------------
@@ -674,6 +728,11 @@ def create_supervisor_app(
                 await sup._control.arecord_event(
                     universe_id, UNIVERSE_CREATE, resolved_tenant,
                 )
+            # MV5: regenerate the litestream backup config so the new
+            # universe's SQLite is picked up by the next litestream sync.
+            # Best-effort; the hook swallows its own errors so a backup
+            # misconfiguration cannot fail the create response (D2).
+            await sup._run_backup_hook()
             # api_key is handed out exactly once; only the hash is persisted.
             return {"universe_id": universe_id, "api_key": plaintext_key, "port": port}
 
@@ -733,6 +792,12 @@ def create_supervisor_app(
                     fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
+        # MV5: regenerate the litestream backup config so the deleted
+        # universe's SQLite is dropped from replication. Best-effort; the
+        # hook swallows its own errors (D2). Fires after the trash move +
+        # registry delete have committed, so the rescan sees the post-delete
+        # state.
+        await sup._run_backup_hook()
         return {"status": "deleted"}
 
     # -- GET /admin/universes ---------------------------------------------
