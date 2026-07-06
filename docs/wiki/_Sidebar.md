@@ -22,6 +22,7 @@
 - [As Narrative Engine](Guides-Use-As-Narrative-Engine.md)
 - [Multi-Agent Setup](Guides-Multi-Agent.md)
 - [Per-Project DBs](Guides-Per-Project-DBs.md)
+- [Multiverse (1人1宇宙)](Guides-Use-Multiverse.md)
 - [Ambient Recall](Guides-Ambient-Recall.md)
 - [Visualization](Guides-Visualization.md)
 
@@ -45,6 +46,7 @@
 - [Multiverse 運用プレイブック（統合）](Operations-Multiverse-Operations.md)
 - [Multiverse クイック健康チェック（パニック時）](Operations-Multiverse-Quick-Check.md)
 - [Multiverse Setup (MV3)](Operations-Multiverse-Setup.md)
+- [Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)
 - [Control Plane (MV4)](Operations-Control-Plane.md)
 - [Backup & DR (MV5)](Operations-Backup-Multiverse.md)
 - [Resource Requirements (VRAM/RAM/Disk)](Operations-Resource-Requirements.md)

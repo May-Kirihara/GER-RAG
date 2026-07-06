@@ -403,6 +403,79 @@ target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が
 
 → 関連: [Architecture — Concurrency](Architecture-Concurrency.md)「構造的解 (2): owner lease」、[Operations — Tuning](Operations-Tuning.md)「Multiverse owner lease」節
 
+## importer 実行時に `database is locked` が出る（MV3 supervisor 起動中）
+
+**症状**: `scripts/import_universe.py` を実行すると `aiosqlite.OperationalError: database is locked` で失敗する。supervisor が起動中で `registry.db` の書き込みを争奪している場合に発生する。
+
+**原因**: importer は supervisor が起動中でも停止中でも動く設計ですが、両者が同時に `registry.allocate_port` や `registry.create_universe` を呼ぶと SQLite の lock 争奪が起きます。`PRAGMA busy_timeout = 30000`（最大 30 秒待機）が効きますが、高頻度な操作が重なると timeout します。
+
+**対処**:
+- **推奨**: importer 実行時に supervisor を停止する（race を構造的に回避）。importer は supervisor がいなくても registry.db を直接触って完結します
+- supervisor 起動中に実行する場合は WAL + busy_timeout で最終的に整合しますが、頻発するなら supervisor 停止を推奨します
+- importer 側は max 3 回 retry で `IntegrityError`（port race）を救済しますが、`OperationalError`（lock timeout）は retry 対象外です
+
+→ 詳細: [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)「トラブルシューティング」、[Architecture — Concurrency](Architecture-Concurrency.md)
+
+## importer 後に backend が起動しない（embedder identity mismatch）
+
+**症状**: importer で取り込んだ宇宙に supervisor が backend を spawn するが、`engine.startup()` で `verify_embedder_identity` が失敗して backend が起動しない、または即座に crash する。
+
+**原因**: source の manifest に記録された `embedder_id` / `embedding_dim` と、supervisor が spawn する backend が使う embedder service（`GAOTTT_EMBEDDER_ENDPOINT`）の `/info` が一致しない。典型的には:
+
+- source を embed した model と現 embedder service の model が違う（model swap の残滓）
+- source に manifest.json が無く、importer が config fallback で `cl-nagoya/ruri-v3-310m` を記録したが、実際の vector は別 model で生成されていた（semantic drift、importer は falsify 不可）
+
+**対処**:
+- **`/info` で現 embedder service の `model_name` / `dimension` を確認** し、manifest と一致しているか確認
+- **source を再 embed する**（別 model で生成されていた場合）: `scripts/rebuild_faiss_from_db.py --apply`（同一 model で再構築、決定論的）または別 model で再構築（破壊的、displacement は reset）
+- **`--embedder-id` / `--embedder-version` で override**: importer 実行時に manifest の identity を明示的に指定（`scripts/import_universe.py --source ... --embedder-id cl-nagoya/ruri-v3-310m --embedder-version <rev>`）
+- **緊急 escape**: `GAOTTT_MANIFEST_CHECK_ENABLED=false` で manifest 整合 check を無効化（[Tuning](Operations-Tuning.md) 参照）。ただし別 model の vector を混在させる危険があるので、恒久対応ではなく一時的な回避策としてのみ
+
+**semantic drift は検出不可**: importer は次元チェック（`config.embedding_dim`）までしかできず、過去に別 model で embed された vector の意味的 drift は falsify できません。実質的な検証は [runbook の典型的利用フロー step 4](Operations-Multiverse-Import-Universe.md#4-target-で-engine-を直接起動して-recall-の-round-trip-を確認推奨) の `recall` round-trip で行ってください。
+
+→ 詳細: [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)「既知の制約と今後の改善点」、[Operations — Backup & DR](Operations-Backup-Multiverse.md)「embedder artifact pinning」
+
+## importer 実行時に WAL が大きすぎる WARNING / hard reject が出る
+
+**症状**: importer 実行時に `source WAL is N bytes (> 67108864)`（WARNING、64MB）または `source WAL is N bytes (> 268435456)`（hard reject、256MB → exit 5）が出る。
+
+**原因**: source backend が正常に shutdown せず、WAL に未 checkpoint の変更が積もっている。SQLite は WAL を checkpoint して本体に merge しないと、copy した DB の整合性が保証できません（unflushed 変更が失われる / torn write の可能性）。
+
+**対処**:
+- **source backend を正常 shutdown して WAL checkpoint を実行** してください:
+
+  ```bash
+  # source を触る全プロセスを正常停止（SIGTERM で shutdown handler が走り checkpoint される）
+  pkill -TERM -f 'gaottt.server.mcp_server'
+  pkill -TERM -f 'gaottt.server.app'
+
+  # プロセス停止後、WAL size を確認（数十 MB 以下が正常）
+  ls -lh ~/.local/share/gaottt/gaottt.db-wal 2>/dev/null || echo "no WAL (clean checkpoint)"
+  ```
+
+- `> 64MB` の WARNING は `--yes` で続行できますが、可能なら checkpoint させることを推奨します
+- `> 256MB` の hard reject は迂回できません。必ず source を正常 shutdown してから再実行してください
+- `--force` は **WAL size check は迂回しません**（source backend 停止確認のみ迂回）。WAL が大きい場合は `--force` でも exit 5 します
+
+> **設計理由**: SQLite WAL は通常数十 MB 以下。256MB 超は明らかに異常（他プロセスが生きている / SIGKILL された / disk I/O 異常等）なので、安全側として hard reject します。`--force` を付けても integrity_check が走るので corruption は検出されますが、WAL size 異常は事前の段的に弾く設計です。
+
+→ 詳細: [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)「CLI リファレンス」の exit code 5
+
+## importer 後に recall 結果が変わる場合
+
+**症状**: importer で取り込んだ宇宙で `recall` を実行すると、元の standalone 環境と **結果の順位や内容が変わる**（特定の memory が surface しなくなる、または別の memory が上位に来る）。
+
+**正常な挙動**: importer は `gaottt.db` の `nodes` テーブル（`displacement` / `velocity` BLOB 列を含む）および `gaottt.virtual.faiss` を copy 対象とします。target の `engine.startup` は disk から load し、`virtual.faiss` が空（size==0）の時のみ rebuild します。したがって mass / temperature / displacement / virtual 位置が全て preserve され、**import 後も同じクエリに対して同じ recall 結果を返すのが正常** です。
+
+**結果が変わる要因**:
+
+- **embedder service の切り替え**: standalone は in-process RuriEmbedder、multiverse は RemoteEmbedder です。同一 model・同一重みでも、batching の timing で encode 数値に微小差が出る可能性があります（bit-exact ではなく `np.allclose` 級の一致）。この場合は同点付近の順位入れ替え程度で、内容が大きく変わることはありません
+- **semantic drift / corruption**: 過去に別 model で embed された vector が残っている、copy 中の torn write、`virtual.faiss` と `gaottt.db` の整合性崩れ等があると、結果が大きく変わります（特定の memory が永久に surface しない、全く無関係な memory ばかり上位に来る等）
+
+**対処**: 結果が大きく変わる場合は `scripts/diag_recall.py snapshot` で source / target を比較してください（同一 query set を両環境に投げて raw FAISS / virtual / final の差分を取る）。torn write が疑われる場合は copy 元 backend が停止していたか確認し、必要なら `scripts/rebuild_faiss_from_db.py` で DB から再 embed してください。embedder identity mismatch が疑われる場合は [上記の embedder identity mismatch](#importer-後に-backend-が起動しないembedder-identity-mismatch) を参照してください。
+
+→ 詳細: [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)「既知の制約と今後の改善点」の semantic drift 検出不可
+
 ## 診断ツール一覧 (read-only)
 
 retrieval / mass / displacement の挙動を読み解くための副作用なしスクリプト群。本番 DB に対して安全に走らせて良い (write しない、cache を汚さない)。

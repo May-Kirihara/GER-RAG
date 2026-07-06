@@ -28,6 +28,7 @@
 | 物語駆動で記憶を navigate したい (好奇心 mode) | [Guides — Use as Narrative Engine](Guides-Use-As-Narrative-Engine.md) |
 | 複数エージェントの共有メモリとして | [Guides — Multi-Agent](Guides-Multi-Agent.md) |
 | プロジェクトごとに DB を分けたい (知識ドメイン分離) | [Guides — Per-Project DBs](Guides-Per-Project-DBs.md) |
+| 複数人で 1 ホストを共有したい (1人1宇宙・マルチバース) | [Guides — Multiverse](Guides-Use-Multiverse.md) |
 | 明示的に呼ばなくても記憶を自動で効かせたい | [Guides — Ambient Recall](Guides-Ambient-Recall.md) |
 | 記憶宇宙を眺めたい | [Guides — Visualization](Guides-Visualization.md) |
 
@@ -48,6 +49,7 @@ REST API は [REST API Reference](REST-API-Reference.md)。
 | Multiverse 全体の運用フローと評価方法を見る | [Operations — Multiverse 運用プレイブック](Operations-Multiverse-Operations.md) |
 | Multiverse で異変に気づいたら 1 分で診る | [Operations — Multiverse クイック健康チェック](Operations-Multiverse-Quick-Check.md) |
 | 複数テナントの宇宙を運用する (Multiverse MV3) | [Operations — Multiverse Setup](Operations-Multiverse-Setup.md) |
+| 既存 standalone DB を multiverse に取り込む | [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md) |
 | 台帳・監査・usage 収集の control plane を運用する (Multiverse MV4) | [Operations — Control Plane](Operations-Control-Plane.md) |
 | 宇宙単位のバックアップと災害復旧 (Multiverse MV5) | [Operations — Backup & DR](Operations-Backup-Multiverse.md) |
 | VRAM/RAM/ディスクの必要量を見積もる | [Operations — Resource Requirements](Operations-Resource-Requirements.md) |

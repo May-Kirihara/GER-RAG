@@ -92,6 +92,8 @@ curl -X POST http://127.0.0.1:7880/admin/universes \
 - `api_key` の平文は **この応答で一度だけ** 返る。registry には SHA-256 hash で保存される（`hashlib.sha256`、CSPRNG `secrets.token_urlsafe(32)` で生成）。紛失した場合は再発行 API（または宇宙再作成）
 - 作成された宇宙の `manifest.json` は `managed: true`（MV2 lease 強制のトリガー）
 
+> **既に standalone DB をお持ちの場合**: 上記の `POST /admin/universes` は新規空宇宙作成専用です。既存の `data_dir`（`~/.local/share/gaottt/` 等、gaottt.db + FAISS 群）を multiverse の 1 宇宙として取り込む場合は **importer** を使います — [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)。importer は copy/move/dry-run の 3 mode、post-copy `PRAGMA integrity_check` + schema gate、transaction scope で atomic 実行し、API key を一度だけ返します。supervisor 起動中でも停止中でも動作します。
+
 ### 4. agent 側の shim 設定
 
 `.mcp.json` (Claude Code) の場合:

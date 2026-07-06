@@ -42,6 +42,14 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Custom markers. ``slow`` marks tests that spawn real processes (uvicorn /
+# detached supervisor backend / real MCP round-trip); they are skipped by
+# default in CI and run manually via ``-m slow``. Registering it here silences
+# PytestUnknownMarkWarning (previously emitted from ``slow = pytest.mark.slow``
+# aliases in tests/integration/test_supervisor.py and test_import_universe.py).
+markers = [
+    "slow: spawns real processes (uvicorn / supervisor / MCP) — run with -m slow, skipped in CI",
+]
 # Hard per-test deadline so a wedged write-behind save (or any deadlock) fails
 # fast WITH a thread-stack dump instead of hanging the run indefinitely (a
 # ~2h isolation hang of a FAISS write-behind test motivated this). 120s clears
