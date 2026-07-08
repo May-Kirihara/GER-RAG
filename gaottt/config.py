@@ -187,6 +187,33 @@ class GaOTTTConfig:
     # Seconds to wait for a freshly-spawned backend to answer a readiness probe
     # before declaring the spawn failed.
 
+    # ---- MV3 supervisor — embedder lazy spawn (WP-1) ------------------------
+    # When ``supervisor_spawn_embedder`` is True (default), the supervisor
+    # lazily spawns a dedicated embedding service (RemoteEmbedder backend)
+    # on first embed demand instead of requiring every universe backend to
+    # load its own in-process RuriEmbedder. The remaining three knobs tune
+    # that lazy-spawned service's lifecycle. Feature is inert until the
+    # supervisor actually wires it (later WPs); these scalars only configure
+    # it. Detail: docs/plans/embedder-auto-spawn-supervisor.md §6 / §10.
+    # Env via the generic GAOTTT_<UPPER> loop.
+    supervisor_spawn_embedder: bool = True
+    # GAOTTT_SUPERVISOR_SPAWN_EMBEDDER. Global off-switch for the lazy-spawn
+    # feature; False = every universe backend loads its own in-process embedder
+    # (pre-WP-1 behaviour).
+    embedder_spawn_idle_timeout_seconds: float = 300.0
+    # GAOTTT_EMBEDDER_SPAWN_IDLE_TIMEOUT_SECONDS. How long the lazily-spawned
+    # embedder service stays alive after its last request before self-shutdown
+    # (cold-war idle reclamation).
+    embedder_spawn_readiness_timeout_seconds: float = 90.0
+    # GAOTTT_EMBEDDER_SPAWN_READINESS_TIMEOUT_SECONDS. Seconds to wait for the
+    # freshly-spawned embedder service to answer a readiness probe before
+    # declaring the spawn failed (embedder-service analog of
+    # ``supervisor_readiness_timeout``).
+    embedder_idle_watchdog_poll_seconds: float = 30.0
+    # GAOTTT_EMBEDDER_IDLE_WATCHDOG_POLL_SECONDS. Cadence (seconds) at which
+    # the idle-watchdog checks whether the embedder service has reached its
+    # idle timeout and should be reaped.
+
     # ---- MV4 Control plane client (WP-3) -----------------------------------
     # Ops / coordination layer for the control plane (Postgres-backed
     # aggregator/audit/billing surface). The supervisor's ControlClient uses

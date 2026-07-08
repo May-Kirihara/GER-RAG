@@ -80,6 +80,8 @@ ps -o rss= -p $ENGINE_PID   # → engine 単体（model 抜き）← これが�
 # 5. warm 状態で recall / remember を数回走らせてから再計測（PyTorch allocator の reserved が安定した値）
 ```
 
+> **★ 開発機（supervisor lazy spawn）との関係**: 開発機では multiverse supervisor が embedding service を lazy spawn するため（`supervisor_spawn_embedder=True`、default 有効）、上記の手動起動は不要です。**本手順で model 抜き engine の RSS を直接計測したい場合**は、supervisor の lazy spawn を opt-out（`GAOTTT_SUPERVISOR_SPAWN_EMBEDDER=0`）して手動起動ベースで計測してください。lazy spawn 機構自体の RSS overhead は supervisor プロセス内の watchdog task のみで無視可能です（[Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)）。
+
 ### 期待される構成（次セッションで実測確認）
 
 | プロセス | RAM 構成 | 備考 |

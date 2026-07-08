@@ -192,7 +192,7 @@ Multiverse を商用投入する前、および定期評価で、性能・信頼
 
 | 障害コンポーネント | 挙動・影響 | 復旧の方向性 | 詳細 |
 |---|---|---|---|
-| **embedding service** (7879) | 全宇宙の `remember` / `recall` 停止。engine は明示的エラーで 1 ターン失敗 | systemd `Restart=always` で再起動。VRAM 不足時は `batch_size` 縮小または CPU fallback | [Resource Requirements](Operations-Resource-Requirements.md) §VRAM/RAM 不足時 / [Server Setup](Operations-Server-Setup.md) |
+| **embedding service** (7879) | 全宇宙の `remember` / `recall` 停止。engine は明示的エラーで 1 ターン失敗 | systemd `Restart=always` で再起動。VRAM 不足時は `batch_size` 縮小または CPU fallback。**開発機（systemd 無し）構成では supervisor が lazy spawn する** — embedder が落ちている状態で次回 `/route` が来ると supervisor が `/healthz` で検知して再 spawn する（`supervisor_spawn_embedder=True`、default 有効） | [Resource Requirements](Operations-Resource-Requirements.md) §VRAM/RAM 不足時 / [Server Setup](Operations-Server-Setup.md) / [Tuning](Operations-Tuning.md) §MV3 follow-on |
 | **supervisor** (7880) | 新規 spawn 不可。既存 backend は自走継続、idle で順次休眠 | systemd 常駐推奨。supervisor 自体はステートレス (registry は disk) なので再起動可、`reconcile()` が on-disk `universes/` から再構築 | [Multiverse Setup](Operations-Multiverse-Setup.md) / [Backup & DR](Operations-Backup-Multiverse.md) §スコープ |
 | **control plane** (7881) | degraded mode で supervisor は local 自走、usage は spool 蓄積。復旧で再送。permanent auth failure (401) は spool 書き込み継続・POST 停止 | network error は自然復旧。401 は同一 host_id で `rotate-token` → env 更新 → supervisor restart | [Control Plane](Operations-Control-Plane.md) §degraded mode / §permanent auth failure |
 | **Postgres** | control plane が機能停止。supervisor は control client が none 扱いで local 自走 (3-point gate 未満と同等) | Postgres 復旧後、control plane が再起動し台帳同期が再開。Postgres 自体のバックアップ/復旧は別運用 | [Control Plane](Operations-Control-Plane.md) §制限事項 |

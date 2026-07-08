@@ -473,6 +473,23 @@ embedding model（RURI）のロードを engine プロセスから分離し、�
 
 > **信頼境界**: `multiverse_root` は 0700 / `manifest.json` / `owner.lock` / `backend.token` は 0600。同一 OS ユーザー内の manifest 改変は v1 信頼境界外（root / 同一ユーザーを敵とするモデルは v1 で守らない）。NFS / CIFS は lease の POSIX semantics が保証できないため非サポート
 
+## Multiverse supervisor — embedder lazy spawn (MV3 follow-on、2026-07-06)
+
+supervisor が embedding service (port 7879) を lazy spawn するための knob 群。開発機（systemd を使わず supervisor 1 本で運用する構成）向けで、初回の embed 需要（`create_universe` / `/route`）で `/healthz` を叩き応答が無ければ spawn、全 backend が idle で落ちたら `embedder_spawn_idle_timeout_seconds` 後に SIGTERM で落とす。3 状態の state machine (`unowned` / `owned_idle` / `owned_terminating`) + `asyncio.Lock` (in-process) + `<multiverse_root>/.embedder.spawn.lock` の `fcntl.flock` (cross-process) で race safety を担保する。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §SPOF、[Operations — Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節、設計判断は [Architecture — Overview](Architecture-Overview.md) 設計判断表「Supervisor による embedder lazy spawn」。
+
+> **★ lazy spawn 発動には `embedder_endpoint` 設定が必須**: 既定の `embedder_endpoint=""`（= in-process RuriEmbedder 使用）では、`supervisor_spawn_embedder=True` でも lazy spawn は発動しない（feature inert）。`ensure_embedder_up` は spawn lock 取得後、cache の有無に関わらず endpoint 空を即座に `EmbedderValidationError` で拒否する（B-F4 完全化）。multiverse 運用で lazy spawn を使う場合は `GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879` 等で明示的に設定する。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| supervisor_spawn_embedder | `True` | lazy spawn 機能の global off-switch。`True`（既定）で supervisor が embedding service を lazy spawn する。**正常な本番 systemd embedder が先に立っている場合の挙動は完全不変** — `/healthz` で検知して所有権を主張せず `unowned` 扱い（systemd 運用時の干渉ゼロ）。`False` で従来挙動（embedder に繋がらない場合は即 `EmbedderValidationError`、`create_universe` は 400・`/route` は 503） |
+| embedder_spawn_idle_timeout_seconds | `300.0` | supervisor が spawn した embedder が、最後のリクエストからこの秒数 idle で続いたら SIGTERM で落とすまでの猶予。cold-war idle reclamation（全 backend が休眠しても即座に embedder まで殺さない猶予） |
+| embedder_spawn_readiness_timeout_seconds | `90.0` | spawn 直後の embedder が `/healthz` に応答するまで待つ猶予。**初回 RURI model download (~1.2GB) で超過し得る**（超過時は spawn 失敗だが、retry で 2 回目以降は cache が効いて通る）。backend の `supervisor_readiness_timeout` と同じ 90s に揃えている |
+| embedder_idle_watchdog_poll_seconds | `30.0` | supervisor の idle watchdog が embedder の idle timeout 到達を check する poll 間隔。`embedder_spawn_idle_timeout_seconds` (300s) に対して 30s poll で最大 ~30s の誤差 |
+
+> **★ opt-out は `supervisor_spawn_embedder=False`**: 1 行で従来挙動（embedder は必ず外部/systemd で立てる、繋がらないと即座にエラー）に戻る。本番正常 systemd embedder 運用時は `/healthz` で検知して `unowned` に倒れるため、`True` のままでも挙動は完全不変（所有権を主張しない）。
+
+> **★ PermissionError / SIGKILL 後 alive は手動 recovery**: 異常終了パス（他 uid 所有の pid・SIGKILL 後も生き残る等）では state を `unowned` に**消さず** `owned_terminating` を保持し ERROR log で運用者に手動 recovery を促す（auto-respawn しない安全側）。`/route` は 503 を返し続ける。詳細: [Operations — Troubleshooting](Operations-Troubleshooting.md)「supervisor が lazy spawn した embedder が `owned_terminating` に固まる」。
+
 ## Multiverse control plane client (MV4 — 2026-07-03)
 
 supervisor が Postgres-backed control plane（port 7881、独立プロセス）と同期・usage telemetry を送信するための knob。control plane は aggregator / audit / billing 収集点で、engine コードには一切接触しない（設計判断 J9）。詳細: [Operations — Control Plane](Operations-Control-Plane.md)、[Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 3、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV4。

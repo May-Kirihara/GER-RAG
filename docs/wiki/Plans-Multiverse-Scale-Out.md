@@ -187,7 +187,7 @@ v1 では作らない。方式だけ確定しておく:
 
 ## 6. リスクと留意点
 
-- **embedding service が SPOF になる** — 全宇宙の remember/recall が止まる。ヘルスチェック + 自動再起動（systemd）+ engine 側の明示的エラー（現行の OOM 時と同様、その 1 ターン失敗で留める）。in-process fallback は model load が重いので自動では行わない
+- **embedding service が SPOF になる** — 全宇宙の remember/recall が止まる。ヘルスチェック + 自動再起動（systemd）+ engine 側の明示的エラー（現行の OOM 時と同様、その 1 ターン失敗で留める）。**supervisor による lazy spawn は開発機向け**（`supervisor_spawn_embedder=True`、default 有効）。**正常な** 本番 systemd embedder が先に立ってる場合の挙動は完全不変、所有権は `_embedder_state` で `unowned` / `owned_idle` / `owned_terminating` の 3 状態で管理。`fcntl.flock` (`<multiverse_root>/.embedder.spawn.lock`) で cross-process race 安全（in-process は `asyncio.Lock` と二層）。in-process fallback（engine が独自に RuriEmbedder を construct する経路）は model load が重いので**自動では行わない**設計は不変 — supervisor が spawn するのは独立した `gaottt.embedding.service` プロセスで engine 内部ではない。詳細: [Operations — Tuning](Operations-Tuning.md) §MV3 follow-on、[Operations — Server Setup](Operations-Server-Setup.md)「supervisor 経由の lazy spawn」節、設計判断は [Architecture — Overview](Architecture-Overview.md)「Supervisor による embedder lazy spawn」
 - **embedder version mismatch は宇宙を壊す** — 宇宙の計量が変わると全ベクトルが無意味化する。Stage 1 の起動時 version check（manifest + `config.embedding_dim` の二重照合）を必須ガードにする（persist guard と同じ「起動時診断で block」パターン）
 - **embedder model artifact の供給が DR の隠れた依存** — 「SQLite だけで復元可能」は同一モデルが入手できる前提。HF から model が消える・依存ライブラリ更新で encode 数値が変わる事態に備え、モデル artifact の pin / ミラーを商用運用の要件にする（§4 Stage 4）
 - **supervisor 自体の可用性** — supervisor 落ち = 新規 spawn 不可（既存 backend は自走継続 → dead-man-switch で順次休眠）。systemd 常駐 + 単純さ優先で状態を control plane / ローカルレジストリに持たせ、supervisor はステートレス再起動可能にする

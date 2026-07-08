@@ -39,7 +39,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, ConnectError
 
 from gaottt.config import GaOTTTConfig
 
@@ -75,6 +75,44 @@ def _embedder_fail(status: int = 503):
     return patch("httpx.Client.get", return_value=mock_resp)
 
 
+def _embedder_health_ok():
+    """Patch ``httpx.AsyncClient`` so ``/healthz`` returns 200 + ``{"status": "ok"}``.
+
+    ``_probe_embedder_health`` uses a *different* seam from ``/info``
+    (``_validate_embedder``): it opens ``httpx.AsyncClient`` and awaits
+    ``.get(endpoint + "/healthz")`` inside an ``async with`` block. This
+    mock points ``__aenter__`` back at the same client so ``async with … as
+    c:`` binds ``c`` to the configured mock — same pattern as
+    ``test_probe_embedder_health_*`` in ``test_supervisor_embedder_spawn.py``.
+    """
+    mock_resp = Mock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"status": "ok"}
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    mock_client.__aenter__.return_value = mock_client
+    return patch(
+        "gaottt.multiverse.supervisor.httpx.AsyncClient",
+        return_value=mock_client,
+    )
+
+
+def _embedder_health_fail():
+    """Patch ``httpx.AsyncClient`` so ``/healthz`` raises ``ConnectError``.
+
+    Mirrors what CI sees when no embedder is listening on the configured
+    port (connection refused), so ``_probe_embedder_health`` deterministically
+    returns ``False`` instead of leaking to a real ``127.0.0.1:9999``.
+    """
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=ConnectError("connection refused"))
+    mock_client.__aenter__.return_value = mock_client
+    return patch(
+        "gaottt.multiverse.supervisor.httpx.AsyncClient",
+        return_value=mock_client,
+    )
+
+
 # ---------------------------------------------------------------------------
 # fixtures
 # ---------------------------------------------------------------------------
@@ -85,6 +123,29 @@ def tmp_multiverse_root(tmp_path: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     return root
+
+
+@pytest.fixture(autouse=True)
+def _isolate_embedder_health_from_ci():
+    """B-F3 (R1 prevention): make ``/healthz`` deterministically return 200
+    for every test in this module so ``/route``'s ``ensure_embedder_up``
+    cache-freshness probe never leaks to a real network port.
+
+    Why this matters: once ``_make_universe`` populates the unowned
+    ``_embedder_info_cache``, every subsequent ``ensure_embedder_up`` call
+    (every ``/route``) probes ``<embedder_endpoint>/healthz`` to verify
+    the external embedder did not go down between calls. In CI nothing
+    listens on ``127.0.0.1:9999``, so that probe returned ``False``, the
+    cache was invalidated, and the supervisor fell through to the real
+    lazy-spawn path — flaking CI with real ``Popen`` calls and readiness
+    polling (the R1 incident). This fixture makes the seam deterministic.
+
+    Tests that never reach the cache-freshness branch are unaffected: the
+    mock is installed but never awaited. The ``_embedder_ok()`` seam for
+    ``/info`` (``httpx.Client.get``) is independent and unchanged.
+    """
+    with _embedder_health_ok():
+        yield
 
 
 @pytest.fixture
@@ -125,7 +186,7 @@ async def client(app):
 
 async def _make_universe(client, owner: str = "owner-a") -> dict:
     """Create a universe via the admin API (embedder mocked ok); return its body."""
-    with _embedder_ok():
+    with _embedder_ok(), _embedder_health_ok():
         r = await client.post(
             "/admin/universes",
             json={"owner_label": owner},
@@ -230,7 +291,10 @@ async def test_create_universe_returns_id_key_port(client, stub_config, stub_reg
 # ===========================================================================
 
 async def test_create_universe_embedder_validation_fail_returns_400(client):
-    with _embedder_fail(status=503):
+    # /info fails (503) but /healthz succeeds — the embedder is up but /info
+    # validation rejects it, so create_universe maps to 400. Without the
+    # /healthz mock this test leaks to a real 127.0.0.1:9999 in CI (R1 fix).
+    with _embedder_fail(status=503), _embedder_health_ok():
         r = await client.post(
             "/admin/universes",
             json={"owner_label": "o"},

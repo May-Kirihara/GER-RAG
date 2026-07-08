@@ -37,6 +37,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
@@ -153,6 +154,90 @@ def _validate_embedder(config: GaOTTTConfig) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# embedder lazy-spawn helpers (standalone — patchable in unit tests)
+# ---------------------------------------------------------------------------
+
+def _strip_gaottt_env() -> dict[str, str]:
+    """Return a copy of ``os.environ`` with all ``GAOTTT_*`` keys removed.
+
+    The supervisor's own ``GAOTTT_*`` env (data dir, backend token, owner
+    lease state) must not leak into a managed subprocess. OS essentials
+    (``PATH``, ``HOME``, ...) are preserved so the subprocess can run.
+    Same pattern as :meth:`_Supervisor._build_spawn_env`.
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GAOTTT_")}
+
+
+def _spawn_embedder_detached(
+    host: str, port: int, log_path: Path, model: str,
+    env: dict[str, str] | None = None,
+) -> int:
+    """Launch a detached ``gaottt.embedding.service`` subprocess. Returns PID.
+
+    The child runs ``python -m gaottt.embedding.service --host H --port P
+    --model M`` fully detached: ``stdin`` is ``DEVNULL``, ``stdout`` /
+    ``stderr`` go to ``log_path``, and it gets a new session
+    (``start_new_session`` on POSIX, ``creationflags`` on Windows) so it
+    survives the supervisor's death. The parent closes the log file handle
+    after ``Popen`` so it does not leak in the supervisor process — the
+    child already has its own dup. Mirrors
+    :func:`gaottt.server.mcp_proxy._spawn_backend_detached`.
+
+    ``env`` (B-F2): when provided, passed to ``Popen`` as ``env=`` so the
+    caller controls what ``GAOTTT_*`` state reaches the child (the
+    supervisor strips its own via :meth:`_Supervisor._build_embedder_spawn_env`).
+    ``None`` (default) inherits the parent process environment unchanged —
+    kept out of ``kwargs`` so callers/tests that do not care about ``env``
+    observe an untouched ``Popen`` call shape.
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "a", buffering=1)  # noqa: SIM115 — child owns the fd
+    log_file.write(
+        f"\n--- embedder spawn at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+    )
+    cmd = [
+        sys.executable, "-m", "gaottt.embedding.service",
+        "--host", host, "--port", str(port), "--model", model,
+    ]
+    kwargs: dict = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+    }
+    if env is not None:
+        kwargs["env"] = env
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (  # type: ignore[attr-defined]
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603 — controlled argv
+    log_file.close()
+    return proc.pid
+
+
+def _is_my_child_alive(pid: int) -> bool:
+    """True if ``pid`` is a child of this process and has not yet exited.
+
+    Uses ``os.waitpid(pid, WNOHANG)`` which both tests for exit and reaps
+    the resulting zombie in one call. ``ChildProcessError`` means the
+    child was already reaped (or was never ours); ``OSError`` covers the
+    race where the PID was recycled by the kernel. Either way the PID is
+    not a live child of ours, so return ``False`` — the caller falls
+    through to the "race lost" path. Distinct from
+    :meth:`_Supervisor._process_alive` (an instance method for backend
+    PID tracking) only in its error handling: this standalone helper is
+    also used by readiness polling where a recycled PID is common.
+    """
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        return done == 0
+    except (ChildProcessError, OSError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # backend probe
 # ---------------------------------------------------------------------------
 
@@ -238,6 +323,24 @@ class _Supervisor:
         # (older) result could win via os.replace — a stale write. The lock
         # keeps scan+write in ONE critical section (round-2 review B2).
         self._backup_hook_lock = asyncio.Lock()
+        # WP-2b: embedder lazy-spawn lifecycle state. The supervisor tracks
+        # whether it owns the embedder process (and its PID), caches the
+        # last-known /info result, and serializes spawn attempts with a
+        # dedicated lock (distinct from the per-universe backend spawn
+        # locks — the embedder is shared across all universes).
+        # State machine: "unowned" (external/systemd embedder or none yet)
+        # → "owned_idle" (this supervisor spawned it, it is up) →
+        # "owned_terminating" (this supervisor is shutting it down). See
+        # docs/plans/embedder-auto-spawn-supervisor.md §3.1 for the full
+        # transition table.
+        self._embedder_state = "unowned"
+        self._embedder_pid: int | None = None
+        self._embedder_spawn_lock = asyncio.Lock()
+        self._embedder_info_cache: dict | None = None
+        # WP-3b starts the idle-watchdog task after a successful owned
+        # spawn. Initialized to None here so the field always exists.
+        self._embedder_watchdog_task: asyncio.Task | None = None
+        self._last_backend_active_at = time.monotonic()
 
     # -- paths & tokens ----------------------------------------------------
 
@@ -578,6 +681,518 @@ class _Supervisor:
             await asyncio.sleep(0.5)
         return not self._process_alive(pid)
 
+    # -- embedder lifecycle (WP-2b) ----------------------------------------
+
+    def _build_embedder_spawn_env(self) -> dict[str, str]:
+        """Build the env dict for the embedder subprocess.
+
+        Strips all ``GAOTTT_*`` from the supervisor's own environment
+        (same pattern as :meth:`_build_spawn_env`) so the supervisor's
+        data-dir / backend-token / owner-lease state does not leak into
+        the embedder. The embedder service reads its config from CLI
+        args, not env vars, so nothing ``GAOTTT_*`` is added back.
+        """
+        return _strip_gaottt_env()
+
+    async def _probe_embedder_health(self) -> bool:
+        """GET ``<embedder_endpoint>/healthz`` via ``httpx.AsyncClient``.
+
+        Returns ``True`` on HTTP 200, ``False`` on any non-200 status,
+        :class:`httpx.HTTPError` (connection refused / timeout), or when
+        ``embedder_endpoint`` is unset. This is a **different seam** from
+        :func:`_validate_embedder` (which uses sync ``httpx.Client.get``
+        for ``/info``) — the two never interfere, so the existing test
+        mock seam (``patch("httpx.Client.get", ...)``) is unaffected.
+        """
+        endpoint = self._config.embedder_endpoint
+        if not endpoint:
+            return False
+        url = endpoint.rstrip("/") + "/healthz"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(url)
+        except httpx.HTTPError:
+            return False
+        return response.status_code == 200
+
+    def _reset_embedder_state(self) -> None:
+        """Reset embedder ownership to ``unowned`` and clear the PID + cache.
+
+        Extended in WP-3b to also cancel a running idle-watchdog task so a
+        state reset (stale-cache invalidation in :meth:`ensure_embedder_up`,
+        clean termination in :meth:`_terminate_embedder`, or lifespan
+        shutdown) does not leave an orphaned watchdog loop.
+
+        Self-cancellation guard: when this method is called from *within*
+        the watchdog task itself (via ``_terminate_embedder`` →
+        ``_reset_embedder_state``), the watchdog's own task is NOT cancelled
+        — cancelling the current task would raise ``CancelledError`` at the
+        next await point for no benefit, since the watchdog returns on its
+        own right after ``_terminate_embedder`` completes. The guard uses
+        :func:`asyncio.current_task`; in a sync call context (no running
+        loop) there is no self-cancellation risk, so the cancel proceeds.
+        """
+        self._embedder_state = "unowned"
+        self._embedder_pid = None
+        self._embedder_info_cache = None
+        if self._embedder_watchdog_task is not None:
+            current = None
+            try:
+                current = asyncio.current_task()
+            except RuntimeError:
+                pass  # no running event loop — sync call context
+            if current is not self._embedder_watchdog_task:
+                self._embedder_watchdog_task.cancel()
+            self._embedder_watchdog_task = None
+
+    async def ensure_embedder_up(self, *, validate_info: bool = True) -> dict:
+        """Ensure the embedding service is reachable, spawning it if needed.
+
+        Resolution order (B2-1 + B2-3):
+
+        0. **Fail-fast on ``owned_terminating``** (B-F1): if this supervisor
+           previously gave up terminating the embedder (PermissionError /
+           SIGKILL survivor, see :meth:`_terminate_embedder`), refuse to
+           trust any cache or attempt any spawn. Manual recovery required.
+        1. **Endpoint-empty fail-fast** (B-F4 completion): inside the
+           spawn lock, raise immediately if ``embedder_endpoint`` is empty,
+           regardless of cache state. The config default ``""`` keeps the
+           feature inert (in-process RuriEmbedder); this hoist closes the
+           stale-cache gap where a non-empty ``_embedder_info_cache``
+           skipped ``_validate_embedder`` and fell through to spawn.
+        2. **Cache + ``/info`` validation** (B2-1 fence): if the cache is
+           empty, try :func:`_validate_embedder` (sync ``/info``). Success
+           → cache + return immediately. This lets the existing test mock
+           seam (``httpx.Client.get`` for ``/info``) drive
+           ``create_universe`` without touching ``/healthz``.
+        3. **Owned cache freshness** (B2-3): if this supervisor spawned the
+           embedder (``owned_idle``), verify the child PID is still alive
+           **and** ``/healthz`` answers before trusting the cache.
+        4. **Lazy spawn** (§3.3-§3.5): if no embedder is reachable and
+           ``supervisor_spawn_embedder`` is ``True``, acquire the spawn
+           lock + flock, re-check ``/healthz``, spawn, and poll readiness.
+
+        Raises :class:`EmbedderValidationError` when the embedder is
+        unreachable and either spawn is disabled or spawn fails.
+        """
+        # B-F1: owned_terminating ⇒ fail-fast (manual recovery). Evaluated
+        # before the lock so a wedged supervisor does not even attempt the
+        # cache / /healthz / spawn paths — silent recovery would hide the
+        # ownership hazard that B2-6 retained the state to surface.
+        if self._embedder_state == "owned_terminating":
+            raise EmbedderValidationError(
+                "embedder is in owned_terminating state — manual recovery "
+                "required (check supervisor logs for PermissionError / "
+                "SIGKILL survival)"
+            )
+        async with self._embedder_spawn_lock:
+            # B-F4 completion: endpoint unset ⇒ raise before any cache,
+            # /healthz, or spawn path. The original B-F4 fence lived inside
+            # the ``except EmbedderValidationError`` block below, reachable
+            # only when ``_embedder_info_cache is None``; a stale cache
+            # skipped ``_validate_embedder`` entirely and fell through to
+            # spawn. Hoisting the check here makes "no endpoint ⇒ no spawn"
+            # literal regardless of cache state (config default stays inert).
+            if not self._config.embedder_endpoint:
+                raise EmbedderValidationError(
+                    "embedder_endpoint is not configured — lazy spawn requires "
+                    "an explicit endpoint (config.embedder_endpoint or "
+                    "GAOTTT_EMBEDDER_ENDPOINT env). Default empty string keeps "
+                    "the feature inert (in-process RuriEmbedder)."
+                )
+            # B2-1: try /info first. Existing test mock seam (httpx.Client.get)
+            # makes this the fast path — /healthz is never reached when /info
+            # answers, so create_universe's existing _embedder_ok() helper
+            # works unchanged.
+            if self._embedder_info_cache is None:
+                try:
+                    info = await asyncio.to_thread(_validate_embedder, self._config)
+                except EmbedderValidationError:
+                    # B-F4: endpoint unset ⇒ no spawn target. ``_validate_embedder``
+                    # already raised on the empty endpoint; re-raise here so the
+                    # default ``embedder_endpoint=""`` (feature off) does not
+                    # fall through to a spawn derived from an empty URL.
+                    if not self._config.embedder_endpoint:
+                        raise
+                    if not self._config.supervisor_spawn_embedder:
+                        raise  # opt-out mode: fail fast, no spawn attempt
+                    # /info unreachable → fall through to /healthz + spawn path
+                else:
+                    if self._embedder_state == "unowned":
+                        self._embedder_info_cache = info
+                    # owned_idle falls through to the freshness check below
+                    if self._embedder_state != "owned_idle":
+                        return info
+
+            # B2-3: owned cache freshness — verify child alive + /healthz
+            if self._embedder_state == "owned_idle" and self._embedder_info_cache:
+                if (self._embedder_pid is not None
+                        and _is_my_child_alive(self._embedder_pid)
+                        and await self._probe_embedder_health()):
+                    return self._embedder_info_cache
+                # child died or /healthz NG → invalidate, spawn path
+                self._reset_embedder_state()
+
+            # B2-3 continued: unowned cache freshness — external embedder
+            # may have died between calls. /healthz probe catches this.
+            if self._embedder_state == "unowned" and self._embedder_info_cache:
+                if await self._probe_embedder_health():
+                    return self._embedder_info_cache
+                self._embedder_info_cache = None  # external embedder went down
+
+            # (3) lazy spawn path
+            if await self._probe_embedder_health():
+                # Someone else (systemd / another supervisor) has an embedder up
+                self._embedder_state = "unowned"
+                self._embedder_pid = None
+            elif self._config.supervisor_spawn_embedder:
+                await self._spawn_embedder_owned()
+                if self._embedder_state != "owned_idle":
+                    # Race lost: another supervisor won the flock and spawned.
+                    # Verify their embedder is reachable before trusting it.
+                    if await self._probe_embedder_health():
+                        self._embedder_state = "unowned"
+                    else:
+                        raise EmbedderValidationError("embedder spawn race lost")
+            else:
+                raise EmbedderValidationError(
+                    "embedder service unreachable (supervisor_spawn_embedder=False)"
+                )
+
+            # (4) post-spawn /info validation (cache may still be None if
+            # we arrived via the /healthz-only path without a prior /info).
+            if validate_info and self._embedder_info_cache is None:
+                info = await asyncio.to_thread(_validate_embedder, self._config)
+                self._embedder_info_cache = info
+            return self._embedder_info_cache  # type: ignore[return-value]
+
+    async def _spawn_embedder_owned(self) -> None:
+        """Spawn the embedder service as a tracked child of this supervisor.
+
+        Two-layer locking mirrors :meth:`ensure_backend`: the
+        ``_embedder_spawn_lock`` (already held by the caller) serializes
+        in-process, and ``fcntl.flock`` on ``<root>/.embedder.spawn.lock``
+        serializes across supervisor processes/restarts. The flock is
+        taken via :func:`asyncio.to_thread` (B2-2) so the event loop is
+        not stalled.
+        """
+        endpoint = self._config.embedder_endpoint
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 7879
+        model = self._config.model_name
+        log_path = self._root / "logs" / "embedder.log"
+
+        lock_path = self._root / ".embedder.spawn.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            # B2-2: flock via to_thread so the event loop is not blocked.
+            await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_EX)
+            try:
+                # Re-check inside the flock: another supervisor may have
+                # spawned while we waited.
+                if await self._probe_embedder_health():
+                    self._embedder_state = "unowned"
+                    return
+                pid = _spawn_embedder_detached(
+                    host, port, log_path, model,
+                    env=self._build_embedder_spawn_env(),  # B-F2
+                )
+                ready = await self._poll_embedder_readiness(pid)
+                if ready:
+                    # Race-lost check: child may have been replaced or died
+                    # between the last /healthz OK and now.
+                    if (not _is_my_child_alive(pid)
+                            or not await self._probe_embedder_health()):
+                        self._embedder_state = "unowned"
+                        self._embedder_pid = None
+                        return
+                    self._embedder_pid = pid
+                    self._embedder_state = "owned_idle"
+                    self._last_backend_active_at = time.monotonic()
+                    # Start the idle-watchdog. Cancel any prior task first
+                    # so a re-spawn (after the prior embedder died and the
+                    # cache was invalidated in ensure_embedder_up) does not
+                    # leave two watchdog loops running.
+                    if self._embedder_watchdog_task is not None:
+                        self._embedder_watchdog_task.cancel()
+                        try:
+                            await self._embedder_watchdog_task
+                        except asyncio.CancelledError:
+                            pass
+                    self._embedder_watchdog_task = asyncio.create_task(
+                        self._embedder_idle_watchdog()
+                    )
+                else:
+                    await self._handle_spawn_readiness_failure(pid)
+            finally:
+                await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+    async def _poll_embedder_readiness(self, pid: int) -> bool:
+        """Poll ``/healthz`` until the spawned embedder is ready or timeout.
+
+        Returns ``True`` if ``/healthz`` answers 200 within
+        ``embedder_spawn_readiness_timeout_seconds``. Returns ``False`` on
+        timeout or child-process death. The caller
+        (:meth:`_spawn_embedder_owned`) uses the ``False`` return to
+        invoke :meth:`_handle_spawn_readiness_failure` for race-lost
+        classification (B2-5).
+        """
+        deadline = (
+            time.monotonic()
+            + self._config.embedder_spawn_readiness_timeout_seconds
+        )
+        while time.monotonic() < deadline:
+            if not _is_my_child_alive(pid):
+                return False  # child died before becoming ready
+            if await self._probe_embedder_health():
+                return True
+            await asyncio.sleep(1.0)
+        return False  # timeout
+
+    async def _handle_spawn_readiness_failure(self, pid: int) -> None:
+        """Classify a readiness failure into one of four race-lost patterns.
+
+        (B2-5): ``_poll_embedder_readiness`` returning ``False`` means
+        either the child died or the readiness timeout elapsed. This
+        method probes the **external** embedder (``/healthz``) to
+        distinguish:
+
+        1. **Child dead + external healthy** → race lost; another
+           supervisor's embedder won. Set ``unowned``.
+        2. **Child dead + external unhealthy** → spawn genuinely failed;
+           raise :class:`EmbedderValidationError`.
+        3. **Child alive + external healthy** → race lost; our child is
+           likely stuck on ``Address already in use``. Kill + reap it,
+           set ``unowned``.
+        4. **Child alive + external unhealthy** → spawn genuinely failed;
+           kill + reap the child, raise :class:`EmbedderValidationError`.
+        """
+        external_ok = await self._probe_embedder_health()
+        child_alive = _is_my_child_alive(pid)
+
+        if external_ok:
+            # Race lost — another supervisor's embedder is serving.
+            self._embedder_state = "unowned"
+            self._embedder_pid = None
+            if child_alive:
+                # Our child is redundant (probably stuck on bind failure);
+                # clean it up so it does not linger as a zombie.
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+            return
+
+        # External embedder is also unhealthy → genuine spawn failure.
+        if child_alive:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError):
+                pass
+        raise EmbedderValidationError(
+            f"spawned embedder pid={pid} did not become ready within "
+            f"{self._config.embedder_spawn_readiness_timeout_seconds}s"
+        )
+
+    # -- embedder lifecycle (WP-3b) ----------------------------------------
+
+    async def _wait_for_pid_exit(self, pid: int, timeout: float) -> bool:
+        """Poll ``os.waitpid(pid, WNOHANG)`` until the process exits or
+        ``timeout`` elapses.
+
+        Returns ``True`` as soon as ``waitpid`` reports the process has
+        exited (non-zero first element) or raises ``ChildProcessError``
+        (already reaped / never ours). Returns ``False`` on timeout.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if done != 0:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _terminate_embedder(self) -> None:
+        """Terminate the owned embedder process (SIGTERM → SIGKILL).
+
+        B2-6: when ``SIGTERM`` or ``SIGKILL`` raises ``PermissionError``, or
+        the process survives ``SIGKILL``, the state stays
+        ``owned_terminating`` — it is **not** reset to ``unowned``. This
+        mirrors :meth:`_kill_tracked_backend`'s ``_BackendAliveConflict``
+        pattern: silently clearing state would hide an ownership hazard
+        (the embedder is still alive but this supervisor gave up on it).
+        Unlike ``_kill_tracked_backend``, no conflict exception is raised —
+        embedder termination is best-effort, and the retained
+        ``owned_terminating`` state makes the next :meth:`ensure_embedder_up`
+        fail fast (``EmbedderValidationError``) to force manual recovery.
+        """
+        if self._embedder_state != "owned_idle":
+            return
+        self._embedder_state = "owned_terminating"
+        pid = self._embedder_pid
+        if pid is None:
+            self._reset_embedder_state()
+            return
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            self._reset_embedder_state()
+            return
+        except PermissionError:
+            logger.error(
+                "embedder pid=%d PermissionError on SIGTERM (owned by "
+                "another user?) — state stays owned_terminating, manual "
+                "recovery required", pid,
+            )
+            return
+
+        if await self._wait_for_pid_exit(pid, STOP_SIGTERM_WAIT):
+            self._reset_embedder_state()
+            return
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            self._reset_embedder_state()
+            return
+        except PermissionError:
+            logger.error(
+                "embedder pid=%d PermissionError on SIGKILL — state stays "
+                "owned_terminating, manual recovery required", pid,
+            )
+            return
+
+        if not await self._wait_for_pid_exit(pid, STOP_SIGKILL_WAIT):
+            logger.error(
+                "embedder pid=%d survived SIGKILL — state stays "
+                "owned_terminating, manual recovery required "
+                "(kill -9 %d)", pid, pid,
+            )
+            return
+        self._reset_embedder_state()
+
+    async def _embedder_idle_watchdog(self) -> None:
+        """Background task that reaps the embedder when all backends are
+        idle past ``embedder_spawn_idle_timeout_seconds``.
+
+        Loop (only while state is ``owned_idle``):
+
+        1. Reap dead tracked backend PIDs (housekeeping — zombie cleanup).
+        2. If the idle timeout has NOT elapsed, sleep and continue.
+        3. If tracked backends are still live, sleep and continue.
+        4. If untracked active universes still respond, sleep and continue.
+        5. All idle + timeout elapsed → call :meth:`_terminate_embedder`
+           and exit the loop.
+
+        ``asyncio.CancelledError`` is caught and swallowed — the watchdog
+        is cancelled on lifespan shutdown, state reset, and re-spawn.
+        """
+        try:
+            while True:
+                if self._embedder_state != "owned_idle":
+                    return
+                self._reap_dead_backend_pids()
+                idle_elapsed = (
+                    time.monotonic() - self._last_backend_active_at
+                    >= self._config.embedder_spawn_idle_timeout_seconds
+                )
+                if not idle_elapsed:
+                    await asyncio.sleep(
+                        self._config.embedder_idle_watchdog_poll_seconds,
+                    )
+                    continue
+                if self._has_tracked_live_backends():
+                    await asyncio.sleep(
+                        self._config.embedder_idle_watchdog_poll_seconds,
+                    )
+                    continue
+                if await self._has_untracked_live_backends():
+                    await asyncio.sleep(
+                        self._config.embedder_idle_watchdog_poll_seconds,
+                    )
+                    continue
+                await self._terminate_embedder()
+                return
+        except asyncio.CancelledError:
+            return
+
+    def _reap_dead_backend_pids(self) -> None:
+        """Remove ``_backend_pids`` entries whose process has exited.
+
+        Uses ``os.waitpid(pid, WNOHANG)`` to both test for exit and reap
+        the resulting zombie in one call. ``ChildProcessError`` (already
+        reaped / never ours) also qualifies as dead.
+        """
+        dead: list[str] = []
+        for uid, pid in self._backend_pids.items():
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                dead.append(uid)
+                continue
+            if done != 0:
+                dead.append(uid)
+        for uid in dead:
+            self._backend_pids.pop(uid, None)
+
+    def _has_tracked_live_backends(self) -> bool:
+        """True if any PID in ``_backend_pids`` is still alive.
+
+        Uses ``os.waitpid(pid, WNOHANG)``: ``done == 0`` means the process
+        is still running. ``ChildProcessError`` means it is gone (already
+        reaped or never ours). An empty ``_backend_pids`` dict returns
+        ``False`` — nothing tracked, nothing live.
+        """
+        for pid in self._backend_pids.values():
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                continue
+            if done == 0:
+                return True
+        return False
+
+    async def _has_untracked_live_backends(self) -> bool:
+        """True if any active universe NOT in ``_backend_pids`` has a live
+        backend serving on its port.
+
+        Non-active universes (``deleted`` / ``orphan``) are skipped — they
+        are never probed. A universe whose PID this supervisor tracks is
+        also skipped (its liveness is covered by
+        :meth:`_has_tracked_live_backends`). The remaining untracked active
+        universes are probed via :func:`_probe_backend_with_token`:
+        ``PROBE_OK`` counts as live (the MCP handshake succeeded),
+        ``PROBE_DOWN`` / ``PROBE_UNAUTHORIZED`` do not (a stranger process
+        holding the port without speaking MCP, or a stale-token live
+        backend, is not counted — Codex v2 stranger-discrimination).
+        """
+        universes = await self._registry.list_universes()
+        for u in universes:
+            if u.get("status") != "active":
+                continue
+            uid = u["universe_id"]
+            if uid in self._backend_pids:
+                continue  # tracked — covered by _has_tracked_live_backends
+            port = u["port"]
+            token = self._load_token(uid) or ""
+            probe = await _probe_backend_with_token(HOST, port, token)
+            if probe == PROBE_OK:
+                return True
+        return False
+
 
 # ---------------------------------------------------------------------------
 # admin auth dependency
@@ -653,6 +1268,22 @@ def create_supervisor_app(
         try:
             yield
         finally:
+            # WP-3b: stop the embedder watchdog and terminate the owned
+            # embedder BEFORE closing the registry — the watchdog's
+            # _has_untracked_live_backends calls registry.list_universes,
+            # so it must be stopped first to avoid racing with close().
+            # Embedder termination is also stopped before the control
+            # client flushes its final usage (which may reference the
+            # embedder indirectly via active backends).
+            if sup._embedder_watchdog_task is not None:
+                sup._embedder_watchdog_task.cancel()
+                try:
+                    await sup._embedder_watchdog_task
+                except asyncio.CancelledError:
+                    pass
+                sup._embedder_watchdog_task = None
+            if sup._embedder_state == "owned_idle":
+                await sup._terminate_embedder()
             # Stop the control client BEFORE registry.close() so its final
             # flush_usage (in stop()) can still read a valid registry while
             # building the sync payload.
@@ -675,7 +1306,7 @@ def create_supervisor_app(
     async def create_universe(body: CreateUniverseBody):
         async with sup._create_lock:
             try:
-                info = await asyncio.to_thread(_validate_embedder, config)
+                info = await sup.ensure_embedder_up()
             except EmbedderValidationError as exc:
                 logger.warning("embedder validation failed: %s", exc)
                 raise HTTPException(
@@ -833,6 +1464,14 @@ def create_supervisor_app(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="universe not available",
+            )
+        try:
+            await sup.ensure_embedder_up()
+        except EmbedderValidationError as exc:
+            logger.warning("embedder validation failed on /route: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Embedder validation failed",
             )
         try:
             url, token = await sup.ensure_backend(universe)

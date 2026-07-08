@@ -604,6 +604,18 @@ journalctl -u gaottt-embedder.service -f
 
 `embedder_endpoint` を未設定（空文字列）のまま運用すると、engine は従来どおり in-process で `RuriEmbedder` を構築する。service を立てない既存運用は一切変更なし。
 
+### supervisor 経由の lazy spawn（MV3 follow-on、2026-07-06）
+
+[multiverse supervisor](Operations-Multiverse-Setup.md) を使う開発機構成では、embedding service を systemd で常駐させなくても **supervisor が初回 embed 需要時に lazy spawn** する（`supervisor_spawn_embedder=True`、default 有効）。運用者が明示的に `python -m gaottt.embedding.service` を起動する必要がない:
+
+- **流れ**: `create_universe` / `/route` が `ensure_embedder_up()` を呼ぶ → `/healthz` で既存 service を確認 → 応答があれば `unowned`（外部が立てた）扱いで所有権を主張しない → 応答がなければ `fcntl.flock` で cross-process 排他を取って detached spawn → readiness poll → `owned_idle` で稼働開始
+- **systemd 運用との両立（完全不変）**: 正常な systemd embedder が先に立っている場合は `/healthz` が応答するので supervisor は spawn せず `unowned` に倒れる。**systemd 運用時の挙動は 1 行も変わらない**。先に立っている方が勝つ（race は `fcntl.flock` で安全）
+- **idle で自動終了**: 全 universe backend が休眠し `embedder_spawn_idle_timeout_seconds`（既定 300s）経つと SIGTERM → 5s 待ち → 必要なら SIGKILL で落とす。次回 route で再 spawn
+- **opt-out**: `supervisor_spawn_embedder=False` で従来挙動（embedder は必ず手動/systemd 起動、繋がらないと `EmbedderValidationError`）に戻る
+- **knob 群と troubleshooting**: [Operations — Tuning](Operations-Tuning.md)「Multiverse supervisor — embedder lazy spawn」節、[Operations — Troubleshooting](Operations-Troubleshooting.md)「supervisor が lazy spawn した embedder が `owned_terminating` に固まる」
+
+> **★ PermissionError / SIGKILL 後 alive は手動 recovery**: 異常終了パスでは state を `unowned` に**消さず** `owned_terminating` を保持し ERROR log で手動 recovery を促す（安全側、auto-respawn しない）。本項目の knob 4 つと state machine 3 状態の詳細は [Tuning](Operations-Tuning.md) §MV3 follow-on を参照。
+
 ## モデルダウンロード
 
 初回起動時に RURI-v3-310m（約 1.2GB）が HuggingFace からダウンロードされる。2 回目以降はローカルキャッシュ（`~/.cache/huggingface/hub/`）から即座にロード、HTTP リクエストは発生しない。

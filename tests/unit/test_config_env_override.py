@@ -70,3 +70,37 @@ def test_gaottt_env_takes_precedence_over_legacy(monkeypatch):
     monkeypatch.setenv("GAOTTT_GAMMA", "0.11")
     monkeypatch.setenv("GER_RAG_GAMMA", "0.99")
     assert GaOTTTConfig.from_config_file().gamma == 0.11
+
+
+# WP-1 — embedder lazy spawn knobs (supervisor lazily spawns a dedicated
+# embedding service). Detail: docs/plans/embedder-auto-spawn-supervisor.md.
+def test_embedder_lazy_spawn_defaults():
+    cfg = GaOTTTConfig()
+    assert cfg.supervisor_spawn_embedder is True
+    assert cfg.embedder_spawn_idle_timeout_seconds == 300.0
+    assert cfg.embedder_spawn_readiness_timeout_seconds == 90.0
+    assert cfg.embedder_idle_watchdog_poll_seconds == 30.0
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("false", False), ("0", False), ("no", False),
+     ("true", True), ("1", True), ("YES", True), ("On", True)],
+)
+def test_supervisor_spawn_embedder_bool_env(monkeypatch, raw, expected):
+    monkeypatch.setenv("GAOTTT_SUPERVISOR_SPAWN_EMBEDDER", raw)
+    cfg = GaOTTTConfig.from_config_file()
+    assert cfg.supervisor_spawn_embedder is expected
+
+
+def test_embedder_lazy_spawn_float_env_overrides(monkeypatch):
+    monkeypatch.setenv("GAOTTT_EMBEDDER_SPAWN_IDLE_TIMEOUT_SECONDS", "120.5")
+    monkeypatch.setenv("GAOTTT_EMBEDDER_SPAWN_READINESS_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("GAOTTT_EMBEDDER_IDLE_WATCHDOG_POLL_SECONDS", "15")
+    cfg = GaOTTTConfig.from_config_file()
+    assert cfg.embedder_spawn_idle_timeout_seconds == 120.5
+    assert isinstance(cfg.embedder_spawn_idle_timeout_seconds, float)
+    assert cfg.embedder_spawn_readiness_timeout_seconds == 45.0
+    assert isinstance(cfg.embedder_spawn_readiness_timeout_seconds, float)
+    assert cfg.embedder_idle_watchdog_poll_seconds == 15.0
+    assert isinstance(cfg.embedder_idle_watchdog_poll_seconds, float)

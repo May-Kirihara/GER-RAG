@@ -86,7 +86,7 @@ GAOTTT_SUPERVISOR_ADMIN_KEY=... \
 
 > ★ **既知の制約（[multiverse-mv5-plan.md](../maintainers/multiverse-mv5-plan.md) §5 R2/R4）**: create/delete の hook は設定ファイルを **次の操作または定期再生成で反映** するが、新規宇宙の `gaottt.db` が litestream config に現れるまでには構造的なラグがある。
 
-**ラグの原因**: `POST /admin/universes`（create）は宇宙ディレクトリ + `manifest.json` + registry 行を作った **直後** に backup hook を発火する。しかしこの時点ではまだ backend が起動しておらず、`gaottt.db` がディスク上に存在しない。`generate_litestream_config` は db 無しの宇宙を WARN skip する（[WP-1 scan rule](#litestream-雛形の使い方)）ので、新規宇宙はこの時点の YAML に含まれない。`gaottt.db` が作られるのは **最初の `/route` で backend が spawn され、engine が `SqliteStore` を初期化したとき** である。
+**ラグの原因**: `POST /admin/universes`（create）は宇宙ディレクトリ + `manifest.json` + registry 行を作った **直後** に backup hook を発火する。しかしこの時点ではまだ backend が起動しておらず、`gaottt.db` がディスク上に存在しない。`generate_litestream_config` は db 無しの宇宙を WARN skip する（[WP-1 scan rule](#litestream-雛形の使い方)）ので、新規宇宙はこの時点の YAML に含まれない。`gaottt.db` が作られるのは **最初の `/route` で backend が spawn され、engine が `SqliteStore` を初期化したとき** である（開発機構成では embedder もこの `/route` の前段で lazy spawn される — [Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)、`/route` 1 回で embedder + backend の 2 段 spawn が直列で走る）。
 
 **v1 の構造的緩和**: backend が readiness を確認した直後の `_ensure_locked` 成功経路でも hook を発火するよう実装した（[supervisor.py](../../gaottt/multiverse/supervisor.py) `_ensure_locked`）。これにより、新規宇宙の **最初の route** で db 作成 → 即座に rescan → YAML に現れる、という経路が閉じる。ただし「最初の route が来る前」の窓（create 直後〜最初の route）は残る。
 

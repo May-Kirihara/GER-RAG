@@ -36,7 +36,9 @@ embedding service (port 7879, MV1)
 ## 前提
 
 - [MV0 (manifest)](Operations-Tuning.md#multiverse-manifest-mv0--2026-07-02) / [MV1 (embedding service)](Operations-Server-Setup.md#embedding-service-を分離するmultiverse-mv1--2026-07-02) / [MV2 (owner lease)](Operations-Tuning.md#multiverse-owner-lease-mv2--2026-07-02) が完了していること
-- embedding service が `127.0.0.1:7879` で稼働中であること（[起動手順](Operations-Server-Setup.md#embedding-service-を分離するmultiverse-mv1--2026-07-02)）
+- embedding service について:
+  - **本番 systemd 運用**（推奨）: `127.0.0.1:7879` で embedding service を起動しておく（[起動手順](Operations-Server-Setup.md#embedding-service-を分離するmultiverse-mv1--2026-07-02)）。supervisor は `/healthz` で検知して所有権を主張せず `unowned` 扱い（systemd 運用時の干渉ゼロ）
+  - **開発機（systemd 無し）**: supervisor が初回 embed 需要（`create_universe` / `/route`）で lazy spawn するので **事前起動は不要**（`supervisor_spawn_embedder=True`、default 有効）。opt-out する場合のみ `GAOTTT_SUPERVISOR_SPAWN_EMBEDDER=0` を設定（[Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)）
 - **専用 OS ユーザー推奨** — `<multiverse_root>` を他ユーザーから読み書き不可にする信頼境界（下記「セキュリティモデル」）
 - local filesystem のみ（NFS / CIFS は lease の POSIX semantics が保証できない → [制限事項](#制限事項-v1))
 

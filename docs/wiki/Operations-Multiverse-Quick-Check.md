@@ -53,6 +53,8 @@ curl -fsS -H "Authorization: Bearer $(jq -r .token /tmp/_route.json)" \
 | 4 | `http://127.0.0.1:<port>/mcp` | API key 失効 / backend spawn 失敗 → [🚑 3](#🚑-ng-時の応急処置) |
 | 5 | `OK`（結果空でもエラー出なければ OK） | engine startup 失敗 / lease 競合 → [🚑 4](#🚑-ng-時の応急処置) |
 
+> **項目 1 の「2 以上」について**: 本番 systemd 運用（`deploy/gaottt-embedder.service` 常駐）では supervisor + embedder の 2 process が基本。**開発機（systemd 無し）では embedder は supervisor が lazy spawn する**（`supervisor_spawn_embedder=True`、default 有効）ので、初回 `/route` 前は supervisor 1 process でも正常・route 後に embedder が spawn されて 2 process になる。詳細: [Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)
+
 ---
 
 ## 🚑 NG 時の応急処置
@@ -60,7 +62,7 @@ curl -fsS -H "Authorization: Bearer $(jq -r .token /tmp/_route.json)" \
 **まずこれを 1 分でやる（順不同で OK、急ぐなら上から）：**
 
 1. **supervisor 再起動** — `systemctl restart gaottt-supervisor`（または該当する起動スクリプト）
-2. **embedding service 再起動** — `systemctl restart gaottt-embedder`（port 7879）
+2. **embedding service 再起動** — `systemctl restart gaottt-embedder`（port 7879）。**開発機（systemd 無し・supervisor lazy spawn 構成）では supervisor の再起動で embedder も再 spawn される**（手動 restart 不要）。`owned_terminating` に固まっている場合は [Troubleshooting §lazy spawn](Operations-Troubleshooting.md#supervisor-が-lazy-spawn-した-embedder-が-owned_terminating-に固まる) の手動 recovery 手順
 3. **FAISS が壊れた疑い** — 全プロセス停止 → `scripts/rebuild_faiss_from_db.py --apply` → `--check` → 再起動（[Troubleshooting](Operations-Troubleshooting.md) 問題5.5）
 4. **LeaseHeldError が出る** — 同じ宇宙を 2 プロセスで開いている。片方を止めるか `--force-takeover`（[Troubleshooting](Operations-Troubleshooting.md) §LeaseHeldError）
 5. **litestream 設定が更新されない** — `GAOTTT_LITESTREAM_CONFIG_PATH` 未設定 or cron 停止（[Backup & DR §supervisor hook](Operations-Backup-Multiverse.md#supervisor-hook)）

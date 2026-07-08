@@ -476,6 +476,40 @@ target chunk が **Stage 4-5 (RRF union + source filter) で top に居る** が
 
 → 詳細: [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)「既知の制約と今後の改善点」の semantic drift 検出不可
 
+## supervisor が lazy spawn した embedder が `owned_terminating` に固まる
+
+**症状**: 開発機（systemd 無し・`supervisor_spawn_embedder=True`）で supervisor が lazy spawn した embedding service が、`/route` が `503` を返す・`create_universe` が embedder 検証失敗で 400 になる等で使えなくなる。supervisor log に `embedder pid=NNNN ... state stays owned_terminating, manual recovery required` の ERROR が出続ける。
+
+**原因**: supervisor が spawn した embedder の termination path で、(a) 他 uid が所有する pid に SIGTERM を送って `PermissionError`、(b) SIGKILL 後も 5s 待って pid が survive した、のいずれかが起きた状態。安全側として state を `unowned` に**消さず** `owned_terminating` を保持する設計（[Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)）。次回 `ensure_embedder_up()` は `_embedder_state` が `unowned` / `owned_idle` でないため `EmbedderValidationError` で失敗し、`/route` handler が 503 に mapping する（auto-respawn しない安全側）。
+
+**対処（手動 recovery 手順）**:
+
+```bash
+# 1. supervisor log で該当 pid を特定
+journalctl --user -u gaottt-supervisor -n 200 | grep "owned_terminating"
+# 例: embedder pid=12345 PermissionError on SIGTERM ... state stays owned_terminating
+
+# 2. 該当 pid を手動で cleanup（他 uid 所有なら sudo / 該当ユーザーで）
+ps -p 12345 -o pid,user,cmd        # 誰が持っているか確認
+kill -9 12345                      # 必要なら sudo / su
+
+# 3. supervisor を再起動（state を `unowned` に戻す一番簡単な方法）
+systemctl restart gaottt-supervisor  # または該当起動スクリプト
+# 再起動後は lifespan で state が `unowned` に初期化、次回 route で lazy spawn が走る
+```
+
+**よくあるトリガー**:
+- **他 uid 所有**: supervisor を user A で動かしているのに、user B が手動で `python -m gaottt.embedding.service` を port 7879 で立てた（race で user B 側が勝ち、supervisor は `unowned` に倒れるべきだが、timing によっては中途半端に所有権を主張してしまう）
+- **SIGKILL 後 survive**: カーネルが zombie を reaped していない・defunct な pid。`waitpid` を待つか手動で `kill -9` する
+- **NFS 上の multiverse_root**: `fcntl.flock` が POSIX semantics を保証しないので race が起きる。local FS のみサポート（[MV3 制限事項](Operations-Multiverse-Setup.md#制限事項-v1)）
+
+**予防**:
+- lazy spawn は開発機向け（systemd 1 本運用）。**本番では `deploy/gaottt-embedder.service` で systemd 常駐させることを推奨**（`/healthz` で検知して supervisor は所有権を主張しない・完全不変）
+- supervisor と同じ uid で手動 embedder を立てない
+- multiverse_root は local FS のみ
+
+→ 詳細: [Tuning](Operations-Tuning.md) §Multiverse supervisor — embedder lazy spawn、[Architecture — Overview](Architecture-Overview.md) 設計判断表「Supervisor による embedder lazy spawn」
+
 ## 診断ツール一覧 (read-only)
 
 retrieval / mass / displacement の挙動を読み解くための副作用なしスクリプト群。本番 DB に対して安全に走らせて良い (write しない、cache を汚さない)。

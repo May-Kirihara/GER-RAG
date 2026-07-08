@@ -12,7 +12,9 @@
 
 ## ▶ Step 0: 前提（まだ standalone を使っている状態）
 - [ ] GaOTTT リポジトリが multiverse 対応版（MV0–MV3 入り）
-- [ ] **embedding service を port 7879 で起動**（全宇宙がここを見る。SPOF なので **systemd 常駐を強く推奨**）
+- [ ] **embedding service を port 7879 で起動**（全宇宙がここを見る。SPOF）
+
+  **本番運用では systemd 常駐を強く推奨**:
 
   systemd 雛形を install（推奨 — OS 再起動で自動起動、クラッシュ時も自動復旧）:
   ```bash
@@ -29,8 +31,9 @@
       --host 127.0.0.1 --port 7879
   ```
 
-  > **注意**: multiverse supervisor は embedding service を **自動起動しません**。
-  > service が落ちていると宇宙作成が `400`、`/route` が `503` で失敗します（[Tuning §MV1](../wiki/Operations-Tuning.md#multiverse-embedding-service-mv1--2026-07-02)、[Server Setup §systemd 雛形](../wiki/Operations-Server-Setup.md#systemd-雛形)）。
+  > **★ 開発機（systemd 無し）の場合は standalone 起動は不要**: multiverse supervisor が初回の `create_universe` / `/route` で embedding service を lazy spawn します（`supervisor_spawn_embedder=True`、default 有効）。systemd が先に立っていれば `/healthz` で検知して所有権を主張しない（systemd 運用時の干渉ゼロ・両立可能）。opt-out する場合のみ `GAOTTT_SUPERVISOR_SPAWN_EMBEDDER=0` を設定。
+  >
+  > **注意**: embedder service が 1 つも立っていないと宇宙作成が `400`、`/route` が `503` で失敗します（systemd 運用でも lazy spawn でも共通）。詳細: [Tuning §MV1](../wiki/Operations-Tuning.md#multiverse-embedding-service-mv1--2026-07-02)・[§MV3 follow-on](../wiki/Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)、[Server Setup §systemd 雛形](../wiki/Operations-Server-Setup.md#systemd-雛形)
 
 ## ▶ Step 1: 既存プロセスを**全部止める**（★一番重要）
 write-behind の逆方向上書き罠（[Troubleshooting §5.5](../wiki/Operations-Troubleshooting.md)）を防ぐため、source を触る全プロセスを停止:

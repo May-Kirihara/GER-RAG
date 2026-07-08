@@ -136,6 +136,10 @@ ss -ltnp 2>/dev/null | grep -E ':(7878|7880|789[0-9])' || true
 
 importer 自体が `_running_gaottt_pids` + source の `owner.lock` active check で検知して exit 3 しますが、事前停止を推奨します（`--force` を使わずに済む）。
 
+> **embedding service (port 7879) について**: importer は embed しないので停止**不要**です。
+> - **systemd 運用**: そのまま稼働を続けて問題ありません
+> - **開発機（supervisor lazy spawn）**: supervisor が spawn した embedder は全 backend が idle になれば `embedder_spawn_idle_timeout_seconds`（既定 300s）後に自動終了します。明示的に止める必要はありません（[Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)）
+
 ### 3. wet run（copy を推奨）
 
 ```bash
