@@ -9,7 +9,7 @@ GaOTTT で **1 ホスト上に複数テナントの宇宙を独立 `data_dir` �
 | 役割 | port | 備考 |
 |---|---|---|
 | embedding service (MV1) | 7879 | RURI model をホスト共有、全宇宙がここを見る |
-| universe supervisor (MV3) | 7880 | 宇宙の作成 / 一覧 / 削除 + `/route` で API key → 宇宙解決 |
+| universe supervisor (MV3) | 7880 | 宇宙の作成 / クローン / 一覧 / 削除 + `/route` で API key → 宇宙解決 |
 | 宇宙 backend (per-universe) | 7890–7989 | 動的割当。各宇宙 = 1 つの `mcp_server --transport streamable-http` |
 
 - 宇宙は `<multiverse_root>/universes/<universe_id>/` に 1 つ置かれ、それがその宇宙の `GAOTTT_DATA_DIR` になる
@@ -95,6 +95,26 @@ curl -X POST http://127.0.0.1:7880/admin/universes \
 - 作成された宇宙の `manifest.json` は `managed: true`（MV2 lease 強制のトリガー）
 
 > **既に standalone DB をお持ちの場合**: 上記の `POST /admin/universes` は新規空宇宙作成専用です。既存の `data_dir`（`~/.local/share/gaottt/` 等、gaottt.db + FAISS 群）を multiverse の 1 宇宙として取り込む場合は **importer** を使います — [Operations — Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)。importer は copy/move/dry-run の 3 mode、post-copy `PRAGMA integrity_check` + schema gate、transaction scope で atomic 実行し、API key を一度だけ返します。supervisor 起動中でも停止中でも動作します。
+
+### 3.1 既存宇宙のクローン
+
+同じホスト内で、ある宇宙の記憶を引き継いだ独立宇宙を作る場合は clone API を使う。
+
+```bash
+curl -X POST http://127.0.0.1:7880/admin/universes/<source_universe_id>/clone \
+    -H "X-Admin-Key: $GAOTTT_SUPERVISOR_ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"owner_label": "user1-sandbox"}'
+```
+
+応答には `source_universe_id`、新しい `universe_id`、`port` と、発行時に一度だけ表示される新しい `api_key` が含まれる。`owner_label` を省略すると元の label に `-clone` が付く。`tenant_id` は任意で上書きできる。
+
+clone 中は元宇宙の backend を正常停止し、SQLite の WAL checkpoint と FAISS 保存を終えてから canonical data files だけをコピーする。元宇宙は次の `/route` で再起動するため短い停止時間が発生する。コピー後に SQLite integrity check を行い、新しい managed manifest、registry row、API key を発行するので、クローン後の書き込みは互いに影響しない。backend token、owner lease、古い manifest は継承しない。
+
+- `404`: 元宇宙が存在しない
+- `409`: 元宇宙が active でない、または安全に停止できない
+- `507`: コピーに必要な空き容量がない
+- `500`: copy または integrity check に失敗（不完全なクローン directory は除去される）
 
 ### 4. agent 側の shim 設定
 

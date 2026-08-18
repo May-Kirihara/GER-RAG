@@ -27,7 +27,9 @@ import json
 import logging
 import os
 import secrets
-from pathlib import Path
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
@@ -76,8 +78,22 @@ async def get_engine() -> GaOTTTEngine:
 
 # --- MCP Server ---
 
+
+@asynccontextmanager
+async def _mcp_lifespan(_server: FastMCP[Any]) -> AsyncIterator[None]:
+    """Persist the lazy engine when any MCP transport shuts down."""
+    global _engine
+    try:
+        yield
+    finally:
+        engine = _engine
+        if engine is not None:
+            await engine.shutdown()
+            _engine = None
+
 mcp = FastMCP(
     "gaottt",
+    lifespan=_mcp_lifespan,
     instructions=(
         "GaOTTT (formerly GER-RAG): Gravitational long-term memory for AI agents. "
         "Use 'remember' to store knowledge (source='hypothesis' or ttl_seconds "
