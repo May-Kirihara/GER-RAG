@@ -1341,6 +1341,15 @@ def main():
             "GAOTTT_API_KEY env. Default: unset (legacy auto-spawn mode)."
         ),
     )
+    parser.add_argument(
+        "--spawn-supervisor", action="store_true", default=False,
+        help=(
+            "Proxy supervisor mode: if the configured local supervisor is "
+            "unreachable, start it as a detached subprocess and wait for "
+            "readiness. Requires GAOTTT_MULTIVERSE_ROOT and "
+            "GAOTTT_SUPERVISOR_ADMIN_KEY. Local http URLs only."
+        ),
+    )
     args = parser.parse_args()
 
     # MV2 — propagate --force-takeover into the GAOTTT_* env layer so the
@@ -1364,6 +1373,7 @@ def main():
             ping_interval=args.ping_interval,
             supervisor_url=args.supervisor_url,
             api_key=api_key if args.supervisor_url else None,
+            spawn_supervisor=args.spawn_supervisor,
         ))
         return
 

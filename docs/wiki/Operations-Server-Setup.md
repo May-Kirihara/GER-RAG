@@ -80,6 +80,26 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 .venv/bin/python -m gaottt.server.mcp_server --transport stdio
 ```
 
+multiverse のローカル開発構成では、shim から supervisor も含めて cold
+start できる。停止中の supervisor だけを detached 起動し、その後
+supervisor が embedder / universe backend を lazy spawn する:
+
+```bash
+GAOTTT_API_KEY="<universe-api-key>" \
+GAOTTT_MULTIVERSE_ROOT="/absolute/path/to/gaottt-multiverse" \
+GAOTTT_SUPERVISOR_ADMIN_KEY="<admin-key>" \
+GAOTTT_EMBEDDER_ENDPOINT="http://127.0.0.1:7879" \
+.venv/bin/python -m gaottt.server.mcp_server \
+  --transport proxy \
+  --supervisor-url http://127.0.0.1:7880 \
+  --spawn-supervisor
+```
+
+`--spawn-supervisor` は opt-in で、local HTTP URL
+(`127.0.0.1` / `localhost` / `::1`) にだけ許可される。接続済み
+supervisor の 401 / 500 / read timeout では別プロセスを起動せず、TCP
+connection failure の場合だけ起動する。本番 systemd 常駐構成では省略する。
+
 | Mode | Per-agent Process | Backend Process | RAM 消費 | 推奨用途 |
 |---|---|---|---|---|
 | **proxy** (default) | 軽量 shim (~50 MB) | 1 (auto-spawn, idle で self-shutdown) | ~3-4 GB (合計、N agents で増えない) | **personal multi-agent 環境の標準** — `.mcp.json` 変更不要 |

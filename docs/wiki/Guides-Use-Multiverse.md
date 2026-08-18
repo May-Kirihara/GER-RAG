@@ -237,7 +237,7 @@ curl -X POST http://127.0.0.1:7880/route \
 {"GAOTTT_API_KEY": "<api_key>"}
 ```
 
-> 注意: supervisor の proxy mode では **agent ごとに軽量 shim が立ち上がり、初回起動時に detached な HTTP backend を auto-spawn します**。N agents 起動しても engine（cache / FAISS / dream loop）は常に 1 プロセスだけ（[Operations — Server Setup](Operations-Server-Setup.md) §起動モード）。
+> 注意: supervisor の proxy mode では **agent ごとに軽量 shim が立ち上がり、supervisor が detached な HTTP backend を auto-spawn します**。shim に `--spawn-supervisor` を付ければ、local supervisor が停止中の場合は supervisor 自体も detached 起動します（`GAOTTT_MULTIVERSE_ROOT` / `GAOTTT_SUPERVISOR_ADMIN_KEY` 必須、local HTTP URL 限定）。N agents 起動しても engine（cache / FAISS / dream loop）は常に 1 プロセスだけ（[Operations — Server Setup](Operations-Server-Setup.md) §起動モード）。
 
 ### 別プロジェクトで別宇宙が欲しい時
 

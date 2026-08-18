@@ -89,14 +89,57 @@ GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879 \
       "command": "/path/to/GaOTTT/.venv/bin/python",
       "args": ["-m", "gaottt.server.mcp_server",
                "--transport", "proxy",
-               "--supervisor-url", "http://127.0.0.1:7880"],
-      "env": { "GAOTTT_API_KEY": "<step 3 の api_key>" },
+               "--supervisor-url", "http://127.0.0.1:7880",
+               "--spawn-supervisor"],
+      "env": {
+        "GAOTTT_API_KEY": "<step 3 の api_key>",
+        "GAOTTT_MULTIVERSE_ROOT": "/absolute/path/to/gaottt-multiverse",
+        "GAOTTT_SUPERVISOR_ADMIN_KEY": "<your-admin-key>",
+        "GAOTTT_EMBEDDER_ENDPOINT": "http://127.0.0.1:7879"
+      },
       "cwd": "/path/to/GaOTTT"
     }
   }
 }
 ```
-**opencode / Codex CLI** も同じ `--supervisor-url` + `GAOTTT_API_KEY` を追加するだけ。
+**opencode / Codex CLI** も同じ設定。`--spawn-supervisor` を使わず supervisor を systemd 常駐させる構成も引き続き利用可能。
+
+### 複数 coding agent で移行済み宇宙を共有する
+
+宇宙の選択は agent 名や作業ディレクトリではなく、`POST /route` に渡す
+**universe API key** で決まる。同じ supervisor URL と同じ API key を使う
+Claude Code / Codex / opencode 等は、同じ universe backend（同じ DB / FAISS）
+を共有する。
+
+ローカルの複数 agent では、API key を各 config へ複製せず、共通 shim
+launcher に集約しておくと設定 drift と secret の散在を避けられる:
+
+```json
+{
+  "mcpServers": {
+    "gaottt": {
+      "command": "/home/<user>/.local/bin/gaottt-multiverse-proxy"
+    }
+  }
+}
+```
+
+共通 launcher は次を行う:
+
+1. 権限 `0600` の import receipt / credential file から、Step 3 で一度だけ
+   表示された移行済み宇宙の API key を読む
+2. `GAOTTT_API_KEY` と supervisor 起動に必要な環境変数を設定する
+3. proxy transport、supervisor URL `http://127.0.0.1:7880`、
+   `--spawn-supervisor` を指定して shim を起動する
+
+**fail-closed**: API key が空・欠落なら shim は起動を中止し、無効・revoke
+済みなら supervisor が `401` を返す。別宇宙や standalone data directory
+へ暗黙に fallback することはない。したがって、同じ宇宙を共有したい全
+agent が同じ launcher を MCP command に指定していることを確認する。
+
+> `python -m gaottt.server.mcp_server` を引数なしで直接登録すると legacy
+> standalone proxy mode（port 7878）になる。multiverse と混在させないこと。
+> 別宇宙を意図する場合だけ、その宇宙専用の API key / launcher を用意する。
 
 ## ▶ Step 6: 動作確認
 

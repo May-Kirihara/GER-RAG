@@ -42,6 +42,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 import anyio
@@ -57,6 +58,9 @@ DEFAULT_PORT = 7878
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_IDLE_TIMEOUT = 300.0   # backend self-shutdown after 5 minutes of silence
 DEFAULT_PING_INTERVAL = 60.0   # proxy heartbeat cadence
+# A cold /route can spend up to 90s starting the embedder and another 90s
+# loading a universe backend, so the shim must cover both stages.
+DEFAULT_SUPERVISOR_READINESS_TIMEOUT = 200.0
 
 
 # -----------------------------------------------------------------------
@@ -213,6 +217,10 @@ async def _ensure_backend(
 # Supervisor routing (multiverse MV3 / WP-4)
 # -----------------------------------------------------------------------
 
+class _SupervisorUnreachable(RuntimeError):
+    """The supervisor could not be reached at the transport layer."""
+
+
 def _route_to_supervisor(
     supervisor_url: str, api_key: str, timeout: float = 10.0,
 ) -> tuple[str, str]:
@@ -230,14 +238,114 @@ def _route_to_supervisor(
             json={"api_key": api_key},
             timeout=timeout,
         )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        raise _SupervisorUnreachable(
+            f"Supervisor route failed (unreachable): {exc}"
+        ) from exc
     except httpx.HTTPError as exc:
-        raise RuntimeError(f"Supervisor route failed (unreachable): {exc}") from exc
+        # A read/protocol failure means something accepted the connection;
+        # spawning a second supervisor would only create a port race.
+        raise RuntimeError(f"Supervisor route failed: {exc}") from exc
     if response.status_code == 401:
         raise RuntimeError("Invalid API key")
     if response.status_code != 200:
         raise RuntimeError(f"Supervisor route failed: {response.status_code}")
     data = response.json()
     return data["url"], data["token"]
+
+
+def _supervisor_log_path(multiverse_root: str) -> Path:
+    if multiverse_root:
+        return Path(multiverse_root) / "logs" / "supervisor.log"
+    return _spawn_log_path().with_name("supervisor.log")
+
+
+def _spawn_supervisor_detached(log_path: Path) -> int:
+    """Start a detached local multiverse supervisor with inherited config."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "a", buffering=1)
+    log_file.write(
+        f"\n--- supervisor spawn at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n"
+    )
+    cmd = [sys.executable, "-m", "gaottt.multiverse.supervisor"]
+    popen_kwargs: dict = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": os.environ.copy(),
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        )
+    else:
+        popen_kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603 — controlled args
+    return proc.pid
+
+
+async def _route_with_supervisor_autospawn(
+    supervisor_url: str,
+    api_key: str,
+    *,
+    enabled: bool,
+    readiness_timeout: float = DEFAULT_SUPERVISOR_READINESS_TIMEOUT,
+) -> tuple[str, str]:
+    """Route normally; optionally spawn a missing *local* supervisor."""
+    try:
+        return _route_to_supervisor(supervisor_url, api_key)
+    except _SupervisorUnreachable:
+        if not enabled:
+            raise
+
+    parsed = urlsplit(supervisor_url)
+    if parsed.scheme != "http" or parsed.hostname not in {
+        "127.0.0.1", "localhost", "::1",
+    }:
+        raise RuntimeError(
+            "Supervisor auto-spawn is allowed only for a local http URL"
+        )
+
+    from gaottt.config import GaOTTTConfig
+
+    config = GaOTTTConfig.from_config_file()
+    if not config.multiverse_root:
+        raise RuntimeError(
+            "Supervisor auto-spawn requires GAOTTT_MULTIVERSE_ROOT"
+        )
+    if not config.supervisor_admin_key:
+        raise RuntimeError(
+            "Supervisor auto-spawn requires GAOTTT_SUPERVISOR_ADMIN_KEY"
+        )
+
+    log_path = _supervisor_log_path(config.multiverse_root)
+    pid = _spawn_supervisor_detached(log_path)
+    logger.info(
+        "Spawned local supervisor pid=%d; waiting for /route readiness", pid,
+    )
+
+    deadline = time.monotonic() + readiness_timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(
+                f"{supervisor_url.rstrip('/')}/openapi.json", timeout=1.0,
+            )
+            if response.status_code < 500:
+                # /route may cold-start both embedder and backend. Give that
+                # single request the full readiness budget; do not issue
+                # overlapping route requests that could rotate tokens.
+                remaining = max(1.0, deadline - time.monotonic())
+                return _route_to_supervisor(
+                    supervisor_url, api_key, timeout=remaining,
+                )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            last_error = exc
+        await asyncio.sleep(0.5)
+    raise RuntimeError(
+        f"Supervisor did not become ready within {readiness_timeout}s; "
+        f"check {log_path}: {last_error}"
+    )
 
 
 # -----------------------------------------------------------------------
@@ -297,6 +405,7 @@ class _Upstream:
         token: str | None = None,
         supervisor_url: str | None = None,
         api_key: str | None = None,
+        spawn_supervisor: bool = False,
     ) -> None:
         self.url = url
         self._host = host
@@ -312,6 +421,7 @@ class _Upstream:
         self._token = token or None
         self._supervisor_url = supervisor_url or None
         self._api_key = api_key or None
+        self._spawn_supervisor = spawn_supervisor
         self.lock = asyncio.Lock()
         self._stack: contextlib.AsyncExitStack | None = None
         self._session: ClientSession | None = None
@@ -370,8 +480,10 @@ class _Upstream:
         ``_ensure_backend`` which re-spawns the backend if it died."""
         await self.aclose()
         if self._supervisor_url:
-            self.url, self._token = _route_to_supervisor(
-                self._supervisor_url, self._api_key,
+            self.url, self._token = await _route_with_supervisor_autospawn(
+                self._supervisor_url,
+                self._api_key,
+                enabled=self._spawn_supervisor,
             )
         else:
             self.url = await _ensure_backend(
@@ -513,6 +625,7 @@ async def _proxy_session(
     token: str | None = None,
     supervisor_url: str | None = None,
     api_key: str | None = None,
+    spawn_supervisor: bool = False,
 ) -> None:
     """Connect to backend, run the stdio proxy, until the agent disconnects."""
     upstream = _Upstream(
@@ -527,6 +640,7 @@ async def _proxy_session(
         token=token,
         supervisor_url=supervisor_url,
         api_key=api_key,
+        spawn_supervisor=spawn_supervisor,
     )
     await upstream.connect()
     logger.info("Proxy connected to backend; serving stdio")
@@ -572,6 +686,7 @@ async def run_proxy(
     ping_interval: float = DEFAULT_PING_INTERVAL,
     supervisor_url: str | None = None,
     api_key: str | None = None,
+    spawn_supervisor: bool = False,
 ) -> None:
     """High-level entrypoint: ensure backend, run stdio proxy.
 
@@ -579,10 +694,10 @@ async def run_proxy(
     learn the concurrency-hardening flags (the backend's env does not reach
     it). Defaults keep serialization + auto-reconnect ON.
 
-    When ``supervisor_url`` is set the proxy does NOT auto-spawn a backend;
-    instead it resolves the upstream URL + backend token via the supervisor's
-    ``POST /route`` and attaches the token as a Bearer header. Omit both to
-    keep the legacy 7878 auto-spawn behaviour (default 不変).
+    When ``supervisor_url`` is set the proxy resolves the upstream URL + token
+    via ``POST /route``. ``spawn_supervisor=True`` additionally starts a
+    missing local supervisor; it is opt-in so remote URLs and existing
+    deployments retain their previous behaviour.
     """
     # Local import: keep mcp_proxy importable without pulling the full config
     # module at module-load time (it is heavy and not needed for the helpers).
@@ -597,7 +712,11 @@ async def run_proxy(
                 "supervisor_url is set but no api_key was provided "
                 "(set the GAOTTT_API_KEY environment variable)"
             )
-        url, token = _route_to_supervisor(supervisor_url, api_key)
+        url, token = await _route_with_supervisor_autospawn(
+            supervisor_url,
+            api_key,
+            enabled=spawn_supervisor,
+        )
         await _proxy_session(
             url,
             ping_interval=ping_interval,
@@ -611,6 +730,7 @@ async def run_proxy(
             token=token,
             supervisor_url=supervisor_url,
             api_key=api_key,
+            spawn_supervisor=spawn_supervisor,
         )
         return
 

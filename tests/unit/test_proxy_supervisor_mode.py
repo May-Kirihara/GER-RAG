@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -78,6 +79,64 @@ def test_route_to_supervisor_connect_error():
     ):
         with pytest.raises(RuntimeError, match=r"Supervisor route failed"):
             _route_to_supervisor("http://sup:7880", "k")
+
+
+@pytest.mark.asyncio
+async def test_autospawn_starts_missing_local_supervisor():
+    """Connection refusal + opt-in starts one supervisor then routes."""
+    import gaottt.server.mcp_proxy as mod
+
+    ready = MagicMock(status_code=200)
+    with patch(
+        f"{PROXY}._route_to_supervisor",
+        side_effect=[mod._SupervisorUnreachable("down"), ("http://b/mcp", "tok")],
+    ) as route, patch(
+        "gaottt.config.GaOTTTConfig.from_config_file",
+        return_value=SimpleNamespace(
+            multiverse_root="/tmp/multiverse",
+            supervisor_admin_key="admin",
+        ),
+    ), patch(f"{PROXY}._spawn_supervisor_detached", return_value=123) as spawn, \
+            patch(f"{PROXY}.httpx.get", return_value=ready):
+        result = await mod._route_with_supervisor_autospawn(
+            "http://127.0.0.1:7880", "key", enabled=True,
+        )
+
+    assert result == ("http://b/mcp", "tok")
+    spawn.assert_called_once()
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_autospawn_rejects_remote_supervisor():
+    """Auto-spawn never turns a remote routing failure into a local process."""
+    import gaottt.server.mcp_proxy as mod
+
+    with patch(
+        f"{PROXY}._route_to_supervisor",
+        side_effect=mod._SupervisorUnreachable("down"),
+    ), patch(f"{PROXY}._spawn_supervisor_detached") as spawn:
+        with pytest.raises(RuntimeError, match="local http URL"):
+            await mod._route_with_supervisor_autospawn(
+                "https://example.test:7880", "key", enabled=True,
+            )
+    spawn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_autospawn_disabled_preserves_unreachable_error():
+    """The new behaviour stays opt-in."""
+    import gaottt.server.mcp_proxy as mod
+
+    with patch(
+        f"{PROXY}._route_to_supervisor",
+        side_effect=mod._SupervisorUnreachable("down"),
+    ), patch(f"{PROXY}._spawn_supervisor_detached") as spawn:
+        with pytest.raises(mod._SupervisorUnreachable):
+            await mod._route_with_supervisor_autospawn(
+                "http://127.0.0.1:7880", "key", enabled=False,
+            )
+    spawn.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
