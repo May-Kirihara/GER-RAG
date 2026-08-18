@@ -80,6 +80,26 @@ LLM の長期記憶として使う。プロトコル仕様は [`SKILL.md`](../..
 .venv/bin/python -m gaottt.server.mcp_server --transport stdio
 ```
 
+multiverse のローカル開発構成では、shim から supervisor も含めて cold
+start できる。停止中の supervisor だけを detached 起動し、その後
+supervisor が embedder / universe backend を lazy spawn する:
+
+```bash
+GAOTTT_API_KEY="<universe-api-key>" \
+GAOTTT_MULTIVERSE_ROOT="/absolute/path/to/gaottt-multiverse" \
+GAOTTT_SUPERVISOR_ADMIN_KEY="<admin-key>" \
+GAOTTT_EMBEDDER_ENDPOINT="http://127.0.0.1:7879" \
+.venv/bin/python -m gaottt.server.mcp_server \
+  --transport proxy \
+  --supervisor-url http://127.0.0.1:7880 \
+  --spawn-supervisor
+```
+
+`--spawn-supervisor` は opt-in で、local HTTP URL
+(`127.0.0.1` / `localhost` / `::1`) にだけ許可される。接続済み
+supervisor の 401 / 500 / read timeout では別プロセスを起動せず、TCP
+connection failure の場合だけ起動する。本番 systemd 常駐構成では省略する。
+
 | Mode | Per-agent Process | Backend Process | RAM 消費 | 推奨用途 |
 |---|---|---|---|---|
 | **proxy** (default) | 軽量 shim (~50 MB) | 1 (auto-spawn, idle で self-shutdown) | ~3-4 GB (合計、N agents で増えない) | **personal multi-agent 環境の標準** — `.mcp.json` 変更不要 |
@@ -557,6 +577,64 @@ systemctl --user status gaottt-mcp.service
 `--idle-timeout 0` で idle 終了を無効化 (systemd 管理下では意味がない)。ログ確認: `journalctl --user -u gaottt-mcp.service -f`。
 
 この場合は agent config を `type: http` + URL に書き換える (上の「明示的 HTTP backend」セクション)。
+
+## embedding service を分離する（Multiverse MV1 — 2026-07-02）
+
+engine プロセス（複数起動しがち）でそれぞれ RURI model をロードする代わりに、**ホストに1つ embedding service を常駐** させて model load を 1 回に抑える。GPU コストをユーザー数ではなくホスト数に比例させる。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 1、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV1。
+
+### 起動
+
+```bash
+# localhost の port 7879 に service を常駐させる
+/path/to/GaOTTT/.venv/bin/python -m gaottt.embedding.service \
+    --host 127.0.0.1 \
+    --port 7879 \
+    --model cl-nagoya/ruri-v3-310m \
+    --max-queue 32
+```
+
+- 初回起動時に RURI-v3-310m（約 1.2GB）が HuggingFace から download される（2 回目以降は cache から即ロード）
+- `--host` は **必ず localhost**（`127.0.0.1` / `localhost` / `::1` のいずれか）。それ以外の host を渡すと **起動時に `SystemExit` で拒否**（認証を持たない `/encode` が外部に露出するのを防ぐ）。remote access が必要な場合は前段に認証付き reverse proxy を置く
+- wire protocol: `POST /encode` JSON `{"kind": "query"|"document", "texts": [...]}` → `application/x-msgpack` `{"shape": [N, dim], "dtype": "float32", "data": <bytes>}`。`GET /info` は `{"model_name", "dimension", "version", "batch_size"}`。`GET /healthz` は `{"status": "ok"}`
+- `--max-queue 32` は waiting リクエストの上限。in-flight は常に 1（GPU 直列化）、待ち 32 で頭打ち → 33 本目が `503 + Retry-After`
+
+### engine 側の接続
+
+`embedder_endpoint`（空文字列 = 従来の in-process `RuriEmbedder`）を設定すると、`build_engine` が `RemoteEmbedder` を構築して service に接続する:
+
+- config.json の `embedder_endpoint`: `"http://127.0.0.1:7879"`
+- env `GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879`（推奨 — MV3 supervisor が子プロセスに渡す経路）。sentinel empty-string default なので generic env loop が拾う
+- 接続不能（service が起動していない等）は `ConnectionError` を即 raise（起動時に倒す、silent fail しない）。retry は接続エラーのみ 1 回（0.5s backoff）。encode の HTTP status error / timeout は retry しない
+
+### systemd 雛形
+
+`deploy/gaottt-embedder.service`（repo 同梱）を `/etc/systemd/system/` または `~/.config/systemd/user/` に copy して path を調整:
+
+```bash
+# install
+sudo cp deploy/gaottt-embedder.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now gaottt-embedder.service
+journalctl -u gaottt-embedder.service -f
+```
+
+`User=gaottt` / `WorkingDirectory=/opt/gaottt` / `.venv/bin/python` の path は環境に合わせて書き換える。`Restart=always` で SPOF 落ちても自動復旧。
+
+### default 不変
+
+`embedder_endpoint` を未設定（空文字列）のまま運用すると、engine は従来どおり in-process で `RuriEmbedder` を構築する。service を立てない既存運用は一切変更なし。
+
+### supervisor 経由の lazy spawn（MV3 follow-on、2026-07-06）
+
+[multiverse supervisor](Operations-Multiverse-Setup.md) を使う開発機構成では、embedding service を systemd で常駐させなくても **supervisor が初回 embed 需要時に lazy spawn** する（`supervisor_spawn_embedder=True`、default 有効）。運用者が明示的に `python -m gaottt.embedding.service` を起動する必要がない:
+
+- **流れ**: `create_universe` / `/route` が `ensure_embedder_up()` を呼ぶ → `/healthz` で既存 service を確認 → 応答があれば `unowned`（外部が立てた）扱いで所有権を主張しない → 応答がなければ `fcntl.flock` で cross-process 排他を取って detached spawn → readiness poll → `owned_idle` で稼働開始
+- **systemd 運用との両立（完全不変）**: 正常な systemd embedder が先に立っている場合は `/healthz` が応答するので supervisor は spawn せず `unowned` に倒れる。**systemd 運用時の挙動は 1 行も変わらない**。先に立っている方が勝つ（race は `fcntl.flock` で安全）
+- **idle で自動終了**: 全 universe backend が休眠し `embedder_spawn_idle_timeout_seconds`（既定 300s）経つと SIGTERM → 5s 待ち → 必要なら SIGKILL で落とす。次回 route で再 spawn
+- **opt-out**: `supervisor_spawn_embedder=False` で従来挙動（embedder は必ず手動/systemd 起動、繋がらないと `EmbedderValidationError`）に戻る
+- **knob 群と troubleshooting**: [Operations — Tuning](Operations-Tuning.md)「Multiverse supervisor — embedder lazy spawn」節、[Operations — Troubleshooting](Operations-Troubleshooting.md)「supervisor が lazy spawn した embedder が `owned_terminating` に固まる」
+
+> **★ PermissionError / SIGKILL 後 alive は手動 recovery**: 異常終了パスでは state を `unowned` に**消さず** `owned_terminating` を保持し ERROR log で手動 recovery を促す（安全側、auto-respawn しない）。本項目の knob 4 つと state machine 3 状態の詳細は [Tuning](Operations-Tuning.md) §MV3 follow-on を参照。
 
 ## モデルダウンロード
 

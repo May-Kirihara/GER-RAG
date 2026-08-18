@@ -14,6 +14,7 @@ does **not** maintain a separate singleton; it is a factory only.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
@@ -21,6 +22,7 @@ from gaottt.embedding.ruri import RuriEmbedder
 from gaottt.index.bm25_index import BM25Index
 from gaottt.index.faiss_index import FaissIndex
 from gaottt.store.cache import CacheLayer
+from gaottt.store.manifest import ensure_manifest, verify_embedder_identity
 from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
@@ -32,7 +34,29 @@ def build_engine(config: GaOTTTConfig) -> GaOTTTEngine:
     Caller is responsible for ``await engine.startup()`` and
     ``await engine.shutdown()``.
     """
-    embedder = RuriEmbedder(model_name=config.model_name, batch_size=config.batch_size)
+    # MV1 — when an embedding service endpoint is configured, wire a
+    # RemoteEmbedder (one shared model load) instead of a local RuriEmbedder.
+    # RemoteEmbedder.__init__ GETs /info, raising ConnectionError at once if
+    # the service is down (§MV1-3 "接続不能なら ConnectionError を即 raise").
+    if config.embedder_endpoint:
+        from gaottt.embedding.remote import RemoteEmbedder
+
+        embedder = RemoteEmbedder(
+            config.embedder_endpoint,
+            timeout=config.embedder_request_timeout_seconds,
+        )
+    else:
+        embedder = RuriEmbedder(
+            model_name=config.model_name, batch_size=config.batch_size
+        )
+    # MV0 — manifest identity verification at factory time. ``ensure_manifest``
+    # auto-generates from config for existing DBs; ``verify_embedder_identity``
+    # checks FAISS dim (always raises), manifest dim / embedder_id (raise /
+    # warn per ``manifest_check_enabled``), and embedder_version (warn only).
+    # Direct engine construction in tests bypasses this factory, so legacy
+    # stub embedders without ``embedder_id`` stay unaffected.
+    manifest = ensure_manifest(Path(config.data_dir), config)
+    verify_embedder_identity(manifest, embedder, config)
     faiss_index = FaissIndex(
         dimension=config.embedding_dim,
         lock_enabled=config.faiss_index_lock_enabled,

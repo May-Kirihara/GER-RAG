@@ -1,0 +1,23 @@
+# GaOTTT Embedding Service — systemd unit (本番運用向け)
+#
+# 本 unit は本番の systemd 常駐運用向けです。
+# 開発機（systemd 無し）では multiverse supervisor が embedding service を
+# lazy spawn するので本 unit は不要です（`supervisor_spawn_embedder=True`、
+# default 有効）。正常な systemd embedder が先に立ってる場合は supervisor は
+# `/healthz` で検知して所有権を主張せず `unowned` 扱い（両立可能・干渉ゼロ）。
+# 詳細: docs/wiki/Operations-Tuning.md §MV3 follow-on
+[Unit]
+Description=GaOTTT Embedding Service (RURI shared host model)
+After=network.target
+
+[Service]
+Type=simple
+User=gaottt
+WorkingDirectory=/opt/gaottt
+Environment=PATH=/opt/gaottt/.venv/bin
+ExecStart=/opt/gaottt/.venv/bin/python -m gaottt.embedding.service --host 127.0.0.1 --port 7879
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

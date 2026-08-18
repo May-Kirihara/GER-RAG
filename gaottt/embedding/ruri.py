@@ -32,12 +32,41 @@ class RuriEmbedder:
             logger.info("Loading %s from local cache (offline)", model_name)
         else:
             logger.info("Downloading %s from HuggingFace", model_name)
+        self._model_name = model_name
         self._model = SentenceTransformer(model_name, local_files_only=local_only)
         self._batch_size = batch_size
 
     @property
     def dimension(self) -> int:
         return self._model.get_sentence_embedding_dimension()
+
+    @property
+    def embedder_id(self) -> str:
+        # Manifest identity key: the model name (HF repo id) is the stable
+        # handle. embedder_version (below) carries the snapshot drift.
+        return self._model_name
+
+    @property
+    def embedder_version(self) -> str:
+        # HF snapshot commit hash of the locally cached revision, most
+        # recently modified first. Unpinned models (manual placement, cache
+        # miss, scan failure) report "unpinned" — v1 treats this as a
+        # warning, not a hard failure.
+        try:
+            cache_info = scan_cache_dir()
+            for repo in cache_info.repos:
+                if repo.repo_id != self._model_name:
+                    continue
+                revisions = sorted(
+                    repo.revisions,
+                    key=lambda r: r.last_modified,
+                    reverse=True,
+                )
+                if revisions:
+                    return revisions[0].commit_hash
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("embedder_version lookup failed: %s: %s", type(exc).__name__, exc)
+        return "unpinned"
 
     def encode_documents(self, texts: list[str]) -> np.ndarray:
         prefixed = [self.DOCUMENT_PREFIX + t for t in texts]

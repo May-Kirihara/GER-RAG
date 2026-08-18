@@ -53,6 +53,51 @@ GPU の batch 並列性は 32 件まとめて処理することで固定 overhea
 
 つまり **「普段は CPU で十分、初期 ingest だけ GPU」** という非対称運用が成立する。
 
+## Multiverse MV1: embedding service 分離時のリソース試算（2026-07-02）
+
+[Multiverse MV1](Plans-Multiverse-Scale-Out.md) で RURI model load を engine プロセスから分離できるようになった（[Operations — Server Setup](Operations-Server-Setup.md) の「embedding service を分離する」節）。これにより **engine プロセス単体の RAM（model 抜き）** が初めて直接計測可能になった。実測値は **次セッションで追記**（real RURI が必要）。計測手順のみここに固める。
+
+### 計測手順
+
+```bash
+# 1. embedding service を起動（model はこのプロセスに乗る）
+.venv/bin/python -m gaottt.embedding.service --host 127.0.0.1 --port 7879 &
+SERVICE_PID=$!
+
+# 2. service の /info が応答するまで待つ
+until curl -s http://127.0.0.1:7879/info > /dev/null; do sleep 0.5; done
+
+# 3. engine を RemoteEmbedder 接続で起動（model は engine プロセスに乗らない）
+GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879 \
+GAOTTT_DATA_DIR=/tmp/gaottt-measure \
+.venv/bin/python -m gaottt.server.mcp_server --transport streamable-http --port 7878 &
+ENGINE_PID=$!
+
+# 4. 両プロセスの RSS を取る
+ps -o rss= -p $SERVICE_PID  # → embedding service（model 込み）
+ps -o rss= -p $ENGINE_PID   # → engine 単体（model 抜き）← これが知りたい値
+
+# 5. warm 状態で recall / remember を数回走らせてから再計測（PyTorch allocator の reserved が安定した値）
+```
+
+> **★ 開発機（supervisor lazy spawn）との関係**: 開発機では multiverse supervisor が embedding service を lazy spawn するため（`supervisor_spawn_embedder=True`、default 有効）、上記の手動起動は不要です。**本手順で model 抜き engine の RSS を直接計測したい場合**は、supervisor の lazy spawn を opt-out（`GAOTTT_SUPERVISOR_SPAWN_EMBEDDER=0`）して手動起動ベースで計測してください。lazy spawn 機構自体の RSS overhead は supervisor プロセス内の watchdog task のみで無視可能です（[Tuning §MV3 follow-on](Operations-Tuning.md#multiverse-supervisor--embedder-lazy-spawn-mv3-follow-on2026-07-06)）。
+
+### 期待される構成（次セッションで実測確認）
+
+| プロセス | RAM 構成 | 備考 |
+|---|---|---|
+| embedding service | model + torch runtime + FastAPI/uvicorn | 既存実測 ~5-6GB から大きくは動かない |
+| engine（model 抜き） | FAISS ×2 + BM25 + cache + SQLite + uvicorn | **本項目の新規実測対象**。wiki 計画 §5 では「数百 MB」と推定 |
+| 合計 | service + engine | 単一プロセス（model 込み engine）と比較して、**model 分をユーザー数で割れる** のが本質的な削減 |
+
+### 既存単一プロセス構成との比較
+
+既存（model 込み engine 単体）の warm idle 実測は **~6.9GB**（上記 §「GPU / CPU 別の実測」）。これが service + engine に分かれたとき:
+- 1 ユーザー運用: 合計は既存と同等かやや増（HTTP overhead +1-3ms、RAM は service ~5-6GB + engine 数百 MB = ほぼ同じ）
+- N ユーザー運用: service 1 つ + engine N プロセス = `~5-6GB + N × 数百MB`。既存の `N × 6.9GB` から **大幅削減**
+
+→ 実測値でこの表を上書きする（[Operations — Performance Testing](Operations-Performance-Testing.md) の Tier 6 baseline 手法を流用）。
+
 ## DB サイズの増え方
 
 `~/.local/share/gaottt/` 配下のファイル:

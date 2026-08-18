@@ -415,6 +415,113 @@ opencode plugin (`scripts/hooks/opencode-save-candidates.ts`) 専用の追加 en
 | embedding_dim | 768 | 次元数（モデル変更時は要連動） |
 | batch_size | 32 | バッチエンコード時 |
 
+## Multiverse manifest (MV0 — 2026-07-02)
+
+宇宙ごとの embedder identity・次元を `<data_dir>/manifest.json` に記録し、起動時に整合を検証する。embedder が変わると全ベクトルが無意味化するため、その事故を構造的に防ぐガード。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 1、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV0。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| manifest_check_enabled | `True` | manifest 起因の整合 check を有効化。**escape hatch** — `=False` で manifest `embedding_dim` と `embedder_id` の不一致を warning 透過（宇宙を救済する最終手段、通常は触らない）。**FAISS 次元保護（`embedder.dimension != config.embedding_dim`）はこの knob に関わらず常に RuntimeError** — FAISS と次元が違うと検索が壊れるため |
+
+> **v1 の既知挙動**: `ensure_manifest` は config のみから生成するため、初回 manifest の `embedder_version` は `"unpinned"`。実 RuriEmbedder の `embedder_version`（HF commit hash）と比較すると、`build_engine` で毎回 version mismatch warning が出る。これは v1 の warn-only 仕様（実装計画 §MV0-2）で、HF revision が動く運用を v1 では止めない。DR 用の model artifact pinning は MV5 で runbook 要件化される。
+
+## Multiverse embedding service (MV1 — 2026-07-02)
+
+embedding model（RURI）のロードを engine プロセスから分離し、ホスト共有サービスとして切り出す。GPU コストをユーザー数ではなくホスト数に比例させる。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 1、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV1。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| embedder_endpoint | `""`（空文字列 = in-process RuriEmbedder） | 設定時（非空）`build_engine` が `RemoteEmbedder` を構築して service に接続。env `GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879` で上書き可（sentinel empty-string default なので generic env loop が拾う — `Optional[str] = None` だと拾わない罠を回避）。空文字列は falsy 扱いで従来の in-process `RuriEmbedder` 経路 |
+| embedder_request_timeout_seconds | `30.0` | `RemoteEmbedder` の HTTP timeout（秒）。env `GAOTTT_EMBEDDER_REQUEST_TIMEOUT_SECONDS` |
+
+> **起動方法**: `python -m gaottt.embedding.service --host 127.0.0.1 --port 7879 --model cl-nagoya/ruri-v3-310m`。**非 localhost への bind は拒否**（認証を持たない service なので `/encode` が外部に露出するのを防ぐ）。systemd 雛形: `deploy/gaottt-embedder.service`。詳細は [Operations — Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節
+
+## Multiverse owner lease (MV2 — 2026-07-02)
+
+同じ `data_dir` を複数プロセスが開いて write-behind が後勝ちする事故クラス（[bidirectional cache overwrite](Architecture-Concurrency.md) / [FAISS reverse-overwrite](Operations-Troubleshooting.md)）を機構で閉じる。1 宇宙 1 書き込みオーナーを強制し、lease 喪失時は read-only 遷移する。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 2、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV2。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| owner_lease_enabled | `False` | **standalone 構成向け**。`True` で lease を有効化。**managed 宇宙（`manifest.managed=True`）はこの knob に関わらず強制** — supervisor 管理下の宇宙をどの entry point から開いても lease が効く |
+| lease_force_takeover | `False` | takeover の canonical 経路。`GAOTTT_LEASE_FORCE_TAKEOVER=true` または CLI `--force-takeover`（mcp_server）で立てる。stale でない（fresh な heartbeat の）lease でも強制奪取する |
+| lease_heartbeat_seconds | `10.0` | lease オーナーの生存通知周期（秒）。この周期で `owner.lock` の `heartbeat_at` を更新 |
+| lease_stale_seconds | `60.0` | heartbeat がこの秒数以上停止した lease は stale と判定され、別プロセスが takeover 可能になる。`now - heartbeat_at > lease_stale_seconds`（厳密 `>`、`==` は stale ではない） |
+
+> **lease 喪失時の挙動**: heartbeat read-back で `owner_id` 不一致を検出すると、engine は即座に read-only に遷移する。cache flush / FAISS save の全永続化経路（4 経路）を `_persist_blocked` latch で skip、mutating operation 14 種は `LeaseLostError` で拒否、`query` / `prefetch` は passive フォールバック（結果を返すが field を更新しない）。read 系（`recall(passive=True)` / `get_node` / `reflect`）は継続。詳細: [Operations — Troubleshooting](Operations-Troubleshooting.md)「LeaseHeldError / LeaseLostError が出る」
+
+> **filesystem 要件**: lease 機構は `O_CREAT\|O_EXCL` / `fcntl.flock` / `os.replace` の POSIX semantics に依存する。NFS / CIFS 等 network filesystem 上では信頼できない — v1 は local FS のみサポート
+
+> **default OFF の理由と昇格計画**: 既存 standalone 構成の挙動を変えないため OFF で導入。managed 宇宙は上記のとおり manifest で強制。この機構は standalone でも事故防止に有効（reverse-overwrite incident の再発防止と同型）なので、1-2 週の dogfooding 後に code default ON への昇格を判断する
+
+## Multiverse supervisor (MV3 — 2026-07-02)
+
+1 ホストで複数テナントの宇宙を独立 `data_dir` で運用する universe supervisor（port 7880）の knob。supervisor が宇宙 engine を spawn / respawn し、API key でユーザー → 宇宙をルーティングする。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 2、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV3、運用手順は [Operations — Multiverse Setup](Operations-Multiverse-Setup.md)。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| multiverse_root | `""` (空 = 機能不使用) | multiverse のルートディレクトリ。env `GAOTTT_MULTIVERSE_ROOT`。空なら supervisor も shim の supervisor mode も使われない（default 不変）。推奨 `~/.local/share/gaottt-multiverse` |
+| supervisor_port | `7880` | supervisor の HTTP listen port |
+| supervisor_admin_key | `""` | admin API key。env `GAOTTT_SUPERVISOR_ADMIN_KEY` 推奨（config file に書かない）。**空 = supervisor 起動 fail-fast**（unauthenticated admin endpoint を絶対に露出しない） |
+| universe_port_range_start | `7890` | 宇宙 backend の動的 port 割当開始 |
+| universe_port_range_end | `7989` | 宇宙 backend の動的 port 割当終了。`end - start + 1 = 100` が 1 ホストあたりの宇宙数上限（v1 制約） |
+| supervisor_spawn_concurrency | `3` | 同時 spawn 上限（semaphore）。cold respawn spike（朝の始業時刻に多数の宇宙が一斉起床等）対策 |
+| supervisor_readiness_timeout | `90.0` | spawn readiness poll timeout（秒）。FAISS load + BM25 build を含む初回起動を待つ猶予 |
+
+> **★ `backend_token_enabled` knob は作らない**: backend token middleware の発動スイッチは **`GAOTTT_BACKEND_TOKEN` env の有無そのもの**。boolean knob を作ると「token 設定済みだが middleware 無効」の dangerous state が生まれる。`GAOTTT_BACKEND_TOKEN` 未設定 → 素通し（default 不変、既存 7878 単一 backend 無影響）/ 設定済み → 全リクエストで `Authorization: Bearer` 検証。supervisor が spawn 時にこの env を注入する（token は `secrets.token_urlsafe(32)` で生成、`<universe_dir>/backend.token` 0600 に永続化、再起動時に読み戻し）
+
+> **REST 経路は提供しない (v1)**: managed 宇宙は owner lease (MV2) で二重 engine を構造的に拒否するため、REST app (`build_engine()` で独自 engine を立てる) が開けない。宇宙に露出する経路は MCP のみ。テナント管理者の操作は supervisor admin API で提供（MCP/REST parity 鉄則は管理面に適用されない — [Architecture — Overview](Architecture-Overview.md) 設計判断表「Multiverse supervisor は MCP/REST parity 対象外」）
+
+> **信頼境界**: `multiverse_root` は 0700 / `manifest.json` / `owner.lock` / `backend.token` は 0600。同一 OS ユーザー内の manifest 改変は v1 信頼境界外（root / 同一ユーザーを敵とするモデルは v1 で守らない）。NFS / CIFS は lease の POSIX semantics が保証できないため非サポート
+
+## Multiverse supervisor — embedder lazy spawn (MV3 follow-on、2026-07-06)
+
+supervisor が embedding service (port 7879) を lazy spawn するための knob 群。開発機（systemd を使わず supervisor 1 本で運用する構成）向けで、初回の embed 需要（`create_universe` / `/route`）で `/healthz` を叩き応答が無ければ spawn、全 backend が idle で落ちたら `embedder_spawn_idle_timeout_seconds` 後に SIGTERM で落とす。3 状態の state machine (`unowned` / `owned_idle` / `owned_terminating`) + `asyncio.Lock` (in-process) + `<multiverse_root>/.embedder.spawn.lock` の `fcntl.flock` (cross-process) で race safety を担保する。詳細: [Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §SPOF、[Operations — Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節、設計判断は [Architecture — Overview](Architecture-Overview.md) 設計判断表「Supervisor による embedder lazy spawn」。
+
+> **★ lazy spawn 発動には `embedder_endpoint` 設定が必須**: 既定の `embedder_endpoint=""`（= in-process RuriEmbedder 使用）では、`supervisor_spawn_embedder=True` でも lazy spawn は発動しない（feature inert）。`ensure_embedder_up` は spawn lock 取得後、cache の有無に関わらず endpoint 空を即座に `EmbedderValidationError` で拒否する（B-F4 完全化）。multiverse 運用で lazy spawn を使う場合は `GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879` 等で明示的に設定する。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| supervisor_spawn_embedder | `True` | lazy spawn 機能の global off-switch。`True`（既定）で supervisor が embedding service を lazy spawn する。**正常な本番 systemd embedder が先に立っている場合の挙動は完全不変** — `/healthz` で検知して所有権を主張せず `unowned` 扱い（systemd 運用時の干渉ゼロ）。`False` で従来挙動（embedder に繋がらない場合は即 `EmbedderValidationError`、`create_universe` は 400・`/route` は 503） |
+| embedder_spawn_idle_timeout_seconds | `300.0` | supervisor が spawn した embedder が、最後のリクエストからこの秒数 idle で続いたら SIGTERM で落とすまでの猶予。cold-war idle reclamation（全 backend が休眠しても即座に embedder まで殺さない猶予） |
+| embedder_spawn_readiness_timeout_seconds | `90.0` | spawn 直後の embedder が `/healthz` に応答するまで待つ猶予。**初回 RURI model download (~1.2GB) で超過し得る**（超過時は spawn 失敗だが、retry で 2 回目以降は cache が効いて通る）。backend の `supervisor_readiness_timeout` と同じ 90s に揃えている |
+| embedder_idle_watchdog_poll_seconds | `30.0` | supervisor の idle watchdog が embedder の idle timeout 到達を check する poll 間隔。`embedder_spawn_idle_timeout_seconds` (300s) に対して 30s poll で最大 ~30s の誤差 |
+
+> **★ opt-out は `supervisor_spawn_embedder=False`**: 1 行で従来挙動（embedder は必ず外部/systemd で立てる、繋がらないと即座にエラー）に戻る。本番正常 systemd embedder 運用時は `/healthz` で検知して `unowned` に倒れるため、`True` のままでも挙動は完全不変（所有権を主張しない）。
+
+> **★ PermissionError / SIGKILL 後 alive は手動 recovery**: 異常終了パス（他 uid 所有の pid・SIGKILL 後も生き残る等）では state を `unowned` に**消さず** `owned_terminating` を保持し ERROR log で運用者に手動 recovery を促す（auto-respawn しない安全側）。`/route` は 503 を返し続ける。詳細: [Operations — Troubleshooting](Operations-Troubleshooting.md)「supervisor が lazy spawn した embedder が `owned_terminating` に固まる」。
+
+## Multiverse control plane client (MV4 — 2026-07-03)
+
+supervisor が Postgres-backed control plane（port 7881、独立プロセス）と同期・usage telemetry を送信するための knob。control plane は aggregator / audit / billing 収集点で、engine コードには一切接触しない（設計判断 J9）。詳細: [Operations — Control Plane](Operations-Control-Plane.md)、[Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 3、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV4。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| control_plane_url | `""` (空 = control plane 不使用) | control plane の URL。env `GAOTTT_CONTROL_PLANE_URL`（例 `http://127.0.0.1:7881`） |
+| control_host_id | `""` | control plane 側で発行された host_id。env `GAOTTT_CONTROL_HOST_ID` |
+| control_host_token | `""` | **SECRET** — control plane 側で発行された平文 host token。env `GAOTTT_CONTROL_HOST_TOKEN`。log に出さない、spawn される backend にも継承させない（supervisor 自身のみが使う） |
+| control_default_tenant_id | `""` (空 = 単一暗黙 tenant `"default"`、J11) | local 宇宙が報告する tenant_id。env `GAOTTT_CONTROL_DEFAULT_TENANT_ID`。未設定なら `"default"` を使用（`001_initial.sql` が bootstrap INSERT する tenant、FK 解決済み） |
+| control_sync_interval_seconds | `300.0` | pull（reconcile）周期（秒）。env `GAOTTT_CONTROL_SYNC_INTERVAL_SECONDS` |
+| usage_push_interval_seconds | `60.0` | usage flush 周期（秒）。env `GAOTTT_USAGE_PUSH_INTERVAL_SECONDS` |
+| usage_spool_dir | `""` | usage spool ディレクトリ。env `GAOTTT_USAGE_SPOOL_DIR`。空 = `<multiverse_root>/logs/usage-spool/` に解決（`multiverse_root` も空なら usage push 無効化、durability target 無し） |
+
+> **★ 発動条件 — 3-point gate**: `control_plane_url` AND `control_host_id` AND `control_host_token` の **3 点とも設定時のみ** ControlClient が有効。1 つでも欠けたら WARNING log + control 不使用（supervisor は従来通り local-only、**default 不変**、MV3 完全一致）。gate は `ControlClient.__init__` と supervisor `_main()` の両方でチェックされる。
+
+> **★ `control_host_token` は SECRET 扱い**: `_build_spawn_env` と同様に log に出さない。supervisor が spawn する backend プロセスの env にも **継承させない** — supervisor 自身のみが読む。
+
+> **★ J1=A (PM 承認済み SoT deviation)**: v1 の usage は **`/route` 解決回数を activity telemetry として集計** したもので、recall / remember / ingest の正確な operation count ではない（`event_type='route_resolution'`）。billing-grade の正確な operation count は [MV4.1](Plans-Multiverse-Scale-Out.md) で導入予定。詳細: [Operations — Control Plane](Operations-Control-Plane.md)「usage telemetry の意味」節。
+
+## Multiverse backup (MV5 — 2026-07-04)
+
+supervisor が universe 作成/削除の成功経路で litestream 設定ファイル（`dbs:` ブロック）を再生成するための knob。設定時、supervisor は `<multiverse_root>/universes/*/` を scan し純粋関数で YAML を生成、atomic write（`tmp + fsync + os.replace`）で指定パスへ書く。失敗は ERROR log のみで supervisor 応答に影響しない（best-effort）。詳細: [Operations — Backup & DR](Operations-Backup-Multiverse.md)、[Plans — Multiverse Scale-Out](Plans-Multiverse-Scale-Out.md) §Stage 4、[multiverse-implementation-plan.md](../maintainers/multiverse-implementation-plan.md) §MV5。
+
+| パラメータ | 既定 | 用途 |
+|---|---|---|
+| litestream_config_path | `""` (空 = hook 不使用) | litestream 設定ファイルの出力パス。env `GAOTTT_LITESTREAM_CONFIG_PATH`（例 `/etc/litestream/gaottt.yml`）。空なら hook は一切呼ばれず、MV3/MV4 構成は 1 行も変わらず動く（**default 不変**）。設定時は `POST /admin/universes` と `DELETE /admin/universes/{uid}` の成功経路で再生成 |
+
+> **★ `backup_gen_timeout_seconds` knob は意図的に未設置**: hook は subprocess ではなく direct import の純粋関数呼び出しなので timeout は不要。knob を置くと「subprocess で動く」と誤解を招くため（Codex review round-2 #5）。
+
+> **★ scan + write は `_backup_hook_lock` で直列化**: 並行 create/delete hook が out-of-order に完了しても、最後の writer の scan 時点の on-disk 状態が最終 YAML になる（stale write の構造的排除）。hook は best-effort で、例外は ERROR log のみ（supervisor 応答は成功のまま）。spawn env（`_build_spawn_env`）には litestream / backup 関連 knob は **一切漏れない**（supervisor プロセス内のみで動く）。
+
 ---
 
 ## チューニングの典型シナリオ

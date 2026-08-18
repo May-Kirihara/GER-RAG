@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 
 import numpy as np
@@ -1194,6 +1195,75 @@ def _install_idle_watcher(idle_timeout: float) -> None:
     logger.info("Idle watcher installed (timeout=%ss)", int(idle_timeout))
 
 
+def build_token_middleware(expected_token: str):
+    """Return a ``BaseHTTPMiddleware`` subclass that enforces
+    ``Authorization: Bearer <expected_token>``.
+
+    Extracted to module level (rather than closed over inside
+    ``_install_token_middleware``) so the behaviour can be unit-tested
+    against a minimal Starlette app without spinning up FastMCP or the
+    engine. The comparison uses ``secrets.compare_digest`` to deny
+    timing-based token discovery.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    class TokenMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            # Split on whitespace so "Bearer" alone (no token), "Bearer "
+            # (empty token), and "Bearer xxx yyy" (extra tokens) all collapse
+            # to a malformed shape that is rejected before any comparison.
+            parts = request.headers.get("authorization", "").split()
+            if len(parts) != 2 or parts[0].lower() != "bearer":
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            # 401 returns *before* call_next, so an outer-brute-force attempt
+            # never refreshes the idle watcher's activity clock.
+            if not secrets.compare_digest(parts[1], expected_token):
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    return TokenMiddleware
+
+
+def _install_token_middleware() -> None:
+    """Backend token auth — only active when ``GAOTTT_BACKEND_TOKEN`` is set.
+
+    Unset / empty → no-op (default unchanged; the existing single 7878
+    backend keeps its open-by-default posture). Set → install a
+    ``TokenMiddleware`` on both ``mcp.streamable_http_app`` and
+    ``mcp.sse_app`` using the same factory-wrap pattern as
+    ``_install_idle_watcher``.
+
+    Must be called *after* ``_install_idle_watcher`` so the token layer is
+    added last and therefore sits as the outermost middleware: a rejected
+    request short-circuits before ``call_next`` and never reaches the
+    ActivityMiddleware, so brute-force attempts cannot keep an idle
+    backend alive.
+    """
+    token = os.environ.get("GAOTTT_BACKEND_TOKEN", "")
+    if not token:
+        return
+
+    TokenMiddleware = build_token_middleware(token)
+
+    original_streamable = mcp.streamable_http_app
+    original_sse = mcp.sse_app
+
+    def patched_streamable():
+        app = original_streamable()
+        app.add_middleware(TokenMiddleware)
+        return app
+
+    def patched_sse(mount_path=None):
+        app = original_sse(mount_path)
+        app.add_middleware(TokenMiddleware)
+        return app
+
+    mcp.streamable_http_app = patched_streamable  # type: ignore[method-assign]
+    mcp.sse_app = patched_sse  # type: ignore[method-assign]
+    logger.info("Backend token middleware installed (GAOTTT_BACKEND_TOKEN set)")
+
+
 def main():
     import argparse
 
@@ -1253,7 +1323,41 @@ def main():
             "Default 60."
         ),
     )
+    parser.add_argument(
+        "--force-takeover", action="store_true", default=False,
+        help=(
+            "Force-take the owner lease even if another process holds a "
+            "fresh one. Use only when you know the current owner is dead. "
+            "Sets GAOTTT_LEASE_FORCE_TAKEOVER=true for the process (and "
+            "any spawned backend in proxy mode)."
+        ),
+    )
+    parser.add_argument(
+        "--supervisor-url", default=None,
+        help=(
+            "Supervisor URL for multiverse routing (e.g. "
+            "http://127.0.0.1:7880). When set, the proxy resolves the "
+            "backend via POST /route instead of auto-spawning. Requires "
+            "GAOTTT_API_KEY env. Default: unset (legacy auto-spawn mode)."
+        ),
+    )
+    parser.add_argument(
+        "--spawn-supervisor", action="store_true", default=False,
+        help=(
+            "Proxy supervisor mode: if the configured local supervisor is "
+            "unreachable, start it as a detached subprocess and wait for "
+            "readiness. Requires GAOTTT_MULTIVERSE_ROOT and "
+            "GAOTTT_SUPERVISOR_ADMIN_KEY. Local http URLs only."
+        ),
+    )
     args = parser.parse_args()
+
+    # MV2 — propagate --force-takeover into the GAOTTT_* env layer so the
+    # generic override loop raises config.lease_force_takeover for both this
+    # process's runtime config and any backend spawned by proxy mode (which
+    # inherits the environment).
+    if args.force_takeover:
+        os.environ["GAOTTT_LEASE_FORCE_TAKEOVER"] = "true"
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
@@ -1261,11 +1365,15 @@ def main():
 
     if args.transport == "proxy":
         from gaottt.server.mcp_proxy import run_proxy
+        api_key = os.environ.get("GAOTTT_API_KEY", "")
         asyncio.run(run_proxy(
             host=args.host,
             port=args.port,
             idle_timeout=args.idle_timeout,
             ping_interval=args.ping_interval,
+            supervisor_url=args.supervisor_url,
+            api_key=api_key if args.supervisor_url else None,
+            spawn_supervisor=args.spawn_supervisor,
         ))
         return
 
@@ -1275,6 +1383,11 @@ def main():
 
     if args.idle_timeout > 0:
         _install_idle_watcher(args.idle_timeout)
+
+    # Installed after the idle watcher so the token layer is the outermost
+    # middleware: a 401 short-circuits before the ActivityMiddleware and
+    # cannot refresh the idle clock. No-op unless GAOTTT_BACKEND_TOKEN is set.
+    _install_token_middleware()
 
     if args.transport == "streamable-http":
         url = f"http://{args.host}:{args.port}{mcp.settings.streamable_http_path}"

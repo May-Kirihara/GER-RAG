@@ -22,6 +22,7 @@
 - [As Narrative Engine](Guides-Use-As-Narrative-Engine.md)
 - [Multi-Agent Setup](Guides-Multi-Agent.md)
 - [Per-Project DBs](Guides-Per-Project-DBs.md)
+- [Multiverse (1人1宇宙)](Guides-Use-Multiverse.md)
 - [Ambient Recall](Guides-Ambient-Recall.md)
 - [Visualization](Guides-Visualization.md)
 
@@ -42,6 +43,12 @@
 
 ### ⚙ Operations
 - [Server Setup](Operations-Server-Setup.md)
+- [Multiverse 運用プレイブック（統合）](Operations-Multiverse-Operations.md)
+- [Multiverse クイック健康チェック（パニック時）](Operations-Multiverse-Quick-Check.md)
+- [Multiverse Setup (MV3)](Operations-Multiverse-Setup.md)
+- [Multiverse Import Universe](Operations-Multiverse-Import-Universe.md)
+- [Control Plane (MV4)](Operations-Control-Plane.md)
+- [Backup & DR (MV5)](Operations-Backup-Multiverse.md)
 - [Resource Requirements (VRAM/RAM/Disk)](Operations-Resource-Requirements.md)
 - [Tuning](Operations-Tuning.md)
 - [Ingestion (files & chat history)](Operations-Ingestion.md)
@@ -79,6 +86,7 @@
 - [Lens Hygiene (ambient block の漏れ防止)](Plans-Lens-Hygiene.md)
 - [Instruction Surface Hygiene (指示表層と hook harness)](Plans-Instruction-Surface-Hygiene.md)
 - [Query as Mass Distribution](Plans-Query-Mass-Distribution.md)
+- [Multiverse Scale-Out (大規模化・1人1宇宙)](Plans-Multiverse-Scale-Out.md)
 - [SKILL.md Improvement](Plans-SKILL-MD-Improvement.md)
 - [Embedder Comparison (RURI vs RikkaBotan)](Plans-Embedder-Comparison.md)
 

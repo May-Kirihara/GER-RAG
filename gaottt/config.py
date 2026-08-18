@@ -116,6 +116,158 @@ class GaOTTTConfig:
     embedding_dim: int = 768
     batch_size: int = 32
 
+    # Multiverse embedding (MV1)
+    # When ``embedder_endpoint`` is set (non-empty), ``build_engine`` wires a
+    # ``RemoteEmbedder`` against it instead of an in-process ``RuriEmbedder``.
+    # Empty string = default (in-process RuriEmbedder). Env:
+    #   GAOTTT_EMBEDDER_ENDPOINT=http://127.0.0.1:7879
+    # We use a sentinel empty-string default (not ``Optional[str] = None``)
+    # so the generic GAOTTT_* env-override loop picks it up — MV3 supervisor
+    # relies on passing the endpoint via env at spawn time.
+    # ``embedder_request_timeout_seconds`` is a float default and is
+    # env-settable via GAOTTT_EMBEDDER_REQUEST_TIMEOUT_SECONDS.
+    embedder_endpoint: str = ""
+    embedder_request_timeout_seconds: float = 30.0
+
+    # Multiverse manifest
+    # MV0 universe manifest gate. When True, a manifest embedding_dim or
+    # embedder_id mismatch against config / runtime embedder is a hard
+    # RuntimeError at startup / build_engine; when False it degrades to a
+    # warning (escape hatch for migrations). The FAISS dimension guard
+    # (embedder.dimension != config.embedding_dim) is manifest-independent
+    # and always raises — it protects index integrity, not identity.
+    manifest_check_enabled: bool = True
+
+    # ---- Owner lease (single-owner coordination, WP-2) -----------------------
+    # Ops / coordination layer, NOT physics. When ``owner_lease_enabled`` the
+    # engine (WP-4) wraps its startup in an ``OwnerLease`` that coordinates
+    # exclusive ownership of the data directory across processes via
+    # ``owner.lock`` + ``owner.lock.guard`` (flock). The lease implementation
+    # lives in ``gaottt/store/lease.py``; these knobs only configure it.
+    # Defaults keep the feature OFF so existing deployments are bit-exact until
+    # an operator opts in. Env via the generic loop: GAOTTT_<UPPER>.
+    owner_lease_enabled: bool = False
+    # Acquire supersedes an otherwise-active owner without staleness checks —
+    # escape hatch for a wedged owner whose heartbeat is still fresh.
+    lease_force_takeover: bool = False
+    # heartbeat_loop write cadence (seconds). Must stay comfortably below
+    # lease_stale_seconds so a live owner is never misjudged stale.
+    lease_heartbeat_seconds: float = 10.0
+    # A lock whose heartbeat is older than this (strict ``>``) is takeable.
+    lease_stale_seconds: float = 60.0
+
+    # ---- MV3 Multiverse supervisor (WP-1) -----------------------------------
+    # Ops / coordination layer for the multiverse: a supervisor process that
+    # owns N universe backends behind per-universe API keys, plus a local
+    # SQLite registry tracking which universe lives at which port. When
+    # ``multiverse_root`` is empty (default) the entire feature is inert —
+    # the standalone single-backend deployment keeps behaving bit-exactly.
+    # The registry implementation lives in ``gaottt/multiverse/registry.py``;
+    # these knobs only configure it (no physics, no store/ edits).
+    # Env via the generic GAOTTT_<UPPER> loop.
+    multiverse_root: str = ""
+    # GAOTTT_MULTIVERSE_ROOT. Empty string = feature unused. When set, the
+    # supervisor + shim treat it as the on-disk multiverse root
+    # (<root>/registry.db, <root>/universes/<id>/, <root>/trash/).
+    supervisor_port: int = 7880
+    # supervisor HTTP listen port (admin + route endpoints).
+    supervisor_admin_key: str = ""
+    # Admin API key. An EMPTY key is a hard fail-fast at supervisor startup —
+    # admin endpoints are never exposed unauthenticated. Set via
+    # GAOTTT_SUPERVISOR_ADMIN_KEY.
+    universe_port_range_start: int = 7890
+    universe_port_range_end: int = 7989
+    # Dynamic per-universe backend port allocation range (inclusive, 100-port
+    # window = 100 universe ceiling). The registry's allocate_port consults
+    # both this range and a live OS bind check.
+    supervisor_spawn_concurrency: int = 3
+    # Upper bound on concurrent backend spawns (semaphore) so a burst of route
+    # requests cannot fork-bomb the host.
+    supervisor_readiness_timeout: float = 90.0
+    # Seconds to wait for a freshly-spawned backend to answer a readiness probe
+    # before declaring the spawn failed.
+
+    # ---- MV3 supervisor — embedder lazy spawn (WP-1) ------------------------
+    # When ``supervisor_spawn_embedder`` is True (default), the supervisor
+    # lazily spawns a dedicated embedding service (RemoteEmbedder backend)
+    # on first embed demand instead of requiring every universe backend to
+    # load its own in-process RuriEmbedder. The remaining three knobs tune
+    # that lazy-spawned service's lifecycle. Feature is inert until the
+    # supervisor actually wires it (later WPs); these scalars only configure
+    # it. Detail: docs/plans/embedder-auto-spawn-supervisor.md §6 / §10.
+    # Env via the generic GAOTTT_<UPPER> loop.
+    supervisor_spawn_embedder: bool = True
+    # GAOTTT_SUPERVISOR_SPAWN_EMBEDDER. Global off-switch for the lazy-spawn
+    # feature; False = every universe backend loads its own in-process embedder
+    # (pre-WP-1 behaviour).
+    embedder_spawn_idle_timeout_seconds: float = 300.0
+    # GAOTTT_EMBEDDER_SPAWN_IDLE_TIMEOUT_SECONDS. How long the lazily-spawned
+    # embedder service stays alive after its last request before self-shutdown
+    # (cold-war idle reclamation).
+    embedder_spawn_readiness_timeout_seconds: float = 90.0
+    # GAOTTT_EMBEDDER_SPAWN_READINESS_TIMEOUT_SECONDS. Seconds to wait for the
+    # freshly-spawned embedder service to answer a readiness probe before
+    # declaring the spawn failed (embedder-service analog of
+    # ``supervisor_readiness_timeout``).
+    embedder_idle_watchdog_poll_seconds: float = 30.0
+    # GAOTTT_EMBEDDER_IDLE_WATCHDOG_POLL_SECONDS. Cadence (seconds) at which
+    # the idle-watchdog checks whether the embedder service has reached its
+    # idle timeout and should be reaped.
+
+    # ---- MV4 Control plane client (WP-3) -----------------------------------
+    # Ops / coordination layer for the control plane (Postgres-backed
+    # aggregator/audit/billing surface). The supervisor's ControlClient uses
+    # these to pull universe state from / push usage telemetry to the control
+    # plane over localhost HTTP.
+    #
+    # FEATURE IS INERT unless ``control_plane_url`` AND ``control_host_id``
+    # AND ``control_host_token`` are ALL set (3-point gate). When any of the
+    # three is empty, ControlClient is fully disabled and the supervisor keeps
+    # running local-only (default 不変). The 3-point gate is checked in
+    # ControlClient.__init__; the individual knobs here are plain scalars so
+    # the generic env-override loop wires them automatically.
+    #
+    # SECRET: ``control_host_token`` is a plaintext credential issued once by
+    # ``POST /admin/hosts`` (only its SHA-256 hash lives in the control DB).
+    # NEVER log it, and do NOT inherit it into spawned backend processes —
+    # only the supervisor itself reads this knob.
+    #
+    # ``usage_spool_dir`` empty defaults to
+    # ``<multiverse_root>/logs/usage-spool/`` when ``multiverse_root`` is set
+    # (resolved lazily inside ControlClient, NOT here, so this knob stays a
+    # plain str). When BOTH ``usage_spool_dir`` and ``multiverse_root`` are
+    # empty, usage push is disabled (no spool directory → no durability).
+    control_plane_url: str = ""
+    # GAOTTT_CONTROL_PLANE_URL. Empty = control plane not used (feature off).
+    control_host_id: str = ""
+    # GAOTTT_CONTROL_HOST_ID. The host_id issued by the control plane.
+    control_host_token: str = ""
+    # GAOTTT_CONTROL_HOST_TOKEN. SECRET — plaintext host credential.
+    control_default_tenant_id: str = ""
+    # GAOTTT_CONTROL_DEFAULT_TENANT_ID. Empty = implicit single tenant
+    # "default" (J11). When set, all local universes report under this tenant.
+    control_sync_interval_seconds: float = 300.0
+    # GAOTTT_CONTROL_SYNC_INTERVAL_SECONDS. Pull/reconcile cadence (seconds).
+    usage_push_interval_seconds: float = 60.0
+    # GAOTTT_USAGE_PUSH_INTERVAL_SECONDS. Usage flush cadence (seconds).
+    usage_spool_dir: str = ""
+    # GAOTTT_USAGE_SPOOL_DIR. Empty = <multiverse_root>/logs/usage-spool/.
+
+    # ---- MV5 Multiverse backup hook (supervisor regenerates litestream cfg) -
+    # When non-empty, the supervisor's create_universe / delete_universe
+    # success paths call the pure ``generate_litestream_config`` (from
+    # ``gaottt.multiverse.backup``) and atomically write the resulting YAML
+    # to this path. Empty (default) = the hook is fully inert — existing
+    # MV3/MV4 deployments keep behaving bit-exactly (default 不変). The hook
+    # is best-effort: any exception is ERROR-logged and swallowed so a
+    # backup misconfiguration can never fail a create/delete. The scan+write
+    # is serialized in a dedicated ``_backup_hook_lock`` so concurrent
+    # create/delete hooks cannot produce a stale-write YAML. Env:
+    # GAOTTT_LITESTREAM_CONFIG_PATH. (Note: no ``backup_gen_timeout_seconds``
+    # knob — the hook is a direct import-based call, not a subprocess, so no
+    # timeout is needed; adding one would mislead operators.)
+    litestream_config_path: str = ""
+
     # Retrieval
     top_k: int = 5              # Results returned to LLM (presentation layer)
 
