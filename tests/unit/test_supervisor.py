@@ -35,6 +35,7 @@ import asyncio
 import os
 import shutil
 import signal
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -301,6 +302,135 @@ async def test_create_universe_embedder_validation_fail_returns_400(client):
             headers=_admin_headers(),
         )
     assert r.status_code == 400
+
+
+# ===========================================================================
+# 4b. clone universe
+# ===========================================================================
+
+async def test_clone_universe_copies_data_and_issues_independent_key(
+    app, client, stub_registry, tmp_multiverse_root,
+):
+    from gaottt.multiverse.supervisor import PROBE_DOWN
+    from gaottt.store.manifest import load_manifest
+
+    source = await _make_universe(client, owner="source-owner")
+    source_dir = tmp_multiverse_root / "universes" / source["universe_id"]
+    conn = sqlite3.connect(source_dir / "gaottt.db")
+    conn.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY, content TEXT)")
+    conn.execute("INSERT INTO nodes VALUES ('n1', 'cloned memory')")
+    conn.commit()
+    conn.close()
+    (source_dir / "gaottt.faiss").write_bytes(b"index")
+    (source_dir / "backend.token").write_text("must-not-copy")
+
+    with patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token",
+        AsyncMock(return_value=PROBE_DOWN),
+    ):
+        response = await client.post(
+            f"/admin/universes/{source['universe_id']}/clone",
+            json={"owner_label": "experiment-a"},
+            headers=_admin_headers(),
+        )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["source_universe_id"] == source["universe_id"]
+    assert body["universe_id"] != source["universe_id"]
+    assert body["api_key"] != source["api_key"]
+    assert await stub_registry.verify_api_key(body["api_key"]) == body["universe_id"]
+    assert await stub_registry.verify_api_key(source["api_key"]) == source["universe_id"]
+
+    target_dir = tmp_multiverse_root / "universes" / body["universe_id"]
+    assert (target_dir / "gaottt.faiss").read_bytes() == b"index"
+    assert not (target_dir / "backend.token").exists()
+    manifest = load_manifest(target_dir)
+    assert manifest is not None
+    assert manifest.universe_id == body["universe_id"]
+    row = await stub_registry.get_universe(body["universe_id"])
+    assert row["owner_label"] == "experiment-a"
+
+
+async def test_clone_universe_defaults_owner_label(client, stub_registry):
+    from gaottt.multiverse.supervisor import PROBE_DOWN
+
+    source = await _make_universe(client, owner="alice")
+    with patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token",
+        AsyncMock(return_value=PROBE_DOWN),
+    ):
+        response = await client.post(
+            f"/admin/universes/{source['universe_id']}/clone",
+            json={}, headers=_admin_headers(),
+        )
+    assert response.status_code == 201
+    row = await stub_registry.get_universe(response.json()["universe_id"])
+    assert row["owner_label"] == "alice-clone"
+
+
+async def test_clone_universe_auth_and_source_errors(
+    client, stub_registry,
+):
+    missing = await client.post(
+        "/admin/universes/does-not-exist/clone",
+        json={}, headers=_admin_headers(),
+    )
+    assert missing.status_code == 404
+
+    unauthorized = await client.post(
+        "/admin/universes/does-not-exist/clone", json={},
+    )
+    assert unauthorized.status_code == 401
+
+    source = await _make_universe(client)
+    await stub_registry.delete_universe(source["universe_id"])
+    inactive = await client.post(
+        f"/admin/universes/{source['universe_id']}/clone",
+        json={}, headers=_admin_headers(),
+    )
+    assert inactive.status_code == 409
+
+
+async def test_clone_refuses_untracked_live_backend(client):
+    from gaottt.multiverse.supervisor import PROBE_OK
+
+    source = await _make_universe(client)
+    with patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token",
+        AsyncMock(return_value=PROBE_OK),
+    ):
+        response = await client.post(
+            f"/admin/universes/{source['universe_id']}/clone",
+            json={}, headers=_admin_headers(),
+        )
+    assert response.status_code == 409
+    assert "PID is unknown" in response.json()["detail"]
+
+
+async def test_clone_insufficient_storage_returns_507(
+    client, tmp_multiverse_root,
+):
+    from gaottt.multiverse.supervisor import PROBE_DOWN
+
+    source = await _make_universe(client)
+    source_dir = tmp_multiverse_root / "universes" / source["universe_id"]
+    conn = sqlite3.connect(source_dir / "gaottt.db")
+    conn.execute("CREATE TABLE nodes (id TEXT)")
+    conn.commit()
+    conn.close()
+    usage = type("Usage", (), {"free": 0})()
+    with patch(
+        "gaottt.multiverse.supervisor._probe_backend_with_token",
+        AsyncMock(return_value=PROBE_DOWN),
+    ), patch(
+        "gaottt.multiverse.cloner.shutil.disk_usage", return_value=usage,
+    ):
+        response = await client.post(
+            f"/admin/universes/{source['universe_id']}/clone",
+            json={}, headers=_admin_headers(),
+        )
+    assert response.status_code == 507
 
 
 # ===========================================================================

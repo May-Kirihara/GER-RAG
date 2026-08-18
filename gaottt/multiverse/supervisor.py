@@ -47,6 +47,11 @@ from mcp.client.streamable_http import streamablehttp_client
 from pydantic import BaseModel
 
 from gaottt.config import GaOTTTConfig
+from gaottt.multiverse.cloner import (
+    CloneConflict,
+    InsufficientCloneStorage,
+    clone_universe_files,
+)
 from gaottt.multiverse.control_client import (
     ROUTE_RESOLUTION,
     UNIVERSE_CREATE,
@@ -113,6 +118,11 @@ class CreateUniverseBody(BaseModel):
     # or ``"default"``. The local registry has no tenant column (MV3 schema),
     # so this field is control-plane metadata only — local behavior is
     # unchanged when it is absent (default 不変).
+    tenant_id: str | None = None
+
+
+class CloneUniverseBody(BaseModel):
+    owner_label: str | None = None
     tenant_id: str | None = None
 
 
@@ -1366,6 +1376,126 @@ def create_supervisor_app(
             await sup._run_backup_hook()
             # api_key is handed out exactly once; only the hash is persisted.
             return {"universe_id": universe_id, "api_key": plaintext_key, "port": port}
+
+    # -- POST /admin/universes/{uid}/clone -------------------------------
+
+    @admin.post(
+        "/admin/universes/{source_universe_id}/clone",
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def clone_universe(
+        source_universe_id: str, body: CloneUniverseBody,
+    ):
+        source = await registry.get_universe(source_universe_id)
+        if source is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="source universe not found",
+            )
+
+        source_dir = root / UNIVERSES_SUBDIR / source_universe_id
+        async with sup._create_lock:
+            async with sup._spawn_lock(source_universe_id):
+                if not source_dir.exists():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="source universe directory is missing",
+                    )
+
+                lock_path = source_dir / ".spawn.lock"
+                lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+                try:
+                    await asyncio.to_thread(
+                        fcntl.flock, lock_fd, fcntl.LOCK_EX,
+                    )
+                    try:
+                        # Re-read inside the source lock. A concurrent delete
+                        # may have changed status after the initial 404 check.
+                        source = await registry.get_universe(source_universe_id)
+                        if source is None or source.get("status") != "active":
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail="source universe is not active",
+                            )
+                        try:
+                            await sup._stop_backend(source)
+                        except _BackendAliveConflict as exc:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=str(exc),
+                            )
+                        # The process is confirmed dead and the source spawn
+                        # lock is still held. Remove lease bookkeeping left by
+                        # a signal-driven shutdown so the source can restart
+                        # immediately after cloning instead of waiting for the
+                        # normal stale-heartbeat takeover window.
+                        for lease_name in ("owner.lock", "owner.lock.guard"):
+                            try:
+                                (source_dir / lease_name).unlink()
+                            except FileNotFoundError:
+                                pass
+
+                        target_id = uuid4().hex[:12]
+                        target_dir = root / UNIVERSES_SUBDIR / target_id
+                        port = await registry.allocate_port(
+                            config.universe_port_range_start,
+                            config.universe_port_range_end,
+                        )
+                        try:
+                            snapshot = await asyncio.to_thread(
+                                clone_universe_files,
+                                source_dir,
+                                target_dir,
+                                target_id,
+                            )
+                        except CloneConflict as exc:
+                            raise HTTPException(
+                                status_code=status.HTTP_409_CONFLICT,
+                                detail=str(exc),
+                            )
+                        except InsufficientCloneStorage as exc:
+                            raise HTTPException(
+                                status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+                                detail=str(exc),
+                            )
+
+                        owner_label = (
+                            body.owner_label
+                            or f"{source['owner_label']}-clone"
+                        )
+                        try:
+                            plaintext_key = await registry.create_universe(
+                                target_id,
+                                owner_label,
+                                port,
+                                snapshot.manifest.embedder_id,
+                                snapshot.manifest.embedder_version,
+                            )
+                        except Exception:
+                            shutil.rmtree(target_dir, ignore_errors=True)
+                            raise
+
+                        if sup._control is not None:
+                            resolved_tenant = (
+                                body.tenant_id
+                                or config.control_default_tenant_id
+                                or "default"
+                            )
+                            await sup._control.arecord_event(
+                                target_id, UNIVERSE_CREATE, resolved_tenant,
+                            )
+                    finally:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
+
+        await sup._run_backup_hook()
+        return {
+            "source_universe_id": source_universe_id,
+            "universe_id": target_id,
+            "api_key": plaintext_key,
+            "port": port,
+        }
 
     # -- DELETE /admin/universes/{uid} ------------------------------------
 

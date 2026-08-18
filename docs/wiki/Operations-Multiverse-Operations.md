@@ -47,7 +47,7 @@ litestream daemon (独立 systemd unit) ── replica ──> object storage / 
 | コンポーネント | port | 役割 | 依存先 | 障害時の影響範囲 | 詳細 |
 |---|---|---|---|---|---|
 | embedding service (MV1) | 7879 | RURI model をホスト共有し、全宇宙が `RemoteEmbedder` で参照 | なし (model load のみ) | 全宇宙の `remember` / `recall` が停止 | [Server Setup](Operations-Server-Setup.md)「embedding service を分離する」節 |
-| universe supervisor (MV3) | 7880 | 宇宙の作成 / 一覧 / 削除 + `/route` で API key → 宇宙解決 + backend spawn/respawn | embedding service (7879)、multiverse_root、(任意) control plane | 新規 spawn 不可。既存 backend は自走継続 | [Multiverse Setup](Operations-Multiverse-Setup.md) |
+| universe supervisor (MV3) | 7880 | 宇宙の作成 / クローン / 一覧 / 削除 + `/route` で API key → 宇宙解決 + backend spawn/respawn | embedding service (7879)、multiverse_root、(任意) control plane | 新規 spawn 不可。既存 backend は自走継続 | [Multiverse Setup](Operations-Multiverse-Setup.md) |
 | 宇宙 backend (per-universe) | 7890–7989 (動的) | 各宇宙 = 1 つの `mcp_server --transport streamable-http`。`GAOTTT_BACKEND_TOKEN` で保護 | embedding service、(任意) control plane (via supervisor) | 対象テナントの機能停止、supervisor が次 route で respawn | [Multiverse Setup](Operations-Multiverse-Setup.md) |
 | control plane (MV4) | 7881 | 台帳・監査・usage telemetry 収集点。`control/` 独立パッケージ、engine コード非接触 | Postgres 16 | degraded mode で supervisor は local 自走、usage は spool 蓄積 | [Control Plane](Operations-Control-Plane.md) |
 | Postgres 16 | (control plane 内部) | 7 domain テーブル + `audit_log` を保持 | なし | control plane 機能停止、supervisor は local 自走 | [Control Plane](Operations-Control-Plane.md) §setup |
@@ -173,6 +173,10 @@ Multiverse を商用投入する前、および定期評価で、性能・信頼
 3. ユーザーの shim 設定 (`.mcp.json` / opencode / Codex) に `--supervisor-url` + `GAOTTT_API_KEY` を設定。
 
 詳細: [Multiverse Setup](Operations-Multiverse-Setup.md) §3 + §4。**注意**: port range 7890–7989 (100 本) が 1 ホストあたりの宇宙数上限 (v1 制約)。枯渇すると宇宙作成が 503 で失敗する。不要宇宙は `DELETE /admin/universes/{id}` で `trash/` へ移動 (即時物理削除しない)。
+
+### 宇宙クローン
+
+既存宇宙をテンプレートや検証用 sandbox として複製する場合は、`POST /admin/universes/{source_universe_id}/clone` (admin key) を使う。新しい `universe_id` / `api_key` / `port` が発行され、作成時点までの SQLite と FAISS を継承する。その後のデータと認証情報は完全に独立する。整合した snapshot を得るため元 backend は一度正常停止され、次の `/route` で再起動する。操作例と failure code は [Multiverse Setup](Operations-Multiverse-Setup.md) §3.1 を参照。
 
 ### ホスト追加
 

@@ -428,6 +428,70 @@ async def test_mutual_isolation(embedder_url, multiverse_root, port_range):
 
 
 @slow
+@pytest.mark.timeout(180)
+async def test_clone_inherits_then_diverges(
+    embedder_url, multiverse_root, port_range,
+):
+    """Clone captures source memory, then becomes independently writable."""
+    config = make_config(multiverse_root, embedder_url, port_range=port_range)
+    app, reg = await make_supervisor(config)
+    try:
+        async with asgi_client(app) as client:
+            source = await create_universe(client, owner="clone-source")
+            source_route = await route_universe(client, source["api_key"])
+            inherited = "clone-inherited-marker-orion"
+            await mcp_call(
+                source_route["url"], source_route["token"], "remember",
+                {"content": inherited, "source": "user"},
+            )
+
+            response = await client.post(
+                f"/admin/universes/{source['universe_id']}/clone",
+                json={"owner_label": "clone-target"},
+                headers=admin_headers(),
+            )
+            assert response.status_code == 201, response.text
+            clone = response.json()
+
+            # Clone stopped the source backend to take a coherent snapshot;
+            # both routes now lazily start independent processes.
+            source_route = await route_universe(client, source["api_key"])
+            clone_route = await route_universe(client, clone["api_key"])
+            assert source_route["url"] != clone_route["url"]
+
+            for route in (source_route, clone_route):
+                recalled = _tool_text(await mcp_call(
+                    route["url"], route["token"], "recall",
+                    {"query": "clone-inherited-marker-orion", "top_k": 5},
+                ))
+                assert inherited in recalled
+
+            source_only = "post-clone-source-marker-sirius"
+            clone_only = "post-clone-target-marker-vega"
+            await mcp_call(
+                source_route["url"], source_route["token"], "remember",
+                {"content": source_only, "source": "user"},
+            )
+            await mcp_call(
+                clone_route["url"], clone_route["token"], "remember",
+                {"content": clone_only, "source": "user"},
+            )
+
+            clone_cross = _tool_text(await mcp_call(
+                clone_route["url"], clone_route["token"], "recall",
+                {"query": "post-clone-source-marker-sirius", "top_k": 5},
+            ))
+            source_cross = _tool_text(await mcp_call(
+                source_route["url"], source_route["token"], "recall",
+                {"query": "post-clone-target-marker-vega", "top_k": 5},
+            ))
+            assert source_only not in clone_cross
+            assert clone_only not in source_cross
+    finally:
+        await reg.close()
+
+
+@slow
 @pytest.mark.timeout(120)
 async def test_idle_respawn_with_data_retention(
     embedder_url, multiverse_root, port_range, monkeypatch,
