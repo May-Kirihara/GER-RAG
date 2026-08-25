@@ -177,6 +177,32 @@ async def test_startup_diagnostics_latches_persist_block(tmp_path):
     await e2.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_startup_diagnostics_detects_oversized_stale_snapshot(tmp_path):
+    """A rolled-back DB must not silently query a newer FAISS snapshot."""
+    e1 = _make_engine(tmp_path)
+    await e1.startup()
+    await _index_n(e1, 5)
+    await e1.shutdown()
+
+    stale = FaissIndex(dimension=32)
+    stale.add(
+        np.zeros((20, 32), dtype=np.float32),
+        [f"stale-snapshot-{i}" for i in range(20)],
+    )
+    stale.save(e1.config.faiss_index_path)
+
+    e2 = _make_engine(tmp_path)
+    await e2.startup()
+    report = await run_startup_checks(e2, e2.config)
+    names_levels = {(r.name, r.level) for r in report.results}
+    assert (
+        "tier_b_faiss_snapshot_mismatch", DiagnosticLevel.ERROR,
+    ) in names_levels
+    assert e2._faiss_persist_blocked is True
+    await e2.shutdown()
+
+
 # --- end-to-end: guard protects the good on-disk index --------------------
 
 @pytest.mark.asyncio

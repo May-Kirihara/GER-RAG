@@ -271,6 +271,7 @@ async def _check_size_consistency(
     """Compare engine index sizes against the SQLite active-doc ground truth."""
     states = await engine.store.get_all_node_states()
     active = sum(1 for s in states if not s.is_archived)
+    active_ids = {s.id for s in states if not s.is_archived}
 
     # FAISS raw
     faiss_size = engine.faiss_index.size
@@ -284,7 +285,22 @@ async def _check_size_consistency(
     floor = getattr(engine.config, "faiss_persist_floor", 100)
     ratio = getattr(engine.config, "faiss_persist_min_ratio", 0.5)
     guard_on = getattr(engine.config, "faiss_persist_guard_enabled", True)
-    severe = active >= floor and faiss_size < active * ratio
+    # Both directions matter.  An oversized index is the signature produced
+    # when SQLite is restored/rolled back without replacing its FAISS files:
+    # FAISS returns IDs from the newer corpus, the engine drops them because
+    # they are absent from SQLite, and recall used to degrade to an empty list.
+    # Count alone is insufficient when two snapshots are similarly sized, so
+    # also compare the actual ID sets.
+    faiss_ids = engine.faiss_index.ids()
+    overlap = len(active_ids & faiss_ids)
+    overlap_ratio = overlap / max(1, min(active, faiss_size))
+    severe_size = active >= floor and (
+        faiss_size < active * ratio or faiss_size > active / ratio
+    )
+    severe_identity = (
+        active >= floor and faiss_size >= floor and overlap_ratio < ratio
+    )
+    severe = severe_size or severe_identity
     if severe:
         latched = ""
         if guard_on:
@@ -293,11 +309,18 @@ async def _check_size_consistency(
                 "Persist guard LATCHED: this process will not overwrite the "
                 "on-disk index. "
             )
+        diagnostic_name = (
+            "tier_b_faiss_severe_undersize"
+            if faiss_size < active * ratio
+            else "tier_b_faiss_snapshot_mismatch"
+        )
         report.add(
-            "tier_b_faiss_severe_undersize",
+            diagnostic_name,
             DiagnosticLevel.ERROR,
-            f"faiss.size={faiss_size} vs SQLite active={active} "
-            f"(<{ratio:.0%} of active) — index is corrupt/truncated. "
+            f"faiss.size={faiss_size} vs SQLite active={active}, "
+            f"id overlap={overlap}/{min(active, faiss_size)} "
+            f"({overlap_ratio:.1%}) — index belongs to a different or "
+            f"incomplete SQLite snapshot. "
             f"{latched}"
             f"Recover: stop all gaottt processes, run "
             f"`scripts/rebuild_faiss_from_db.py --apply`, then restart.",
@@ -313,7 +336,8 @@ async def _check_size_consistency(
         report.add(
             "tier_b_faiss_size_ok",
             DiagnosticLevel.INFO,
-            f"faiss.size={faiss_size} matches SQLite active={active} (drift={faiss_drift:.1%})",
+            f"faiss.size={faiss_size} matches SQLite active={active} "
+            f"(drift={faiss_drift:.1%}, id overlap={overlap_ratio:.1%})",
         )
 
     # BM25

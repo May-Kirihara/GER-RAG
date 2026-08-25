@@ -33,6 +33,18 @@ class FaissIndex:
     def size(self) -> int:
         return self._index.ntotal
 
+    def ids(self) -> set[str]:
+        """Return a snapshot of the node IDs represented by this index.
+
+        Startup diagnostics use this to detect a stale-but-well-formed index
+        whose vector count happens to look plausible for a different SQLite
+        snapshot.  Returning a copy keeps callers from mutating the sidecar
+        map and avoids exposing the list while a background save is reading
+        it.
+        """
+        with self._lock:
+            return set(self._id_map)
+
     def add(self, vectors: np.ndarray, ids: list[str]) -> None:
         assert vectors.shape[0] == len(ids)
         assert vectors.shape[1] == self._dimension

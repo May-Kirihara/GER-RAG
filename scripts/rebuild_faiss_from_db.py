@@ -63,6 +63,42 @@ def _on_disk_counts(config: GaOTTTConfig) -> tuple[int, int, int]:
     return raw_n, virt_n, docs
 
 
+def _active_db_ids(config: GaOTTTConfig) -> set[str]:
+    con = sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True)
+    try:
+        return {
+            row[0] for row in con.execute(
+                "SELECT id FROM nodes WHERE is_archived = 0"
+            )
+        }
+    finally:
+        con.close()
+
+
+def _retrievable_db_ids(config: GaOTTTConfig) -> set[str]:
+    """Active node IDs that have document content and therefore can embed."""
+    con = sqlite3.connect(f"file:{config.db_path}?mode=ro", uri=True)
+    try:
+        return {
+            row[0] for row in con.execute(
+                "SELECT n.id FROM nodes n JOIN documents d ON d.id=n.id "
+                "WHERE n.is_archived = 0"
+            )
+        }
+    finally:
+        con.close()
+
+
+def _faiss_ids(path: str, dimension: int) -> set[str]:
+    index = FaissIndex(dimension=dimension)
+    index.load(path)
+    return index.ids()
+
+
+def _raw_faiss_ids(config: GaOTTTConfig) -> set[str]:
+    return _faiss_ids(config.faiss_index_path, config.embedding_dim)
+
+
 def _check(config: GaOTTTConfig) -> None:
     raw_n, virt_n, docs = _on_disk_counts(config)
     print("Data dir (from config):")
@@ -87,10 +123,28 @@ def _check(config: GaOTTTConfig) -> None:
 
 async def _apply(config: GaOTTTConfig) -> int:
     raw_n, virt_n, docs = _on_disk_counts(config)
+    active_ids = _active_db_ids(config)
+    retrievable_ids = _retrievable_db_ids(config)
+    raw_ids = _raw_faiss_ids(config)
+    virtual_ids = _faiss_ids(
+        config.virtual_faiss_index_path, config.embedding_dim,
+    )
+    overlap = len(retrievable_ids & raw_ids)
     print(f"Before: raw FAISS={raw_n:,}  virtual={virt_n:,}  DB documents={docs:,}")
-    if raw_n >= docs:
-        print("Nothing to do — FAISS already holds at least as many vectors as the DB.")
+    print(
+        f"        active SQLite={len(active_ids):,}  "
+        f"retrievable ID overlap={overlap:,}/{len(retrievable_ids):,}"
+    )
+    raw_healthy = retrievable_ids <= raw_ids and raw_ids <= active_ids
+    virtual_healthy = retrievable_ids <= virtual_ids and virtual_ids <= active_ids
+    if raw_healthy and virtual_healthy:
+        print(
+            "Nothing to do — raw and virtual FAISS cover every retrievable "
+            "active SQLite ID."
+        )
         return 0
+    if raw_healthy and not virtual_healthy:
+        print("Raw FAISS is healthy; rebuilding the incomplete virtual FAISS.")
 
     print("Building engine + startup (loads all node states into cache)...")
     engine = build_engine(config)
@@ -107,13 +161,59 @@ async def _apply(config: GaOTTTConfig) -> int:
     print(f"  compact report: {report}")
     print(f"  FAISS after rebuild: {engine.faiss_index.size:,}")
 
+    # Startup diagnostics correctly latch persistence when the loaded FAISS
+    # belongs to another snapshot.  This recovery process is the one place
+    # allowed to clear that latch, and only after proving the freshly rebuilt
+    # in-memory index represents every active SQLite node exactly.  Without
+    # this, shutdown refuses to save the repaired index and --apply appears to
+    # succeed while leaving the corrupt files untouched.
+    rebuilt_ids = engine.faiss_index.ids()
+    active_after = {
+        state.id for state in engine.cache.get_all_nodes()
+        if not state.is_archived
+    }
+    contents_after = await engine.store.get_all_contents()
+    retrievable_after = active_after & set(contents_after)
+    missing_after = retrievable_after - rebuilt_ids
+    orphan_after = rebuilt_ids - active_after
+    if missing_after or orphan_after:
+        print(
+            "  ERROR: rebuilt index failed ID validation: "
+            f"missing={len(missing_after):,}, orphan={len(orphan_after):,}. "
+            "Refusing to persist it."
+        )
+        await engine.shutdown()
+        return 1
+    engine._faiss_persist_blocked = False  # noqa: SLF001 -- recovery authority
+    print("  ID validation passed; persistence guard released for repaired index.")
+
     print("Shutting down (persists rebuilt raw + virtual FAISS to disk)...")
     await engine.shutdown()
 
     raw_n2, virt_n2, _docs = _on_disk_counts(config)
     print(f"After:  raw FAISS={raw_n2:,}  virtual={virt_n2:,} on disk")
-    if raw_n2 < docs - 1000:
-        print("  WARNING: still well below the document count — inspect logs above.")
+    final_ids = _raw_faiss_ids(config)
+    final_virtual_ids = _faiss_ids(
+        config.virtual_faiss_index_path, config.embedding_dim,
+    )
+    final_active_ids = _active_db_ids(config)
+    final_retrievable_ids = _retrievable_db_ids(config)
+    if not final_retrievable_ids <= final_ids or not final_ids <= final_active_ids:
+        print(
+            "  WARNING: on-disk ID validation failed: "
+            f"missing={len(final_retrievable_ids - final_ids):,}, "
+            f"orphan={len(final_ids - final_active_ids):,}."
+        )
+        return 1
+    if (
+        not final_retrievable_ids <= final_virtual_ids
+        or not final_virtual_ids <= final_active_ids
+    ):
+        print(
+            "  WARNING: on-disk virtual ID validation failed: "
+            f"missing={len(final_retrievable_ids-final_virtual_ids):,}, "
+            f"orphan={len(final_virtual_ids-final_active_ids):,}."
+        )
         return 1
     print("  Rebuild persisted. Verify with scripts/verify_faiss_recovery.py")
     return 0
