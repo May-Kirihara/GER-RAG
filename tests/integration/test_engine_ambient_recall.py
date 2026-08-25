@@ -133,7 +133,9 @@ async def test_ambient_recall_returns_structured_block_with_provenance(tmp_path)
 async def test_ambient_recall_virtual_score_gate_fallback(tmp_path):
     """Fallback gate — with no BM25 index, ambient_recall gates on
     virtual_score; min_score above any achievable score → empty."""
-    engine = _make_engine(tmp_path)  # bm25=False → virtual_score fallback
+    # explicit legacy ambient gate — OR default (WP-D) would let the raw
+    # cosine axis (~0.97 with StubEmbedder) approve past min_score=0.999.
+    engine = _make_engine(tmp_path, ambient_gate_or_semantic=False)
     await engine.startup()
     try:
         for i in range(3):
@@ -155,7 +157,9 @@ async def test_ambient_recall_bm25_lexical_gate(tmp_path):
     """BM25 lexical gate — a prompt sharing terms with the corpus passes; a
     prompt with no lexical overlap (disjoint vocabulary → BM25 0) is
     suppressed even though dense recall would still return its 3 nearest."""
-    engine = _make_engine(tmp_path, bm25=True)
+    # explicit legacy ambient gate — OR default (WP-D) would let the dense
+    # axis (StubEmbedder uniform cosine ~0.97) surface the disjoint prompt.
+    engine = _make_engine(tmp_path, bm25=True, ambient_gate_or_semantic=False)
     await engine.startup()
     try:
         for i in range(4):

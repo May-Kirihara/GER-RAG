@@ -330,3 +330,77 @@ async def test_get_node_detail_roundtrip(rest_client):
 
     missing = await rest_client.get("/node/no-such-id/detail")
     assert missing.status_code == 404
+
+
+# ---------- ambient_recall gate diagnostics (Phase T Stage 5 / WP-4) ----------
+
+async def test_ambient_recall_gate_diagnostics_roundtrip(rest_client):
+    """POST /ambient_recall must carry ``gate_diagnostics`` (and the
+    ``expose_breakdown`` echo) on the response — parity with the ambient
+    tool's structured return. The rest_client engine has no ambient gate
+    index, so ``bm25_gate`` reports None (gate unavailable)."""
+    await rest_client.post(
+        "/remember",
+        json={"content": "ambient gate diagnostics probe", "source": "agent"},
+    )
+    resp = await rest_client.post(
+        "/ambient_recall",
+        json={"query": "ambient gate diagnostics probe", "direct_k": 2},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] >= 1
+    diag = body["gate_diagnostics"]
+    assert diag is not None
+    assert diag["bm25_gate"] is None  # no gate index wired in this fixture
+    assert diag["bm25_top_score"] is None
+    assert diag["candidates_generated"] >= 1
+    assert diag["direct_selected"] == len(body["direct"])
+    assert diag["empty_reason"] is None
+    assert body["expose_breakdown"] is False
+
+
+# ---------- explore diversity roundtrip (Phase T Stage 6 / WP-5) ----------
+
+async def test_explore_diversity_roundtrip(tmp_path):
+    """POST /explore with ``diversity=0.8`` must round-trip the engine's
+    diversified presentation path (flag ON) and echo the diversity on the
+    response. The shared ``rest_client`` fixture keeps the flag OFF, so
+    this test stands up its own engine — the fixture stays untouched."""
+    cfg = GaOTTTConfig(
+        embedding_dim=32,
+        data_dir=str(tmp_path),
+        db_path=str(tmp_path / "ger.db"),
+        faiss_index_path=str(tmp_path / "ger.faiss"),
+        flush_interval_seconds=999.0,
+        explore_diversified_presentation_enabled=True,
+    )
+    eng = GaOTTTEngine(
+        config=cfg,
+        embedder=StubEmbedder(dimension=32),
+        faiss_index=FaissIndex(dimension=32),
+        cache=CacheLayer(flush_interval=999.0),
+        store=SqliteStore(db_path=cfg.db_path),
+    )
+    await eng.startup()
+    app.state.engine = eng
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for i in range(3):
+                resp = await client.post(
+                    "/remember",
+                    json={"content": f"explore diversity probe {i}"},
+                )
+                assert resp.status_code == 200
+            resp = await client.post(
+                "/explore",
+                json={"query": "explore diversity probe", "diversity": 0.8, "top_k": 3},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["diversity"] == pytest.approx(0.8)
+        assert body["count"] >= 1
+        assert len(body["items"]) == body["count"]
+    finally:
+        await eng.shutdown()

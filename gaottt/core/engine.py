@@ -12,6 +12,12 @@ import numpy as np
 from gaottt.config import GaOTTTConfig
 from gaottt.core.clustering import Cluster, cluster_by_similarity, find_merge_candidates
 from gaottt.core.collision import MergeOutcome, merge_pair, pick_survivor
+from gaottt.core.diversity import (
+    apply_relevance_floor,
+    cluster_key_from_cache,
+    mmr_select,
+    normalize_relevance,
+)
 from gaottt.core.gravity import (
     SEED_PARENT_ID,
     compute_gravity_kick,
@@ -31,7 +37,11 @@ from gaottt.core.scorer import (
     compute_certainty_boost,
     compute_decay,
     compute_emotion_boost,
+    compute_lexical_strength,
     compute_mass_boost,
+    compute_semantic_factor,
+    is_direct_qualified,
+    qualification_confidence,
 )
 from gaottt.core.types import (
     CooccurrenceEdge,
@@ -155,6 +165,19 @@ class GaOTTTEngine:
         self._lease_lost_warned: bool = False
 
     async def startup(self) -> None:
+        # Phase T Stage 2 — legacy semantic decay contract selected. ``delta``
+        # is a per-SECOND rate (deprecated contract): exp(-0.01*600) ≈ 0.0025,
+        # so the semantic score term goes numerically extinct within minutes.
+        # Kept only as the bit-for-bit rollback path. Logged once per startup.
+        if not self.config.semantic_halflife_enabled:
+            logger.warning(
+                "semantic_halflife_enabled=False: using legacy "
+                "compute_decay with config.delta=%s — delta is a per-SECOND "
+                "rate (deprecated contract) that zeroes the semantic score "
+                "term within minutes. See "
+                "docs/wiki/Plans-Phase-T-Semantic-Requalification.md §3.",
+                self.config.delta,
+            )
         # MV0 — universe manifest hard gate. Runs before any store / FAISS
         # touch: ``ensure_manifest`` auto-generates from config for existing
         # DBs (backward-compat), then the manifest ``embedding_dim`` is
@@ -1022,6 +1045,7 @@ class GaOTTTEngine:
         gamma_override: float | None = None,
         passive: bool = False,
         multi_source: bool | None = None,
+        diversity: float | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -1059,6 +1083,22 @@ class GaOTTTEngine:
         result must not poison a later active recall into skipping its TTT
         update. Used by automatic / background recall (Claude Code hook).
 
+        ``diversity`` (Phase T Stage 6) — diversified presentation for
+        ``explore``. ``None`` or ``<= 0.0`` (or
+        ``explore_diversified_presentation_enabled=False``) keeps the
+        legacy path bit-for-bit. A positive value draws the natural
+        candidate pool as the top ``top_k ×
+        explore_diversity_pool_multiplier`` slice of the already
+        wave-reached, already-scored results list — no additional search
+        runs and seed/wave reachability is untouched (plan non-goal) —
+        then applies the ``explore_min_semantic`` raw-cosine floor, and
+        selects the natural slots via canonical MMR (forced/injected
+        items keep the legacy ordering rules and are exempt from MMR).
+        A diversified
+        recall also bypasses the prefetch cache: the cache key does not
+        carry ``diversity``, and a cached diversified (or plain) entry
+        must not leak into the other selection mode.
+
         Either explicit argument bypasses the prefetch cache.
         """
         # MV2 — read-only transition: when the lease was lost, a query still
@@ -1069,7 +1109,15 @@ class GaOTTTEngine:
         if self._persist_blocked:
             passive = True
         k = top_k or self.config.top_k
-        if source_filter or persona_context or tag_filter or gamma_override is not None:
+        diversity_active = (
+            diversity is not None
+            and diversity > 0.0
+            and self.config.explore_diversified_presentation_enabled
+        )
+        if (
+            source_filter or persona_context or tag_filter or gamma_override is not None
+            or diversity_active
+        ):
             use_cache = False
         if use_cache:
             cached = self.prefetch_cache.get(text, k, wave_depth, wave_k)
@@ -1089,6 +1137,7 @@ class GaOTTTEngine:
             gamma_override=gamma_override,
             passive=passive,
             multi_source=multi_source,
+            diversity=diversity if diversity_active else None,
         )
         # A passive recall never writes the shared prefetch cache: a cached
         # passive result would let a subsequent active recall hit the cache
@@ -1111,6 +1160,7 @@ class GaOTTTEngine:
         gamma_override: float | None = None,
         passive: bool = False,
         multi_source: bool | None = None,
+        diversity: float | None = None,
     ) -> list[QueryResultItem]:
         # MV2 — when the lease was lost, force passive so mass / displacement
         # / co-occurrence / return_count updates are all skipped. Putting this
@@ -1120,6 +1170,11 @@ class GaOTTTEngine:
         if self._persist_blocked:
             passive = True
         k = top_k
+        # Phase T Stage 6 — ``query()`` normalized a disabled flag or
+        # non-positive diversity to None, so any value here is active.
+        # Direct ``_query_internal`` callers (prefetch, dream loop) never
+        # pass diversity and keep the legacy path.
+        diversity_active = diversity is not None
         query_vec = self.embedder.encode_query(text)
 
         # Multi-Source Query — when enabled, segment the prompt into clauses
@@ -1226,19 +1281,50 @@ class GaOTTTEngine:
         # BM25 index hit for this query. Used only for the breakdown flag
         # (bm25_contributed) since BM25's actual additive contribution is
         # already folded into wave_score via _seed_boost RRF fusion.
+        #
+        # Phase T Stage 3 — the same single search now also feeds the direct
+        # relevance qualification (lexical axis). Qualification must not
+        # depend on the observability flag (Codex blocking #2), so the pool
+        # runs when either qualification flag is on even with
+        # ``expose_score_breakdown=False``; the expose-only legacy path keeps
+        # its wider ``max(len(reached_ids), 50)`` pool so ``bm25_contributed``
+        # stays bit-identical when qualification is off.
+        qualification_active = (
+            self.config.direct_qualification_enabled
+            or self.config.ttt_qualification_enabled
+        )
         bm25_hit_ids: set[str] = set()
+        bm25_pool_scores: dict[str, float] = {}
+        bm25_pool_top = 0.0
         if (
-            self.config.expose_score_breakdown
+            (qualification_active or self.config.expose_score_breakdown)
             and self.config.hybrid_bm25_enabled
             and self.bm25_index is not None
             and self.bm25_index.size > 0
             and text
         ):
             try:
-                bm25_hits = self.bm25_index.search(text, max(len(reached_ids), 50))
+                pool_n = (
+                    self.config.direct_bm25_pool_size
+                    if qualification_active
+                    else max(len(reached_ids), 50)
+                )
+                bm25_hits = self.bm25_index.search(text, pool_n)
                 bm25_hit_ids = {nid for nid, _ in bm25_hits}
+                bm25_pool_scores = dict(bm25_hits)
+                if bm25_pool_scores:
+                    bm25_pool_top = max(bm25_pool_scores.values())
             except Exception:
                 bm25_hit_ids = set()
+                bm25_pool_scores = {}
+                bm25_pool_top = 0.0
+
+        # Phase T Stage 3 — per-node qualification verdicts and learning
+        # confidences, computed inside the scoring loop below. Empty (and
+        # never consulted) when both qualification flags are OFF — the
+        # legacy path stays bit-for-bit identical.
+        qualification_map: dict[str, bool] = {}
+        learn_confidences: dict[str, float] = {}
 
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
@@ -1266,8 +1352,50 @@ class GaOTTTEngine:
                 float(np.dot(query_vec_flat, original_emb)) / (q_norm * emb_norm)
             )
 
+            # Phase T Stage 3 — normalized virtual cosine (NEW computation;
+            # ``gravity_sim`` above keeps its non-normalized dot contract
+            # unchanged) and the per-node relevance qualification. Skipped
+            # entirely when both qualification flags are OFF.
+            virtual_cos_norm: float | None = None
+            node_qualified: bool | None = None
+            if qualification_active:
+                vp_norm = float(np.linalg.norm(virtual_pos))
+                virtual_cos_norm = (
+                    float(np.dot(query_vec_flat, virtual_pos))
+                    / (q_norm * vp_norm)
+                    if vp_norm > 0.0
+                    else 0.0
+                )
+                bm25_sc = bm25_pool_scores.get(node_id, 0.0)
+                lexical = compute_lexical_strength(bm25_sc, bm25_pool_top)
+                node_qualified = is_direct_qualified(
+                    pure_raw_cosines[node_id], virtual_cos_norm, bm25_sc, lexical,
+                    self.config.direct_raw_cosine_min,
+                    self.config.direct_virtual_cosine_min,
+                    self.config.direct_bm25_absolute_min,
+                    self.config.direct_bm25_relative_min,
+                )
+                qualification_map[node_id] = node_qualified
+                learn_confidences[node_id] = qualification_confidence(
+                    pure_raw_cosines[node_id], virtual_cos_norm, bm25_sc, lexical,
+                    self.config.direct_raw_cosine_min,
+                    self.config.direct_virtual_cosine_min,
+                    self.config.direct_bm25_absolute_min,
+                    self.config.direct_bm25_relative_min,
+                )
+
             mass_boost = compute_mass_boost(state.mass, self.config.alpha)
-            decay = compute_decay(state.last_access, now, self.config.delta)
+            # Phase T Stage 2 — semantic decay contract: half-life + floor
+            # (default) or the legacy per-second ``delta`` rate (flag off =
+            # bit-for-bit legacy path, unclamped future timestamps included).
+            if self.config.semantic_halflife_enabled:
+                decay = compute_semantic_factor(
+                    state.last_access, now,
+                    self.config.semantic_half_life_seconds,
+                    self.config.semantic_floor,
+                )
+            else:
+                decay = compute_decay(state.last_access, now, self.config.delta)
             wave_boost = self.config.wave_boost_weight * reached[node_id]
             emotion_boost = compute_emotion_boost(
                 state.emotion_weight, self.config.emotion_alpha,
@@ -1309,6 +1437,27 @@ class GaOTTTEngine:
                     persona_proximity=persona_prox,
                     bm25_contributed=node_id in bm25_hit_ids,
                     forced_inclusion=bool(injected_ids and node_id in injected_ids),
+                    # Phase T Stage 3 — informational qualification fields
+                    # (never enter final_score / expected_sum). ``lensing_gap``
+                    # doubles as the query-path gap signal
+                    # ``virtual_cos_norm - raw_cos`` when qualification ran;
+                    # the ambient lensing slot overwrites it with its own gap.
+                    qualified=node_qualified,
+                    direct_score=(
+                        virtual_cos_norm * decay
+                        if virtual_cos_norm is not None
+                        else None
+                    ),
+                    field_score=(
+                        wave_boost + mass_boost + emotion_boost + certainty_boost
+                        if virtual_cos_norm is not None
+                        else None
+                    ),
+                    lensing_gap=(
+                        virtual_cos_norm - pure_raw_cosines[node_id]
+                        if virtual_cos_norm is not None
+                        else 0.0
+                    ),
                 )
 
             results.append(
@@ -1321,6 +1470,20 @@ class GaOTTTEngine:
                     score_breakdown=breakdown,
                 )
             )
+
+        if not results and reached_ids and self.cache.node_cache:
+            reached_in_store = sum(
+                1 for node_id in reached_ids
+                if self.cache.get_node(node_id) is not None
+            )
+            if reached_in_store == 0:
+                raise RuntimeError(
+                    "Semantic retrieval index/store mismatch: FAISS returned "
+                    f"{len(reached_ids)} node IDs, but none exist in the active "
+                    "SQLite cache. The FAISS files likely belong to a different "
+                    "database snapshot. Stop all GaOTTT processes, run "
+                    "`scripts/rebuild_faiss_from_db.py --apply`, then restart."
+                )
 
         # Step 4: Sort and take top-K for presentation to LLM.
         # Phase J Stage 2: when explicit injection is requested, force the
@@ -1394,13 +1557,43 @@ class GaOTTTEngine:
                     reverse=True,
                 )
             others.sort(key=lambda r: r.final_score, reverse=True)
+            if self.config.direct_qualification_enabled:
+                # Phase T Stage 3 — qualified-first partition on the natural
+                # items only; the forced set keeps the Phase J rule above.
+                others.sort(
+                    key=lambda r: 0 if qualification_map.get(r.id) else 1,
+                )
             if len(forced) >= k:
                 results = forced[:k]
             else:
-                results = forced + others[: k - len(forced)]
+                n_rest = k - len(forced)
+                if diversity_active:
+                    # Phase T Stage 6 — forced slots are decided; the natural
+                    # slots go through the diversified MMR selection.
+                    results = forced + self._select_diverse_natural(
+                        others, pure_raw_cosines, original_embs,
+                        top_k=k, n_select=n_rest, diversity=diversity,
+                        preselected_ids=[r.id for r in forced],
+                    )
+                else:
+                    results = forced + others[:n_rest]
         else:
             results.sort(key=lambda r: r.final_score, reverse=True)
-            results = results[:k]
+            if self.config.direct_qualification_enabled:
+                # Phase T Stage 3 — stable secondary sort: qualified natural
+                # items (final_score desc, from the sort above) precede
+                # fallback picks (final_score desc). Result count is
+                # unchanged — fallback items still fill the top_k slots.
+                results.sort(
+                    key=lambda r: 0 if qualification_map.get(r.id) else 1,
+                )
+            if diversity_active:
+                results = self._select_diverse_natural(
+                    results, pure_raw_cosines, original_embs,
+                    top_k=k, n_select=k, diversity=diversity,
+                )
+            else:
+                results = results[:k]
 
         # Step 5: Update return_count for presented nodes + habituation recovery for all.
         # Synthetic recalls (Phase G dream loop) skip return_count so that
@@ -1460,14 +1653,47 @@ class GaOTTTEngine:
         # co-occurrence so automatic / background queries never become an
         # uncontrolled TTT signal. The delta block below then reports zeros,
         # which is the honest answer (nothing moved).
+        #
+        # Phase T Stage 4 — the query-conditioned updates inside the
+        # simulation (mass growth, query kick) apply only to the qualified
+        # learn set; maintenance (last_access / evaporation / sim_history /
+        # temperature / orbital N-body) stays all-reached. learn_ids is None
+        # — legacy all-reached learning — when the gate is off, the recall
+        # is passive, or the recall is synthetic: dream-loop rehearsal is
+        # self-directed maintenance, not a user-query gradient path, so it
+        # is exempt from the qualification gate (plan §3 Stage 4).
+        learn_ids: list[str] | None = None
+        learn_conf_map: dict[str, float] | None = None
+        if (
+            not passive
+            and self.config.ttt_qualification_enabled
+            and not _is_synthetic
+        ):
+            learn_ids = [
+                nid for nid in all_reached_ids
+                if qualification_map.get(nid, False)
+            ]
+            learn_conf_map = {
+                nid: learn_confidences.get(nid, 0.0) for nid in learn_ids
+            }
         if not passive:
             self._update_simulation(
                 all_reached_ids, reached, original_embs, now,
                 query_anchor=query_vec_flat,
                 wave_attribution=wave_attribution,
                 gamma_override=gamma_override,
+                learn_ids=learn_ids,
+                learn_confidences=learn_conf_map,
             )
-            self._update_cooccurrence(result_ids)
+            if learn_ids is not None:
+                # cooccurrence: presented ∩ learn set (presentation contract
+                # + relevance)
+                learn_set = set(learn_ids)
+                self._update_cooccurrence(
+                    [nid for nid in result_ids if nid in learn_set]
+                )
+            else:
+                self._update_cooccurrence(result_ids)
 
         if delta_active:
             disp_changes: dict[str, float] = {}
@@ -1497,6 +1723,73 @@ class GaOTTTEngine:
 
         return results
 
+    def _select_diverse_natural(
+        self,
+        ordered: list[QueryResultItem],
+        pure_raw_cosines: dict[str, float],
+        original_embs: dict[str, np.ndarray],
+        *,
+        top_k: int,
+        n_select: int,
+        diversity: float,
+        preselected_ids: list[str] | None = None,
+    ) -> list[QueryResultItem]:
+        """Phase T Stage 6 — canonical MMR over the widened natural pool.
+
+        ``ordered`` arrives in legacy presentation order (final_score
+        desc; Stage 3 qualified-first already applied when enabled). The
+        "widened pool" is not a second search: it is the top ``top_k ×
+        explore_diversity_pool_multiplier`` entries of ``ordered`` —
+        the same wave-reached, fully scored results list the legacy
+        path ranks — so seed/wave reachability is bit-identical between
+        the two modes; only the presentation cut differs. The cut is
+        further filtered by the ``explore_min_semantic`` raw-cosine
+        floor — lateral exploration still owes the query minimum
+        relevance.
+        Forced ids never pass through here as candidates: they occupy
+        their slots via the legacy rules and only enter MMR as
+        ``preselected_ids`` (redundancy + cluster-penalty reference, see
+        ``diversity.mmr_select``).
+
+        Presentation-derived updates (return_count / co-occurrence /
+        training delta topk coverage) consume the returned selection —
+        by construction only the MMR-presented ids.
+        """
+        cfg = self.config
+        pool_k = top_k * cfg.explore_diversity_pool_multiplier
+        pool_items = ordered[:pool_k]
+        floored_ids = apply_relevance_floor(
+            [r.id for r in pool_items],
+            pure_raw_cosines,
+            cfg.explore_min_semantic,
+        )
+        if not floored_ids:
+            return []
+        floored_set = set(floored_ids)
+        relevance = normalize_relevance(
+            {r.id: r.final_score for r in pool_items if r.id in floored_set},
+        )
+        preselected = list(preselected_ids or ())
+        # ``original_embs`` covers every scored (hence every pool and
+        # forced) node — Step 2 fetched vectors for the whole wave reach.
+        embeddings = {
+            nid: original_embs[nid]
+            for nid in [*floored_ids, *preselected]
+            if nid in original_embs
+        }
+        picked = mmr_select(
+            floored_ids,
+            relevance,
+            embeddings,
+            diversity=diversity,
+            cohort_penalty=cfg.explore_cohort_penalty,
+            cluster_key_of=lambda nid: cluster_key_from_cache(self.cache, nid),
+            n_select=n_select,
+            preselected=preselected,
+        )
+        by_id = {r.id: r for r in pool_items}
+        return [by_id[nid] for nid in picked if nid in by_id]
+
     def _update_simulation(
         self,
         all_reached_ids: list[str],
@@ -1506,16 +1799,28 @@ class GaOTTTEngine:
         query_anchor: np.ndarray | None = None,
         wave_attribution: dict[str, dict[str, float]] | None = None,
         gamma_override: float | None = None,
+        learn_ids: list[str] | None = None,
+        learn_confidences: dict[str, float] | None = None,
     ) -> None:
         """Update gravity simulation for ALL wave-reached nodes.
 
         This is the simulation layer: every node the wave touched gets
         mass/temperature updates and orbital mechanics (acceleration → velocity → position).
         Like dark matter, these invisible updates reshape the gravitational field.
+
+        Phase T Stage 4 — update-category split. ``learn_ids=None`` keeps
+        the legacy contract (every reached node learns, confidence 1.0).
+        With a learn set:
+          - all reached: evaporation, sim_history, temperature,
+            last_access, orbital N-body participation
+          - learn set only: mass growth (scaled by the passing-axis
+            margin ``learn_confidences``) and the query kick (gated
+            per-node via ``query_scores`` — absent key ⇒ no kick)
         """
         dim = self.config.embedding_dim
         masses = {}
         last_accesses = {}
+        learn_set = set(learn_ids) if learn_ids is not None else None
 
         for node_id in all_reached_ids:
             state = self.cache.get_node(node_id)
@@ -1558,8 +1863,21 @@ class GaOTTTEngine:
                 state.mass, state.last_access, now, self.config,
             )
 
-            # Mass update scaled by external (non-self) force only.
-            state.mass += self.config.eta * mass_force * (1.0 - state.mass / self.config.m_max)
+            # Phase T Stage 4 — mass growth is query-conditioned learning:
+            # only the qualified learn set grows, scaled by the passing-axis
+            # margin confidence (1.0-equivalent when the gate is off, so the
+            # legacy formula is reproduced exactly). Maintenance around this
+            # line (evaporation above, sim_history / temperature /
+            # last_access below) stays all-reached.
+            if learn_set is None:
+                state.mass += self.config.eta * mass_force * (
+                    1.0 - state.mass / self.config.m_max
+                )
+            elif node_id in learn_set:
+                confidence = (learn_confidences or {}).get(node_id, 0.0)
+                state.mass += self.config.eta * mass_force * confidence * (
+                    1.0 - state.mass / self.config.m_max
+                )
 
             # Sim history ring buffer
             state.sim_history.append(force)
@@ -1596,7 +1914,19 @@ class GaOTTTEngine:
                 masses, last_accesses, now, self.config,
                 cache=self.cache,
                 query_anchor=query_anchor,
-                query_scores=reached if query_anchor is not None else None,
+                # Phase T Stage 4 — query kick (query-conditioned learning)
+                # applies only to the learn set; absent keys gate the kick
+                # per node (gravity.update_orbital_state: query_scores.get
+                # → None → no kick). N-body participants stay all-reached.
+                query_scores=(
+                    (
+                        {nid: reached[nid] for nid in learn_ids if nid in reached}
+                        if learn_ids is not None
+                        else reached
+                    )
+                    if query_anchor is not None
+                    else None
+                ),
             )
 
             for nid in new_disps:

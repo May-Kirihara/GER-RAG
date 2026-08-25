@@ -224,6 +224,7 @@ opencode.json
 
 # Perf / dynamics diagnostics (project-local, transient — keep baselines/ JSON only)
 .perf-baseline-tmp/
+.score-baseline-tmp/
 .perf-acceptance/
 .diag-tmp/
 .diag-dynamics-a/

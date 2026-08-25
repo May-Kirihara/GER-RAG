@@ -123,6 +123,14 @@ class ScoreBreakdown(BaseModel):
     lensing_gap: float = 0.0         # informational: ambient lensing-pick gap signal (0 if not lensing slot)
     dormant_percentile: float | None = None  # informational: percentile rank if dormant surface, None otherwise
     reason: str | None = None        # Stage 1: 1-line human-readable explanation of why this scored
+    # Phase T Stage 3 — direct relevance qualification (informational, does
+    # not enter final_score / expected_sum). Populated whenever at least one
+    # qualification flag is on, independent of expose_score_breakdown
+    # reporting. In the engine query path ``lensing_gap`` above is populated
+    # as ``virtual_cos_norm - raw_cos`` for the same nodes.
+    qualified: bool | None = None    # None = both qualification flags OFF (legacy); False = fallback pick
+    direct_score: float | None = None  # pre-saturation virtual_cos_norm * decay_factor
+    field_score: float | None = None   # pre-saturation wave + mass + emotion + certainty
 
     @property
     def expected_sum(self) -> float:
@@ -461,9 +469,38 @@ class AmbientRecallRequest(BaseModel):
     recently_surfaced: dict[str, int] | None = None
 
 
+class AmbientGateDiagnostics(BaseModel):
+    """Phase T Stage 5 — staged ambient-gate diagnostics.
+
+    Populated by ``ambient_recall`` on EVERY return (empty or not) so a
+    caller can triage silence: was the pool empty, did tag/dump exclusion
+    empty it, or did the relevance gate reject candidates that existed?
+    Counts are staged in pipeline order; the gate inputs follow.
+    """
+    # staged candidate counts (pipeline order)
+    candidates_generated: int = 0     # passive recall pool size (pre-exclusion)
+    after_tag_exclusion: int = 0
+    after_dump_filter: int = 0
+    semantic_qualified: int = 0       # pool items with virtual ≥ threshold OR raw ≥ raw_min
+    direct_selected: int = 0
+    lensing_selected: int = 0
+    # gate inputs / verdicts (None = axis not computed: gate index
+    # unavailable for bm25, no breakdown for raw cosine)
+    bm25_top_score: float | None = None
+    bm25_gate: bool | None = None     # True/False/None (None = gate index unusable)
+    semantic_max_virtual: float | None = None
+    semantic_max_raw: float | None = None
+    # discrete, unique empty reason — None means the response is not empty.
+    # "bm25_veto" (legacy flag off, bm25 reject → immediate empty) /
+    # "bm25_and_semantic_below_threshold" / "no_candidates" (recall 0 件) /
+    # "all_tag_excluded" / "all_dump_filtered".
+    empty_reason: str | None = None
+
+
 class AmbientRecallResponse(BaseModel):
     """Structured ambient-recall block. ``count == 0`` means the relevance
-    gate suppressed injection (nothing relevant enough surfaced).
+    gate suppressed injection (nothing relevant enough surfaced) — check
+    ``gate_diagnostics.empty_reason`` for which stage produced the silence.
 
     Lateral Association Stage 3 (2026-05-25) — ``lensing`` is now a list to
     host top-K picks (capped by ``config.ambient_lensing_max_k``, default 2).
@@ -481,6 +518,14 @@ class AmbientRecallResponse(BaseModel):
     tensions: list[AmbientTension] = Field(default_factory=list)  # ⑤ contradicts pairs (Stage 2)
     persona: AmbientPersona | None = None                         # ⑥ persona grounding (Stage 3)
     count: int = 0                                                # total memories surfaced
+    # Phase T Stage 5 — always populated by ``ambient_recall`` (even when
+    # count > 0; the cost is a handful of ints) so callers can triage empty
+    # returns and observe gate inputs on successful ones.
+    gate_diagnostics: AmbientGateDiagnostics | None = None
+    # Echo of the request flag: transport formatters receive only this
+    # response, and the diagnostic line is opt-in (token budget) — the
+    # default-off wire format stays byte-identical.
+    expose_breakdown: bool = False
 
 
 # --- Relations service ---

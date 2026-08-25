@@ -1,0 +1,2312 @@
+{
+  "script": "scripts/score_baseline.py",
+  "purpose": "Phase T Stage 1 — retrieval-quality baseline (before Stage 2-6)",
+  "captured_at": "2026-08-25T17:37:37",
+  "git_sha": "9cf6eeb",
+  "engine": {
+    "embedder": {
+      "class": "RuriEmbedder",
+      "model": "cl-nagoya/ruri-v3-310m",
+      "dimension": 768,
+      "device": "cuda:0"
+    },
+    "corpus": {
+      "synthetic_chunks.jsonl": 30,
+      "ambient_corpus.jsonl": 12
+    },
+    "faiss_size": 42,
+    "bm25_size": 42,
+    "ambient_gate_index_size": 42,
+    "config": {
+      "alpha": 0.05,
+      "delta": 0.01,
+      "gamma": 0.5,
+      "saturation_rate": 0.2,
+      "wave_boost_weight": 0.05,
+      "wave_initial_k": 3,
+      "wave_max_depth": 3,
+      "emotion_alpha": 0.04,
+      "certainty_alpha": 0.02,
+      "certainty_half_life_seconds": 2592000.0,
+      "hybrid_bm25_enabled": true,
+      "bm25_k1": 1.5,
+      "bm25_b": 0.75,
+      "bm25_tokenizer": "trigram",
+      "virtual_faiss_enabled": true,
+      "expose_score_breakdown": true,
+      "ambient_gate_use_bm25": true,
+      "ambient_gate_tokenizer": "sudachi",
+      "ambient_bm25_min_score": 32.0,
+      "ambient_min_score": 0.7,
+      "ambient_novelty_decay": 0.7,
+      "ambient_conversational_source_factor": 0.5,
+      "ambient_dump_symbol_ratio": 0.45,
+      "ambient_lensing_enabled": true,
+      "ambient_lensing_min_score": 0.5,
+      "ambient_lensing_min_gap": 0.05,
+      "ambient_lensing_max_k": 2,
+      "ambient_lensing_resonance_min": 0.0,
+      "ambient_lensing_resonance_scale": 10.0,
+      "ambient_dormant_slot_enabled": true,
+      "ambient_dormant_slot_count": 1,
+      "ambient_dormant_relevance_floor": 0.5,
+      "dormant_mass_threshold": 2.0,
+      "dormant_mass_percentile": 10.0,
+      "dormant_age_threshold_seconds": 604800.0,
+      "ambient_persona_enabled": true,
+      "ambient_persona_min_relevance": 0.65,
+      "ambient_persona_pool_size": 10,
+      "ambient_persona_mass_weight": 0.3,
+      "direct_hit_anti_hub_lambda": 0.4,
+      "semantic_halflife_enabled": true,
+      "semantic_half_life_seconds": 604800.0,
+      "semantic_floor": 0.35,
+      "genesis_kick_enabled": false,
+      "supernova_enabled": false,
+      "dream_enabled": false,
+      "mass_conservation_enabled": false,
+      "mass_bh_enabled": false,
+      "persona_boost_enabled": false,
+      "multi_source_enabled": true,
+      "multi_source_ambient_enabled": true
+    }
+  },
+  "measurement": {
+    "recall_call": "engine.query(text=q, top_k=100, passive=True, wave_k=50)",
+    "wave_k_rationale": "perf helper 既定の wave_initial_k=3 では top-100 を要求しても seed pool が ~4 件に絞られ threshold 較正にならないため、corpus 全件を seed 化する wave_k を明示。ambient / Jaccard 測定は service 既定 wave params のまま (production faithful)。",
+    "ambient_mirror_pool": "engine.query(text=q, top_k=10, passive=True) — ambient_recall 内部 (direct_k=2 → pool_k=10) と同じ形状",
+    "synthetic_age_seconds": 604800.0,
+    "synthetic_backdated_nodes": 42,
+    "synthetic_age_note": "--synthetic-age-seconds 指定時、測定前に全 active node の last_access を一斉 backdate した (passive 測定のみなので 測定中の書き換えなし)。per-query の age_seconds_at_query は ingest からの実経過秒のままなので、decay 分布の解釈には synthetic_age_seconds を優先すること。",
+    "passive_only": true
+  },
+  "caveats": [
+    "decay_factor は ingest からの経過秒で決まる (現行 delta は秒 rate 契約)。run の wall-clock が変わると decay 分布は変わるため、before/after 比較では per-query の age_seconds_at_query を参照。",
+    "passive 測定のみなので displacement / temperature はほぼ 0 — vcos_norm ≈ raw_cos が期待値。Stage 2-6 後の再測定も同一手順で。",
+    "ambient gate の word-BM25 threshold は本番 corpus scale で較正済み。42-doc の golden corpus では veto になりやすく、gate_off 列で slot 構成を別途観察する。"
+  ],
+  "run_seconds": 3.310411,
+  "n_queries": 11,
+  "n_ambient_queries": 8,
+  "score_contributions": {
+    "terms": [
+      "semantic",
+      "wave",
+      "mass",
+      "emotion",
+      "certainty"
+    ],
+    "note": "share = term / sum(additive terms) (= term / final_score when saturation=1)。additive_sum<=0 の node は除外 (skipped 参照)。",
+    "overall": {
+      "semantic": {
+        "mean": 0.832433,
+        "p50": 0.831269,
+        "p90": 0.840933
+      },
+      "wave": {
+        "mean": 0.080055,
+        "p50": 0.080598,
+        "p90": 0.083296
+      },
+      "mass": {
+        "mean": 0.05549,
+        "p50": 0.055866,
+        "p90": 0.057737
+      },
+      "emotion": {
+        "mean": 0.0,
+        "p50": 0.0,
+        "p90": 0.0
+      },
+      "certainty": {
+        "mean": 0.032022,
+        "p50": 0.032239,
+        "p90": 0.033318
+      },
+      "decay_factor": {
+        "min": 0.675,
+        "median": 0.675,
+        "max": 0.675
+      },
+      "saturation": {
+        "mean": 1.0,
+        "p50": 1.0,
+        "p90": 1.0
+      },
+      "n_results_pooled": 462
+    },
+    "per_query": [
+      {
+        "query": "Eleventy Pipeline",
+        "n_results": 42,
+        "age_seconds_at_query": 0.000242,
+        "shares": {
+          "semantic": {
+            "mean": 0.834062,
+            "p50": 0.832763,
+            "p90": 0.840933
+          },
+          "wave": {
+            "mean": 0.079277,
+            "p50": 0.079892,
+            "p90": 0.081217
+          },
+          "mass": {
+            "mean": 0.05495,
+            "p50": 0.055377,
+            "p90": 0.056295
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.031711,
+            "p50": 0.031957,
+            "p90": 0.032487
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_001",
+            "tags": [
+              "eleventy",
+              "static-site"
+            ],
+            "final_score": 0.71135
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_011",
+            "tags": [
+              "eleventy",
+              "data-cascade"
+            ],
+            "final_score": 0.683465
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_013",
+            "tags": [
+              "eleventy",
+              "plugins"
+            ],
+            "final_score": 0.679872
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_012",
+            "tags": [
+              "eleventy",
+              "templates"
+            ],
+            "final_score": 0.677995
+          },
+          {
+            "rank": 5,
+            "fixture_id": "int_parity",
+            "tags": [
+              "intentions"
+            ],
+            "final_score": 0.657946
+          }
+        ]
+      },
+      {
+        "query": "Sicily naval landing",
+        "n_results": 42,
+        "age_seconds_at_query": 0.136086,
+        "shares": {
+          "semantic": {
+            "mean": 0.833575,
+            "p50": 0.832009,
+            "p90": 0.840897
+          },
+          "wave": {
+            "mean": 0.07951,
+            "p50": 0.080154,
+            "p90": 0.082114
+          },
+          "mass": {
+            "mean": 0.055112,
+            "p50": 0.055559,
+            "p90": 0.056917
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.031804,
+            "p50": 0.032062,
+            "p90": 0.032845
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_002",
+            "tags": [
+              "history",
+              "sicily"
+            ],
+            "final_score": 0.699463
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_021",
+            "tags": [
+              "history",
+              "sicily",
+              "patton"
+            ],
+            "final_score": 0.689212
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_022",
+            "tags": [
+              "history",
+              "italy",
+              "wwii"
+            ],
+            "final_score": 0.666984
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_023",
+            "tags": [
+              "history",
+              "mediterranean",
+              "wwii"
+            ],
+            "final_score": 0.659146
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_062",
+            "tags": [
+              "history",
+              "ja",
+              "cross-vocabulary"
+            ],
+            "final_score": 0.657794
+          }
+        ]
+      },
+      {
+        "query": "guanciale pecorino eggs",
+        "n_results": 42,
+        "age_seconds_at_query": 0.171504,
+        "shares": {
+          "semantic": {
+            "mean": 0.831904,
+            "p50": 0.830428,
+            "p90": 0.839655
+          },
+          "wave": {
+            "mean": 0.080308,
+            "p50": 0.080587,
+            "p90": 0.083298
+          },
+          "mass": {
+            "mean": 0.055665,
+            "p50": 0.055858,
+            "p90": 0.057738
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032123,
+            "p50": 0.032235,
+            "p90": 0.033319
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_005",
+            "tags": [
+              "cooking",
+              "italian"
+            ],
+            "final_score": 0.684899
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_054",
+            "tags": [
+              "cooking",
+              "italian",
+              "ingredients"
+            ],
+            "final_score": 0.672831
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_053",
+            "tags": [
+              "cooking",
+              "technique",
+              "eggs"
+            ],
+            "final_score": 0.669779
+          },
+          {
+            "rank": 4,
+            "fixture_id": "agent_unrelated",
+            "tags": [
+              "cooking"
+            ],
+            "final_score": 0.668667
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_051",
+            "tags": [
+              "cooking",
+              "italian",
+              "technique"
+            ],
+            "final_score": 0.652701
+          }
+        ]
+      },
+      {
+        "query": "Hebbian learning",
+        "n_results": 42,
+        "age_seconds_at_query": 0.202817,
+        "shares": {
+          "semantic": {
+            "mean": 0.83176,
+            "p50": 0.830569,
+            "p90": 0.837389
+          },
+          "wave": {
+            "mean": 0.080377,
+            "p50": 0.080629,
+            "p90": 0.083106
+          },
+          "mass": {
+            "mean": 0.055713,
+            "p50": 0.055888,
+            "p90": 0.057605
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032151,
+            "p50": 0.032252,
+            "p90": 0.033242
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_031",
+            "tags": [
+              "neuro",
+              "hebbian"
+            ],
+            "final_score": 0.702328
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_044",
+            "tags": [
+              "gaottt-retrieval",
+              "wave"
+            ],
+            "final_score": 0.650081
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_042",
+            "tags": [
+              "embedding",
+              "retrieval",
+              "semantic"
+            ],
+            "final_score": 0.647214
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_034",
+            "tags": [
+              "neuro",
+              "ttt"
+            ],
+            "final_score": 0.644144
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_033",
+            "tags": [
+              "gaottt-philosophy",
+              "neuro"
+            ],
+            "final_score": 0.643604
+          }
+        ]
+      },
+      {
+        "query": "Reciprocal Rank Fusion",
+        "n_results": 42,
+        "age_seconds_at_query": 0.235449,
+        "shares": {
+          "semantic": {
+            "mean": 0.833717,
+            "p50": 0.833473,
+            "p90": 0.839
+          },
+          "wave": {
+            "mean": 0.079442,
+            "p50": 0.079421,
+            "p90": 0.082938
+          },
+          "mass": {
+            "mean": 0.055065,
+            "p50": 0.055051,
+            "p90": 0.057488
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.031777,
+            "p50": 0.031768,
+            "p90": 0.033175
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_043",
+            "tags": [
+              "rrf",
+              "retrieval",
+              "fusion"
+            ],
+            "final_score": 0.730606
+          },
+          {
+            "rank": 2,
+            "fixture_id": "agent_phase_l",
+            "tags": [
+              "phase-l",
+              "retrieval"
+            ],
+            "final_score": 0.661528
+          },
+          {
+            "rank": 3,
+            "fixture_id": "int_refinement",
+            "tags": [
+              "intentions"
+            ],
+            "final_score": 0.655476
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_033",
+            "tags": [
+              "gaottt-philosophy",
+              "neuro"
+            ],
+            "final_score": 0.653562
+          },
+          {
+            "rank": 5,
+            "fixture_id": "agent_gravity",
+            "tags": [
+              "physics",
+              "gravity"
+            ],
+            "final_score": 0.650047
+          }
+        ]
+      },
+      {
+        "query": "static-site generator configuration .eleventy.js",
+        "n_results": 42,
+        "age_seconds_at_query": 0.273031,
+        "shares": {
+          "semantic": {
+            "mean": 0.833104,
+            "p50": 0.831143,
+            "p90": 0.843255
+          },
+          "wave": {
+            "mean": 0.079734,
+            "p50": 0.079904,
+            "p90": 0.083064
+          },
+          "mass": {
+            "mean": 0.055268,
+            "p50": 0.055385,
+            "p90": 0.057576
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.031894,
+            "p50": 0.031961,
+            "p90": 0.033226
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_013",
+            "tags": [
+              "eleventy",
+              "plugins"
+            ],
+            "final_score": 0.713675
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_014",
+            "tags": [
+              "static-site",
+              "build"
+            ],
+            "final_score": 0.692018
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_001",
+            "tags": [
+              "eleventy",
+              "static-site"
+            ],
+            "final_score": 0.691545
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_012",
+            "tags": [
+              "eleventy",
+              "templates"
+            ],
+            "final_score": 0.677171
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_011",
+            "tags": [
+              "eleventy",
+              "data-cascade"
+            ],
+            "final_score": 0.667691
+          }
+        ]
+      },
+      {
+        "query": "1943 Mediterranean WWII campaign",
+        "n_results": 42,
+        "age_seconds_at_query": 0.309132,
+        "shares": {
+          "semantic": {
+            "mean": 0.831056,
+            "p50": 0.828736,
+            "p90": 0.846934
+          },
+          "wave": {
+            "mean": 0.080713,
+            "p50": 0.081796,
+            "p90": 0.084457
+          },
+          "mass": {
+            "mean": 0.055946,
+            "p50": 0.056697,
+            "p90": 0.058541
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032285,
+            "p50": 0.032718,
+            "p90": 0.033783
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_023",
+            "tags": [
+              "history",
+              "mediterranean",
+              "wwii"
+            ],
+            "final_score": 0.728559
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_002",
+            "tags": [
+              "history",
+              "sicily"
+            ],
+            "final_score": 0.719674
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_062",
+            "tags": [
+              "history",
+              "ja",
+              "cross-vocabulary"
+            ],
+            "final_score": 0.714651
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_024",
+            "tags": [
+              "history",
+              "sicily",
+              "terrain"
+            ],
+            "final_score": 0.711389
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_021",
+            "tags": [
+              "history",
+              "sicily",
+              "patton"
+            ],
+            "final_score": 0.683741
+          }
+        ]
+      },
+      {
+        "query": "BM25 lexical scoring",
+        "n_results": 42,
+        "age_seconds_at_query": 0.34202,
+        "shares": {
+          "semantic": {
+            "mean": 0.832137,
+            "p50": 0.831468,
+            "p90": 0.838378
+          },
+          "wave": {
+            "mean": 0.080197,
+            "p50": 0.08044,
+            "p90": 0.082435
+          },
+          "mass": {
+            "mean": 0.055588,
+            "p50": 0.055756,
+            "p90": 0.05714
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032079,
+            "p50": 0.032176,
+            "p90": 0.032974
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_041",
+            "tags": [
+              "bm25",
+              "retrieval",
+              "lexical"
+            ],
+            "final_score": 0.697616
+          },
+          {
+            "rank": 2,
+            "fixture_id": "agent_phase_l",
+            "tags": [
+              "phase-l",
+              "retrieval"
+            ],
+            "final_score": 0.662064
+          },
+          {
+            "rank": 3,
+            "fixture_id": "int_refinement",
+            "tags": [
+              "intentions"
+            ],
+            "final_score": 0.657123
+          },
+          {
+            "rank": 4,
+            "fixture_id": "agent_smoke",
+            "tags": [
+              "smoke-test"
+            ],
+            "final_score": 0.651691
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_042",
+            "tags": [
+              "embedding",
+              "retrieval",
+              "semantic"
+            ],
+            "final_score": 0.647544
+          }
+        ]
+      },
+      {
+        "query": "11ty 静的サイト",
+        "n_results": 42,
+        "age_seconds_at_query": 0.373925,
+        "shares": {
+          "semantic": {
+            "mean": 0.83471,
+            "p50": 0.833264,
+            "p90": 0.843907
+          },
+          "wave": {
+            "mean": 0.078967,
+            "p50": 0.07964,
+            "p90": 0.081847
+          },
+          "mass": {
+            "mean": 0.054736,
+            "p50": 0.055202,
+            "p90": 0.056732
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.031587,
+            "p50": 0.031856,
+            "p90": 0.032739
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_061",
+            "tags": [
+              "eleventy",
+              "ja",
+              "cross-vocabulary"
+            ],
+            "final_score": 0.7156
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_001",
+            "tags": [
+              "eleventy",
+              "static-site"
+            ],
+            "final_score": 0.712789
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_014",
+            "tags": [
+              "static-site",
+              "build"
+            ],
+            "final_score": 0.690631
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_012",
+            "tags": [
+              "eleventy",
+              "templates"
+            ],
+            "final_score": 0.686395
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_013",
+            "tags": [
+              "eleventy",
+              "plugins"
+            ],
+            "final_score": 0.670479
+          }
+        ]
+      },
+      {
+        "query": "シチリア 1943 上陸",
+        "n_results": 42,
+        "age_seconds_at_query": 0.406623,
+        "shares": {
+          "semantic": {
+            "mean": 0.829758,
+            "p50": 0.826916,
+            "p90": 0.848616
+          },
+          "wave": {
+            "mean": 0.081333,
+            "p50": 0.082596,
+            "p90": 0.085114
+          },
+          "mass": {
+            "mean": 0.056376,
+            "p50": 0.057251,
+            "p90": 0.058997
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032533,
+            "p50": 0.033038,
+            "p90": 0.034046
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_002",
+            "tags": [
+              "history",
+              "sicily"
+            ],
+            "final_score": 0.729348
+          },
+          {
+            "rank": 2,
+            "fixture_id": "chunk_062",
+            "tags": [
+              "history",
+              "ja",
+              "cross-vocabulary"
+            ],
+            "final_score": 0.724321
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_023",
+            "tags": [
+              "history",
+              "mediterranean",
+              "wwii"
+            ],
+            "final_score": 0.70886
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_024",
+            "tags": [
+              "history",
+              "sicily",
+              "terrain"
+            ],
+            "final_score": 0.703992
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_021",
+            "tags": [
+              "history",
+              "sicily",
+              "patton"
+            ],
+            "final_score": 0.691335
+          }
+        ]
+      },
+      {
+        "query": "Italian cooking technique",
+        "n_results": 42,
+        "age_seconds_at_query": 0.440762,
+        "shares": {
+          "semantic": {
+            "mean": 0.830985,
+            "p50": 0.829373,
+            "p90": 0.842917
+          },
+          "wave": {
+            "mean": 0.080747,
+            "p50": 0.081425,
+            "p90": 0.083608
+          },
+          "mass": {
+            "mean": 0.055969,
+            "p50": 0.05644,
+            "p90": 0.057953
+          },
+          "emotion": {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0
+          },
+          "certainty": {
+            "mean": 0.032299,
+            "p50": 0.03257,
+            "p90": 0.033443
+          }
+        },
+        "decay_factor": {
+          "min": 0.675,
+          "median": 0.675,
+          "max": 0.675
+        },
+        "saturation": {
+          "mean": 1.0,
+          "p50": 1.0,
+          "p90": 1.0
+        },
+        "skipped_zero_additive_sum": 0,
+        "top5": [
+          {
+            "rank": 1,
+            "fixture_id": "chunk_051",
+            "tags": [
+              "cooking",
+              "italian",
+              "technique"
+            ],
+            "final_score": 0.694598
+          },
+          {
+            "rank": 2,
+            "fixture_id": "agent_unrelated",
+            "tags": [
+              "cooking"
+            ],
+            "final_score": 0.673315
+          },
+          {
+            "rank": 3,
+            "fixture_id": "chunk_052",
+            "tags": [
+              "cooking",
+              "italian",
+              "rome"
+            ],
+            "final_score": 0.671098
+          },
+          {
+            "rank": 4,
+            "fixture_id": "chunk_053",
+            "tags": [
+              "cooking",
+              "technique",
+              "eggs"
+            ],
+            "final_score": 0.669263
+          },
+          {
+            "rank": 5,
+            "fixture_id": "chunk_005",
+            "tags": [
+              "cooking",
+              "italian"
+            ],
+            "final_score": 0.666257
+          }
+        ]
+      }
+    ]
+  },
+  "qualification": {
+    "axes": {
+      "raw_cos": "ScoreBreakdown.raw_cosine (deterministic)",
+      "virtual_cos_norm": "self-computed dot(q, v)/(|q||v|) via get_vectors + get_displacement + compute_virtual_position (temperature included, seeded noise)",
+      "lexical_rel": "bm25 score / bm25 top score (top-50 pool)"
+    },
+    "sweep_ranges": {
+      "raw": [
+        0.3,
+        0.35,
+        0.4,
+        0.45,
+        0.5,
+        0.55,
+        0.6,
+        0.65,
+        0.7
+      ],
+      "vcos_norm": [
+        0.4,
+        0.45,
+        0.5,
+        0.55,
+        0.6,
+        0.65,
+        0.7,
+        0.75,
+        0.8
+      ],
+      "rel": [
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6
+      ]
+    },
+    "provisional_thresholds": {
+      "raw": 0.45,
+      "vcos": 0.55,
+      "rel": 0.4
+    },
+    "pooled_distributions": {
+      "raw_cos": {
+        "n": 462,
+        "min": 0.69637,
+        "p10": 0.734237,
+        "p50": 0.763859,
+        "p90": 0.819687,
+        "max": 0.927331
+      },
+      "vcos_norm": {
+        "n": 462,
+        "min": 0.69637,
+        "p10": 0.734237,
+        "p50": 0.763859,
+        "p90": 0.819687,
+        "max": 0.927331
+      },
+      "lexical_rel": {
+        "n": 462,
+        "min": 0.0,
+        "p10": 0.0,
+        "p50": 0.026888,
+        "p90": 0.269222,
+        "max": 1.0
+      },
+      "lensing_gap": {
+        "n": 462,
+        "min": -0.0,
+        "p10": -0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "max": 0.0
+      }
+    },
+    "pooled_rates": {
+      "raw": {
+        "0.30": 1.0,
+        "0.35": 1.0,
+        "0.40": 1.0,
+        "0.45": 1.0,
+        "0.50": 1.0,
+        "0.55": 1.0,
+        "0.60": 1.0,
+        "0.65": 1.0,
+        "0.70": 0.995671
+      },
+      "vcos_norm": {
+        "0.40": 1.0,
+        "0.45": 1.0,
+        "0.50": 1.0,
+        "0.55": 1.0,
+        "0.60": 1.0,
+        "0.65": 1.0,
+        "0.70": 0.995671,
+        "0.75": 0.705628,
+        "0.80": 0.162338
+      },
+      "rel": {
+        "0.20": 0.138528,
+        "0.30": 0.090909,
+        "0.40": 0.073593,
+        "0.50": 0.062771,
+        "0.60": 0.041126
+      },
+      "or_provisional": 1.0
+    },
+    "per_query": [
+      {
+        "query": "Eleventy Pipeline",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.97619,
+            "0.80": 0.119048
+          },
+          "rel": {
+            "0.20": 0.095238,
+            "0.30": 0.095238,
+            "0.40": 0.047619,
+            "0.50": 0.047619,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 37.37297
+      },
+      {
+        "query": "Sicily naval landing",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.880952,
+            "0.80": 0.190476
+          },
+          "rel": {
+            "0.20": 0.071429,
+            "0.30": 0.047619,
+            "0.40": 0.047619,
+            "0.50": 0.047619,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 45.317614
+      },
+      {
+        "query": "guanciale pecorino eggs",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.738095,
+            "0.80": 0.142857
+          },
+          "rel": {
+            "0.20": 0.047619,
+            "0.30": 0.047619,
+            "0.40": 0.047619,
+            "0.50": 0.02381,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 58.281442
+      },
+      {
+        "query": "Hebbian learning",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.738095,
+            "0.80": 0.071429
+          },
+          "rel": {
+            "0.20": 0.02381,
+            "0.30": 0.02381,
+            "0.40": 0.02381,
+            "0.50": 0.02381,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 41.404716
+      },
+      {
+        "query": "Reciprocal Rank Fusion",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.761905,
+            "0.80": 0.261905
+          },
+          "rel": {
+            "0.20": 0.047619,
+            "0.30": 0.02381,
+            "0.40": 0.02381,
+            "0.50": 0.02381,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 52.478016
+      },
+      {
+        "query": "static-site generator configuration .eleventy.js",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.595238,
+            "0.80": 0.214286
+          },
+          "rel": {
+            "0.20": 0.190476,
+            "0.30": 0.071429,
+            "0.40": 0.071429,
+            "0.50": 0.071429,
+            "0.60": 0.071429
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 57.727154
+      },
+      {
+        "query": "1943 Mediterranean WWII campaign",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.52381,
+            "0.80": 0.142857
+          },
+          "rel": {
+            "0.20": 0.119048,
+            "0.30": 0.071429,
+            "0.40": 0.071429,
+            "0.50": 0.071429,
+            "0.60": 0.047619
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 45.18722
+      },
+      {
+        "query": "BM25 lexical scoring",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.785714,
+            "0.80": 0.119048
+          },
+          "rel": {
+            "0.20": 0.357143,
+            "0.30": 0.285714,
+            "0.40": 0.261905,
+            "0.50": 0.166667,
+            "0.60": 0.119048
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 14.342389
+      },
+      {
+        "query": "11ty 静的サイト",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.880952,
+            "0.80": 0.238095
+          },
+          "rel": {
+            "0.20": 0.071429,
+            "0.30": 0.047619,
+            "0.40": 0.02381,
+            "0.50": 0.02381,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 27.389993
+      },
+      {
+        "query": "シチリア 1943 上陸",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 0.952381
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 0.952381,
+            "0.75": 0.333333,
+            "0.80": 0.142857
+          },
+          "rel": {
+            "0.20": 0.095238,
+            "0.30": 0.02381,
+            "0.40": 0.02381,
+            "0.50": 0.02381,
+            "0.60": 0.02381
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 35.099401
+      },
+      {
+        "query": "Italian cooking technique",
+        "n_results": 42,
+        "rates": {
+          "raw": {
+            "0.30": 1.0,
+            "0.35": 1.0,
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0
+          },
+          "vcos_norm": {
+            "0.40": 1.0,
+            "0.45": 1.0,
+            "0.50": 1.0,
+            "0.55": 1.0,
+            "0.60": 1.0,
+            "0.65": 1.0,
+            "0.70": 1.0,
+            "0.75": 0.547619,
+            "0.80": 0.142857
+          },
+          "rel": {
+            "0.20": 0.404762,
+            "0.30": 0.261905,
+            "0.40": 0.166667,
+            "0.50": 0.166667,
+            "0.60": 0.047619
+          }
+        },
+        "or_qualified_provisional": 1.0,
+        "missing_raw_vector": 0,
+        "bm25_pool_top_score": 16.198437
+      }
+    ]
+  },
+  "ambient_gate": {
+    "note": "count は production gate 設定 (word-BM25 veto) での ambient_recall。count_gate_off は ambient_gate_use_bm25=False (virtual_score fallback gate) での測定。empty_reason_inferred は script 側推論。",
+    "queries": [
+      {
+        "query": "Eleventy Pipeline",
+        "source_file": "queries.json",
+        "axis": "surface",
+        "gate_bm25_top_score": 5.837786,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.898804,
+        "semantic_max_raw": 0.898804,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Sicily naval landing",
+        "source_file": "queries.json",
+        "axis": "surface",
+        "gate_bm25_top_score": 10.391666,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.881193,
+        "semantic_max_raw": 0.881193,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "guanciale pecorino eggs",
+        "source_file": "queries.json",
+        "axis": "surface",
+        "gate_bm25_top_score": 10.389966,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.859617,
+        "semantic_max_raw": 0.859617,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Hebbian learning",
+        "source_file": "queries.json",
+        "axis": "surface",
+        "gate_bm25_top_score": 7.913466,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.885438,
+        "semantic_max_raw": 0.885438,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Reciprocal Rank Fusion",
+        "source_file": "queries.json",
+        "axis": "surface",
+        "gate_bm25_top_score": 11.676563,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.927331,
+        "semantic_max_raw": 0.927331,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "static-site generator configuration .eleventy.js",
+        "source_file": "queries.json",
+        "axis": "semantic-cluster",
+        "gate_bm25_top_score": 13.576606,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.902249,
+        "semantic_max_raw": 0.902249,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "1943 Mediterranean WWII campaign",
+        "source_file": "queries.json",
+        "axis": "semantic-cluster",
+        "gate_bm25_top_score": 5.741314,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.924299,
+        "semantic_max_raw": 0.924299,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "BM25 lexical scoring",
+        "source_file": "queries.json",
+        "axis": "semantic-cluster",
+        "gate_bm25_top_score": 6.355342,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.878458,
+        "semantic_max_raw": 0.878458,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "11ty 静的サイト",
+        "source_file": "queries.json",
+        "axis": "cross-vocabulary",
+        "gate_bm25_top_score": 12.883603,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.9051,
+        "semantic_max_raw": 0.9051,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "シチリア 1943 上陸",
+        "source_file": "queries.json",
+        "axis": "cross-vocabulary",
+        "gate_bm25_top_score": 9.577696,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.925467,
+        "semantic_max_raw": 0.925467,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Italian cooking technique",
+        "source_file": "queries.json",
+        "axis": "source-mix",
+        "gate_bm25_top_score": 3.303915,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.873986,
+        "semantic_max_raw": 0.873986,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Phase L Stage 1 の hybrid retrieval について教えて",
+        "source_file": "ambient_queries.json",
+        "axis": "direct",
+        "gate_bm25_top_score": 13.476591,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.911193,
+        "semantic_max_raw": 0.911193,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Phase O の TTT observability で何が見える?",
+        "source_file": "ambient_queries.json",
+        "axis": "direct",
+        "gate_bm25_top_score": 9.587867,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.898513,
+        "semantic_max_raw": 0.898513,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "ambient recall の slot 選択を改善したい",
+        "source_file": "ambient_queries.json",
+        "axis": "persona",
+        "gate_bm25_top_score": 13.418184,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.914486,
+        "semantic_max_raw": 0.914486,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "観察と観測装置の校正について",
+        "source_file": "ambient_queries.json",
+        "axis": "persona",
+        "gate_bm25_top_score": 21.513735,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.931037,
+        "semantic_max_raw": 0.931037,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "MCP と REST の同期 API を作る方法",
+        "source_file": "ambient_queries.json",
+        "axis": "persona",
+        "gate_bm25_top_score": 18.197347,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.896659,
+        "semantic_max_raw": 0.896659,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "smoke test placeholder",
+        "source_file": "ambient_queries.json",
+        "axis": "exclude",
+        "gate_bm25_top_score": 8.784841,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.896273,
+        "semantic_max_raw": 0.896273,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": [
+          "smoke-test"
+        ]
+      },
+      {
+        "query": "重力場が学んだ類推を引き寄せる仕組み",
+        "source_file": "ambient_queries.json",
+        "axis": "lateral",
+        "gate_bm25_top_score": 4.867435,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.852333,
+        "semantic_max_raw": 0.852333,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      },
+      {
+        "query": "Phase 系 retrieval 改修の系譜",
+        "source_file": "ambient_queries.json",
+        "axis": "lateral",
+        "gate_bm25_top_score": 3.687104,
+        "gate_threshold": 32.0,
+        "gate_pass": false,
+        "semantic_max_virtual": 0.849689,
+        "semantic_max_raw": 0.849689,
+        "ambient_min_score": 0.7,
+        "count": 0,
+        "slots": {
+          "direct": 0,
+          "lensing": 0,
+          "dormant": 0,
+          "persona": 0
+        },
+        "count_gate_off": 2,
+        "slots_gate_off": {
+          "direct": 2,
+          "lensing": 0,
+          "dormant": 1,
+          "persona": 0
+        },
+        "empty_reason_inferred": "bm25_veto",
+        "exclude_tags": null
+      }
+    ]
+  },
+  "explore_jaccard": {
+    "diversities": [
+      0.0,
+      0.5,
+      0.8,
+      1.0
+    ],
+    "per_query": [
+      {
+        "query": "Eleventy Pipeline",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.8,
+          "0.8": 0.8,
+          "1.0": 0.8
+        }
+      },
+      {
+        "query": "Sicily naval landing",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.6,
+          "0.8": 0.6,
+          "1.0": 0.6
+        }
+      },
+      {
+        "query": "guanciale pecorino eggs",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.6,
+          "0.8": 0.6,
+          "1.0": 0.6
+        }
+      },
+      {
+        "query": "Hebbian learning",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.42857142857142855,
+          "0.8": 0.42857142857142855,
+          "1.0": 0.42857142857142855
+        }
+      },
+      {
+        "query": "Reciprocal Rank Fusion",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.5,
+          "0.8": 0.5,
+          "1.0": 0.5
+        }
+      },
+      {
+        "query": "static-site generator configuration .eleventy.js",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.6,
+          "0.8": 0.6,
+          "1.0": 0.6
+        }
+      },
+      {
+        "query": "1943 Mediterranean WWII campaign",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.6666666666666666,
+          "0.8": 0.6666666666666666,
+          "1.0": 0.6666666666666666
+        }
+      },
+      {
+        "query": "BM25 lexical scoring",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.42857142857142855,
+          "0.8": 0.42857142857142855,
+          "1.0": 0.42857142857142855
+        }
+      },
+      {
+        "query": "11ty 静的サイト",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.5,
+          "0.8": 0.5,
+          "1.0": 0.5
+        }
+      },
+      {
+        "query": "シチリア 1943 上陸",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.8,
+          "0.8": 0.8,
+          "1.0": 0.8
+        }
+      },
+      {
+        "query": "Italian cooking technique",
+        "jaccard": {
+          "0.0": 1.0,
+          "0.5": 0.6666666666666666,
+          "0.8": 0.6666666666666666,
+          "1.0": 0.6666666666666666
+        }
+      }
+    ],
+    "median": {
+      "0.0": 1.0,
+      "0.5": 0.6,
+      "0.8": 0.6,
+      "1.0": 0.6
+    }
+  }
+}

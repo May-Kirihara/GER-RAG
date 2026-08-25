@@ -375,9 +375,19 @@ async def ambient_recall(
     field.
 
     Relevance gate: a word-level (Sudachi) BM25 "strong-match" gate decides
-    whether to inject — only prompts that strongly match stored content fire.
-    When nothing clears it the result is the sentinel ``(関連する記憶なし)``
-    (no block), so ambient injection stays silent on off-topic / weak prompts.
+    whether to inject. When ``ambient_gate_or_semantic`` is enabled (Phase T
+    Stage 5) a BM25 reject is no longer a veto — the passive recall still
+    runs and either a strong virtual_score (≥ ``min_score`` /
+    ``config.ambient_min_score``) or a raw-cosine match (≥
+    ``config.ambient_semantic_raw_min``) approves the injection; only when
+    both axes miss is the result the sentinel ``(関連する記憶なし)``
+    (no block), so off-topic suppression is preserved. The flag is on by
+    default; with it off (legacy rollback,
+    ``GAOTTT_AMBIENT_GATE_OR_SEMANTIC=false``) a BM25 reject suppresses
+    immediately. Every return carries
+    ``gate_diagnostics`` on the structured response — the formatted block
+    appends a one-line ``gate: <reason> (...)`` triage only when
+    ``expose_breakdown`` is set.
 
     Args:
         query: The prompt / topic to pull ambient context for.

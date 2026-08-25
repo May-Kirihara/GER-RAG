@@ -22,6 +22,10 @@ async def rest_client(tmp_path):
         faiss_index_path=str(tmp_path / "ger.faiss"),
         flush_interval_seconds=999.0,
         default_hypothesis_ttl_seconds=60.0,
+        # legacy ambient gate — this file's ambient tests pin the pre-WP-D
+        # veto contract (empty return on a min_score reject); the promoted
+        # OR default is pinned in tests/integration/test_ambient_or_gate.py.
+        ambient_gate_or_semantic=False,
     )
     eng = GaOTTTEngine(
         config=cfg,

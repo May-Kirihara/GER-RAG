@@ -116,12 +116,28 @@ def _format_breakdown(b) -> str:
     if b.forced_inclusion:
         flags.append("forced")
     flag_str = f" [{', '.join(flags)}]" if flags else ""
+    # Phase T Stage 3 — appended qualification segments (existing segments
+    # above stay byte-identical). q=+/q=- shows the qualification verdict
+    # (only when qualification ran); d/f/gap expose the pre-saturation
+    # direct-vs-field decomposition and the virtual-vs-raw gap.
+    qual_str = ""
+    if b.qualified is not None:
+        qual_str += " q=+" if b.qualified else " q=-"
+    segs = []
+    if b.direct_score is not None:
+        segs.append(f"d={b.direct_score:.2f}")
+    if b.field_score is not None:
+        segs.append(f"f={b.field_score:.2f}")
+    if b.direct_score is not None or b.field_score is not None:
+        segs.append(f"gap={b.lensing_gap:+.2f}")
+    if segs:
+        qual_str += " " + " ".join(segs)
     line = (
         f"  breakdown: cos={b.raw_cosine:.3f} vcos={b.virtual_cosine:.3f}·"
         f"decay={b.decay_factor:.3f} +wave={b.wave_score:.3f} "
         f"+mass={b.mass_boost:.3f} +emo={b.emotion_term:.3f} "
         f"+cert={b.certainty_term:.3f} ×sat={b.saturation:.3f} "
-        f"persona_prox={b.persona_proximity:.3f}{flag_str}"
+        f"persona_prox={b.persona_proximity:.3f}{flag_str}{qual_str}"
     )
     reason = getattr(b, "reason", None)
     if reason:
@@ -372,6 +388,29 @@ def _ambient_breakdown(b) -> str:
     return suffix
 
 
+def _ambient_gate_line(diag, config=None) -> str:
+    """Phase T Stage 5 — one-line ambient-gate triage.
+
+    Appended to the block ONLY under ``expose_breakdown`` (token budget):
+    ``gate: <reason|passed> (bm25_top=x.y/thr, virt_max=…, raw_max=…,
+    candidates=n)``. Axes the gate could not compute (None) stay out of
+    the line; ``config`` supplies the BM25 threshold for context.
+    """
+    parts: list[str] = []
+    if diag.bm25_top_score is not None:
+        thr = getattr(config, "ambient_bm25_min_score", None) if config else None
+        top = f"bm25_top={diag.bm25_top_score:.1f}"
+        if thr is not None:
+            top += f"/{thr:.1f}"
+        parts.append(top)
+    if diag.semantic_max_virtual is not None:
+        parts.append(f"virt_max={diag.semantic_max_virtual:.3f}")
+    if diag.semantic_max_raw is not None:
+        parts.append(f"raw_max={diag.semantic_max_raw:.3f}")
+    parts.append(f"candidates={diag.candidates_generated}")
+    return f"gate: {diag.empty_reason or 'passed'} ({', '.join(parts)})"
+
+
 def format_ambient(result: AmbientRecallResponse, *, config=None) -> str:
     """Ambient Recall Enrichment — the ``<gaottt-ambient-recall>`` block.
 
@@ -388,7 +427,15 @@ def format_ambient(result: AmbientRecallResponse, *, config=None) -> str:
     d_limit = getattr(config, "ambient_direct_max_chars", 0) if config else 0
     l_limit = getattr(config, "ambient_lensing_max_chars", 0) if config else 0
     if result.count == 0:
-        return "(関連する記憶なし)"
+        # Phase T Stage 5 — sentinel is byte-identical to legacy; the triage
+        # line is APPENDED after it (never inline) and only when the caller
+        # opted into breakdown exposure. The hook keys on the absence of the
+        # ``<gaottt-ambient-recall>`` tag, so the extra line cannot leak an
+        # injection.
+        out = "(関連する記憶なし)"
+        if result.expose_breakdown and result.gate_diagnostics is not None:
+            out += "\n" + _ambient_gate_line(result.gate_diagnostics, config)
+        return out
     lines = [
         "<gaottt-ambient-recall>",
         "GaOTTT 長期記憶から自動取得した関連知識です"
@@ -451,6 +498,12 @@ def format_ambient(result: AmbientRecallResponse, *, config=None) -> str:
             f" · {result.persona.kind}: {result.persona.content}"
             f"{_ambient_breakdown(result.persona.breakdown)}"
         )
+    # Phase T Stage 5 — gate triage for successful injections too (opt-in
+    # via expose_breakdown, same token-budget contract as slot breakdowns).
+    # Inserted BEFORE the manifest so ``<!-- ambient-ids ... -->`` stays the
+    # last line before the closing tag (the hook's parse contract).
+    if result.expose_breakdown and result.gate_diagnostics is not None:
+        lines.append(_ambient_gate_line(result.gate_diagnostics, config))
     # Lateral Association Stage 1 — id manifest for the UserPromptSubmit hook.
     # HTML comment so it stays out of the visible block in markdown rendering
     # while being trivially parseable from the raw text. The hook reads this

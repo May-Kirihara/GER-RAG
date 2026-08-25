@@ -273,8 +273,100 @@ class GaOTTTConfig:
 
     # Scoring
     alpha: float = 0.05       # Mass boost scaling
-    delta: float = 0.01       # Temporal decay rate
+    delta: float = 0.01       # Temporal decay rate (legacy per-SECOND contract — see semantic_halflife_*)
     gamma: float = 0.5        # Temperature scaling
+
+    # ---- Phase T Stage 2 — semantic decay: half-life + floor contract ------
+    # 旧 ``delta`` 契約 (``exp(-delta * age_seconds)``) は秒 rate なので
+    # 10 分で factor≈0.0025 になり、semantic 項が時間経過で数値上消滅する
+    # (mass/wave 支配の因果は Stage 1 baseline で確認済み)。新契約:
+    #   factor = semantic_floor + (1 - semantic_floor)
+    #            * 0.5 ** (age / semantic_half_life_seconds)
+    # (``scorer.compute_semantic_factor``)。7d + floor 0.35 では 6 週間で
+    # factor≈0.355 = floor 支配。
+    # ★ 両 default とも **較正出力**: baseline
+    # docs/notes/phase-t/score-baseline-before.json (+ Stage 2 の after
+    # baseline) を根拠に再検討する。floor が保存するのは legacy と同じ
+    # ``gravity_sim`` 項 (virtual 位置との dot) で raw 意味論そのものでは
+    # ない — 既知の性質 (plan §7 リスク表)。
+    # ``semantic_halflife_enabled=False`` → legacy ``delta`` 経路 (bit-for-bit、
+    # future timestamp も clamp なし)。engine.startup が deprecation warning
+    # を 1 回出す。
+    # Env: GAOTTT_SEMANTIC_HALFLIFE_ENABLED / GAOTTT_SEMANTIC_HALF_LIFE_SECONDS
+    #      / GAOTTT_SEMANTIC_FLOOR。
+    semantic_halflife_enabled: bool = True
+    semantic_half_life_seconds: float = 604800.0  # 7 日 (較正出力)
+    semantic_floor: float = 0.35                   # 経年 semantic の下限 (較正出力)
+
+    # ---- Phase T Stage 3/4 — direct relevance + TTT update qualification -
+    # Stage 3 (選択): 低 semantic・高 mass node が direct top-K を占有する
+    # のを防ぐ。natural item を「qualified (final_score 降順) → fallback
+    # (同順)」に並べ替える。forced (tag_filter / persona_context) は従来
+    # 規則のまま。結果数は legacy と同じ保証 (fill)。
+    #   qualified(nid) = raw_cos >= direct_raw_cosine_min
+    #       or virtual_cos_norm >= direct_virtual_cosine_min
+    #       or (bm25_score >= direct_bm25_absolute_min
+    #           and lexical_strength >= direct_bm25_relative_min)
+    #   lexical_strength = bm25_score / pool top score (相対比契約、
+    #   corpus size 非依存)。lexical 軸は absolute + relative の二重条件
+    #   (off-topic guard)。
+    # Stage 4 (学習): query-conditioned な TTT 更新 (mass growth ×confidence
+    # / query kick / cooccurrence) を qualified 候補 (= learn set) のみに
+    # 限定して bad gradient の自己強化を遮断。maintenance (last_access /
+    # evaporation / sim_history+temperature / orbital N-body) は all
+    # reached のまま、return_count は all presented のまま。
+    # ★ 両 flag の default False (env opt-in) — plan A3 gate (baseline +
+    # tier test + 本番 dogfooding) を通す前に default ON にしない。
+    # synthetic recall (dream loop) は qualification gate を免除 (learn
+    # set = all reached の legacy 契約を維持) — 自己主導の maintenance
+    # rehearsal であり user query 由来の bad gradient 経路ではない
+    # (plan §3 Stage 4、WP-C dream exemption。gate ON 時に
+    # test_engine_dream_loop.py の co-occurrence 構築が壊れる事象で判明)。
+    # 閾値根拠 (docs/notes/phase-t/
+    # score-baseline-before.json): raw_cos p50=0.764 / p90=0.820 の RURI
+    # 狭帯に対し 0.75 で qualified 率 70.6%。BM25 (char 3-gram) の
+    # on-topic top score は 14-58 → absolute 8.0 は off-topic guard。
+    # Env: GAOTTT_DIRECT_QUALIFICATION_ENABLED /
+    #      GAOTTT_DIRECT_RAW_COSINE_MIN / GAOTTT_DIRECT_VIRTUAL_COSINE_MIN /
+    #      GAOTTT_DIRECT_BM25_RELATIVE_MIN / GAOTTT_DIRECT_BM25_ABSOLUTE_MIN /
+    #      GAOTTT_DIRECT_BM25_POOL_SIZE / GAOTTT_TTT_QUALIFICATION_ENABLED。
+    direct_qualification_enabled: bool = False  # plan A3: default は較正後確定
+    direct_raw_cosine_min: float = 0.75
+    direct_virtual_cosine_min: float = 0.75
+    direct_bm25_relative_min: float = 0.40
+    direct_bm25_absolute_min: float = 8.0
+    direct_bm25_pool_size: int = 50
+    ttt_qualification_enabled: bool = False     # plan A3: default は較正後確定
+
+    # ---- Phase T Stage 6 — explore presentation diversity (MMR) ---------
+    # ``engine.query(diversity=d)``: d が None / <= 0.0 / flag OFF のときは
+    #   完全 legacy 経路 (pool 拡大・relevance floor・MMR・cohort penalty
+    #   を一切通さない — bit-for-bit)。d > 0 かつ flag ON でのみ:
+    #   1. scoring は top_k × explore_diversity_pool_multiplier 件まで
+    #      pool として保持
+    #   2. pool 候補は raw cosine >= explore_min_semantic のみ
+    #      (lateral にも最低 relevance — forced items は豁免)
+    #   3. natural items は canonical MMR greedy で選択:
+    #      score = λ·rel − (1−λ)·red − d·cohort_penalty·[cluster 既出]
+    #      λ = 1 − 0.5·d / rel = pool 内 final_score の min-max 正規化
+    #      / red = selected (forced 込み) に対する raw embedding cosine
+    #      / cluster key = cohort_id OR original_id (source 分岐ゼロ)
+    #   4. forced items (tag_filter / persona_context) は従来規則
+    #      (RRF/raw 順序) のまま MMR 非適用 (redundancy 計算には参入)
+    # 更新契約: return_count / cooccurrence / training delta (topk_only)
+    #   は MMR 後の presented ids のみ。simulation 系 (last_access /
+    #   evaporation / sim_history+temperature / orbital N-body) と
+    #   habituation recovery は Stage 4 と同一の all-reached のまま。
+    # ★ default False (plan A3 gate — baseline + tier test + 本番
+    # dogfooding を通す前に default ON にしない)。
+    # Env: GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED /
+    #      GAOTTT_EXPLORE_COHORT_PENALTY /
+    #      GAOTTT_EXPLORE_DIVERSITY_POOL_MULTIPLIER /
+    #      GAOTTT_EXPLORE_MIN_SEMANTIC。
+    explore_diversified_presentation_enabled: bool = False  # plan A3: 較正後確定
+    explore_cohort_penalty: float = 0.05
+    explore_diversity_pool_multiplier: int = 4
+    explore_min_semantic: float = 0.45   # lateral 候補への最低 relevance floor
 
     # Mass update
     eta: float = 0.05         # Mass growth rate
@@ -717,6 +809,26 @@ class GaOTTTConfig:
     ambient_gate_tokenizer: str = "sudachi"  # gate index tokenizer; needs the bm25-sudachi extra
     ambient_bm25_min_score: float = 32.0     # word-BM25 strong-match threshold (corpus-calibrated)
     ambient_min_score: float = 0.70          # fallback virtual_score gate threshold (gate index unavailable)
+    # Phase T Stage 5 — ambient gate OR semantics + staged empty diagnostics.
+    # Legacy: a word-BM25 reject vetoes the injection outright (empty return
+    # before the recall is even paid for). WP-1 baseline (docs/notes/phase-t/
+    # score-baseline-before.json) showed the failure mode: 19/19 on-topic
+    # golden queries vetoed while candidates existed (gate score 5.8-8.8 vs
+    # threshold 32.0, semantic_max 0.899 ≥ 0.70) — the word gate cannot see
+    # paraphrases. OR mode: a BM25 reject still runs the passive recall and
+    # a semantic axis (virtual_score ≥ ambient_min_score OR raw cosine ≥
+    # ``ambient_semantic_raw_min``) can approve the injection. BOTH axes
+    # must miss for the empty return, so off-topic suppression survives.
+    # Empty-return triage rides on AmbientRecallResponse.gate_diagnostics
+    # (empty_reason: bm25_veto / bm25_and_semantic_below_threshold /
+    # no_candidates / all_tag_excluded / all_dump_filtered).
+    # ★ default True — plan §3 rollout gate で昇格確定 (2026-08-25 WP-C 較正:
+    # docs/notes/phase-t/calibration-round.md。19/19 on-topic golden query が
+    # legacy veto で空返ししていたのが 19/19 surfaced、off-topic 抑制は
+    # ambient_quality tier green で維持確認、tier6 latency 回帰なし)。
+    # False = legacy BM25 veto に戻す rollback。
+    ambient_gate_or_semantic: bool = True    # False = legacy BM25 veto / True = BM25 OR semantic
+    ambient_semantic_raw_min: float = 0.60   # raw cosine 軸の ambient gate 閾値 (baseline: raw p50=0.764)
     ambient_excerpt_chars: int = 240         # per-slot content excerpt length
     ambient_lensing_enabled: bool = True     # ② gravitational-lensing slot on/off
     ambient_lensing_min_score: float = 0.5   # lensing pick noise floor (virtual_cosine)
@@ -1273,6 +1385,21 @@ class GaOTTTConfig:
         if not self.virtual_faiss_index_path:
             self.virtual_faiss_index_path = os.path.join(
                 self.data_dir, "gaottt.virtual.faiss"
+            )
+
+        # Phase T Stage 2 — semantic half-life 契約への入力は warning ではなく
+        # 明示 reject: half_life<=0 は exponent の zero-division、[0,1] 外の
+        # floor は factor の値域 [floor, 1] を壊す (rollback flag の有無に
+        # 依らない — 不正な値は不正)。
+        if self.semantic_half_life_seconds <= 0.0:
+            raise ValueError(
+                "GaOTTTConfig.semantic_half_life_seconds must be > 0, got "
+                f"{self.semantic_half_life_seconds!r} (Phase T Stage 2)"
+            )
+        if not (0.0 <= self.semantic_floor <= 1.0):
+            raise ValueError(
+                "GaOTTTConfig.semantic_floor must be within [0, 1], got "
+                f"{self.semantic_floor!r} (Phase T Stage 2)"
             )
 
         # M6 — friction multipliers must live in [0, 1] so the runtime

@@ -22,6 +22,7 @@ from gaottt.core.engine import GaOTTTEngine
 from gaottt.core.extractor import extract_candidates
 from gaottt.core.persona_gravity import collect_active_persona_ids
 from gaottt.core.types import (
+    AmbientGateDiagnostics,
     AmbientMemory,
     AmbientPersona,
     AmbientRecallResponse,
@@ -78,7 +79,7 @@ def _enrich_breakdown(
     breakdown: ScoreBreakdown | None,
     *,
     bm25_score: float = 0.0,
-    lensing_gap: float = 0.0,
+    lensing_gap: float | None = None,
     dormant_percentile: float | None = None,
 ) -> ScoreBreakdown | None:
     """Observation Apparatus Refinement Stage 1 — attach reason line.
@@ -87,6 +88,12 @@ def _enrich_breakdown(
     against the breakdown plus contextual hints (bm25/lensing/dormant).
     Returns a new ``ScoreBreakdown`` with ``reason`` and the informational
     inputs filled. Force computation is untouched (pure read).
+
+    ``lensing_gap=None`` (the default) PRESERVES the gap the engine already
+    populated on the query path (``virtual_cos_norm − raw_cos``, Phase T
+    Stage 3). Legacy behaviour clobbered it to 0.0 on every recall item,
+    destroying the signal before any ambient slot could carry it; only an
+    explicit slot gap (the ambient lensing pick) overrides it.
     """
     if breakdown is None:
         return None
@@ -99,7 +106,9 @@ def _enrich_breakdown(
     enriched = breakdown.model_copy(update={
         "node_mass": node_mass,
         "bm25_score": bm25_score,
-        "lensing_gap": lensing_gap,
+        "lensing_gap": (
+            breakdown.lensing_gap if lensing_gap is None else lensing_gap
+        ),
         "dormant_percentile": dormant_percentile,
     })
     reason = explain_score(
@@ -968,6 +977,24 @@ async def _pick_persona(
     )
 
 
+def _bm25_gate_top(engine: GaOTTTEngine, query: str) -> float | None:
+    """Top word-BM25 gate score for ``query`` — the numeric input behind
+    :func:`_bm25_gate`. ``None`` when the gate is unusable (disabled /
+    index absent / empty corpus); ``0.0`` when the index answered but
+    nothing matched. Phase T Stage 5: ambient_recall derives both the gate
+    verdict and ``AmbientGateDiagnostics.bm25_top_score`` from this single
+    search instead of running it twice.
+    """
+    cfg = engine.config
+    if not cfg.ambient_gate_use_bm25:
+        return None
+    idx = engine.ambient_gate_index
+    if idx is None or idx.size == 0:
+        return None
+    hits = idx.search(query, 1)
+    return hits[0][1] if hits else 0.0
+
+
 def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
     """Word-level BM25 strong-match gate — the primary ambient-recall gate.
 
@@ -983,15 +1010,10 @@ def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
       ``None``  — gate index unavailable (disabled / empty / bm25-sudachi
                   extra missing) → the caller falls back to virtual_score
     """
-    cfg = engine.config
-    if not cfg.ambient_gate_use_bm25:
+    top = _bm25_gate_top(engine, query)
+    if top is None:
         return None
-    idx = engine.ambient_gate_index
-    if idx is None or idx.size == 0:
-        return None
-    hits = idx.search(query, 1)
-    top = hits[0][1] if hits else 0.0
-    return top >= cfg.ambient_bm25_min_score
+    return top >= engine.config.ambient_bm25_min_score
 
 
 async def ambient_recall(
@@ -1014,6 +1036,13 @@ async def ambient_recall(
     Relevance gate: if the best ``virtual_score`` among candidates is below
     ``min_score`` (default ``config.ambient_min_score``) the response is empty
     (``count == 0``) — ambient injection stays silent on off-topic prompts.
+
+    Phase T Stage 5 — with ``config.ambient_gate_or_semantic`` a word-BM25
+    reject no longer vetoes outright: the passive recall still runs and a
+    semantic axis (best virtual_score ≥ ``min_score`` OR best raw cosine ≥
+    ``config.ambient_semantic_raw_min``) can approve the injection. Every
+    return carries ``gate_diagnostics`` (staged counts + gate inputs +
+    discrete ``empty_reason``) for silence triage.
 
     ``passive=True`` throughout: ambient recall observes the gravity field
     without perturbing it (see Plans-Ambient-Recall-Enrichment.md).
@@ -1038,9 +1067,25 @@ async def ambient_recall(
     # Relevance gate — BM25 lexical (primary). Runs BEFORE the recall so an
     # off-topic prompt skips the recall cost entirely. `None` means BM25 is
     # unavailable → fall back to the virtual_score gate after the recall.
-    bm25_ok = _bm25_gate(engine, query)
-    if bm25_ok is False:
-        return AmbientRecallResponse(count=0)
+    # Phase T Stage 5 — OR gate. With ``ambient_gate_or_semantic`` a BM25
+    # reject no longer vetoes outright: the recall still runs and a semantic
+    # axis (best virtual_score ≥ min_score OR best raw cosine ≥
+    # ``ambient_semantic_raw_min``) can approve the injection. Off-topic
+    # suppression survives — BOTH axes must miss for the empty return.
+    # Diagnostics (staged counts + gate inputs + empty_reason) ride on
+    # every return, populated below.
+    bm25_top = _bm25_gate_top(engine, query)
+    bm25_ok = (
+        None if bm25_top is None
+        else bm25_top >= cfg.ambient_bm25_min_score
+    )
+    diag = AmbientGateDiagnostics(bm25_top_score=bm25_top, bm25_gate=bm25_ok)
+    if bm25_ok is False and not cfg.ambient_gate_or_semantic:
+        # Legacy veto — return before paying for the recall.
+        diag.empty_reason = "bm25_veto"
+        return AmbientRecallResponse(
+            count=0, gate_diagnostics=diag, expose_breakdown=expose_breakdown,
+        )
 
     # One passive recall — pool wide enough to host a lensing candidate.
     pool_k = max(direct_k * 5, 10)
@@ -1049,10 +1094,18 @@ async def ambient_recall(
         multi_source=cfg.multi_source_ambient_enabled,
     )
     items = rr.items
+    diag.candidates_generated = len(items)
     if excluded_ids:
         items = [it for it in items if it.id not in excluded_ids]
+    diag.after_tag_exclusion = len(items)
     if not items:
-        return AmbientRecallResponse(count=0)
+        diag.empty_reason = (
+            "no_candidates" if diag.candidates_generated == 0
+            else "all_tag_excluded"
+        )
+        return AmbientRecallResponse(
+            count=0, gate_diagnostics=diag, expose_breakdown=expose_breakdown,
+        )
     # E2 — dump-shape gate. Drop items whose content is dominated by symbols
     # (state-dict keys, raw code). Applied before ranking so next-best
     # naturally fills. ``>= 1.0`` = OFF (bit-exact legacy).
@@ -1062,13 +1115,61 @@ async def ambient_recall(
             it for it in items
             if _dump_symbol_ratio(it.content) <= ratio_threshold
         ]
+    diag.after_dump_filter = len(items)
     if not items:
-        return AmbientRecallResponse(count=0)
-    if bm25_ok is None:
-        # BM25 unavailable — fall back to the virtual_score gate (the pool's
-        # max raw_score). Known weak on large corpora; BM25 is preferred.
-        if max((it.raw_score for it in items), default=0.0) < threshold:
-            return AmbientRecallResponse(count=0)
+        diag.empty_reason = "all_dump_filtered"
+        return AmbientRecallResponse(
+            count=0, gate_diagnostics=diag, expose_breakdown=expose_breakdown,
+        )
+
+    # Semantic-axis maxima over the surviving pool — diagnostics input AND
+    # the OR-gate decision. ``raw_score`` is the virtual (gravity) score;
+    # the raw-cosine axis exists only when breakdowns were populated
+    # (absent axis → skipped, per contract).
+    virt_max = max((it.raw_score for it in items), default=0.0)
+    diag.semantic_max_virtual = virt_max
+    raw_cosines = [
+        it.score_breakdown.raw_cosine
+        for it in items
+        if it.score_breakdown is not None
+    ]
+    if raw_cosines:
+        diag.semantic_max_raw = max(raw_cosines)
+    diag.semantic_qualified = sum(
+        1 for it in items
+        if it.raw_score >= threshold
+        or (
+            it.score_breakdown is not None
+            and it.score_breakdown.raw_cosine >= cfg.ambient_semantic_raw_min
+        )
+    )
+
+    if cfg.ambient_gate_or_semantic:
+        # Stage 5 OR gate — a BM25 accept short-circuits (early accept,
+        # legacy behaviour); a reject OR an unusable gate funnels into the
+        # same semantic decision, unifying the legacy ``bm25_ok is None``
+        # virtual fallback.
+        if bm25_ok is not True:
+            raw_ok = (
+                diag.semantic_max_raw is not None
+                and diag.semantic_max_raw >= cfg.ambient_semantic_raw_min
+            )
+            if not (virt_max >= threshold or raw_ok):
+                diag.empty_reason = "bm25_and_semantic_below_threshold"
+                return AmbientRecallResponse(
+                    count=0, gate_diagnostics=diag,
+                    expose_breakdown=expose_breakdown,
+                )
+    elif bm25_ok is None:
+        # Legacy fallback — BM25 unavailable, virtual_score gate only (the
+        # pool's max raw_score). Known weak on large corpora; BM25 is
+        # preferred.
+        if virt_max < threshold:
+            diag.empty_reason = "bm25_and_semantic_below_threshold"
+            return AmbientRecallResponse(
+                count=0, gate_diagnostics=diag,
+                expose_breakdown=expose_breakdown,
+            )
 
     # Lateral Association Stage 1 — apply session novelty decay to direct
     # ranking *before* slicing top-K. ``items`` arrives sorted by
@@ -1184,9 +1285,12 @@ async def ambient_recall(
     # approved (same as persona) — not counted toward ``count``, which the
     # caller reads as "how many primary memories surfaced".
     count = len(direct) + len(lensing)
+    diag.direct_selected = len(direct)
+    diag.lensing_selected = len(lensing)
     return AmbientRecallResponse(
         direct=direct, lensing=lensing, dormant=dormant, tensions=tensions,
         persona=persona, count=count,
+        gate_diagnostics=diag, expose_breakdown=expose_breakdown,
     )
 
 
@@ -1308,6 +1412,13 @@ async def explore(
         out_training_delta=delta_out,
         gamma_override=explore_gamma,
         passive=passive,
+        # Phase T Stage 6 — the presentation diversification runs inside
+        # engine.query's Step 4 (service-layer post-processing would fire
+        # presentation-derived updates on candidates the LLM never saw).
+        # ``diversity <= 0`` or a disabled flag bypasses to the legacy
+        # path inside the engine, so serendipity with diversity=0 is
+        # plain recall plus the widened gamma/depth/k above.
+        diversity=diversity,
     )
 
     items = [_to_memory_item(engine, r) for r in raw]
