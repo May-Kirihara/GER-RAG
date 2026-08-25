@@ -184,7 +184,11 @@ ReDoc: http://localhost:8000/redoc
         "saturation": 0.910,
         "persona_proximity": 0.0,
         "bm25_contributed": false,
-        "forced_inclusion": false
+        "forced_inclusion": false,
+        "qualified": true,
+        "direct_score": 0.185,
+        "field_score": 0.305,
+        "lensing_gap": 0.043
       }
     }
   ],
@@ -193,6 +197,8 @@ ReDoc: http://localhost:8000/redoc
 ```
 
 **Phase O Stage 1 — Score breakdown**: 各 item に `score_breakdown` が attach され、`final_score` の additive な内訳が露出する。`final_score ≈ (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation`。`raw_cosine` / `persona_proximity` / `bm25_contributed` / `forced_inclusion` は informational (sum に入らない)。`config.expose_score_breakdown=false` で `score_breakdown=null` 返却 (legacy 互換)。
+
+**Phase T — breakdown 拡張 field (informational、追加のみ)**: `qualified` (bool | null — `null` は qualification flag 両方 OFF の legacy、`false` は fallback pick)、`direct_score` (pre-saturation の semantic-direct 項 = `virtual_cos_norm × decay_factor`)、`field_score` (pre-saturation の field 項 = `wave + mass + emo + cert`)、`lensing_gap` (query path では `virtual_cos_norm − raw_cos`)。**Phase T Stage 3 (direct qualification、default OFF・env opt-in `GAOTTT_DIRECT_QUALIFICATION_ENABLED=1`)** ON 時は direct 候補の presentation が qualified-first (forced → qualified → fallback) になり、fallback pick は `qualified=false` で明示される。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) recall 節、[Plans — Phase T](Plans-Phase-T-Semantic-Requalification.md)。
 
 **Phase O Stage 2 — Training delta**: response root に `training_delta` field が attach される (recall + explore で同じ shape)。caller が起こした state 変化 (backward pass) を JSON で受け取れる:
 
@@ -275,6 +281,29 @@ ReDoc: http://localhost:8000/redoc
 
 `direct` ① は `final_score` 上位、`lensing` ② は `virtual_cosine − raw_cosine` の gap 最大の **top-K リスト**（[**Lateral Association Stage 3**](Plans-Ambient-Recall-Lateral-Association.md)、cap = `config.ambient_lensing_max_k`、既定 2。場が学習した類推、各 entry の `lensing_gap` に raw gap 値、ranking は novelty 適用後の decayed gap で取り直す）、各 lensing entry には [**Stage 5**](Plans-Ambient-Recall-Lateral-Association.md) で **`lensing_resonance`** (`[0, 1)`、`raw / (raw + scale)` の saturating non-linearity、`raw = Σ_{d∈direct} cache.get_neighbors(lensing)[d]` で「場が今日の direct hits と過去に何度 co-recall したか」を測る trust 軸) も populate される。`tensions` ⑤ は `contradicts` ペア、`persona` ⑥ は active な declared value/intention。各 `direct`/`lensing` の `because` ④ は `derived_from`/`supersedes` 親の抜粋。`count == 0` は relevance gate で抑制された状態（注入なし）。MCP (`ambient_recall`) は同じ内容を `<gaottt-ambient-recall>` 文字列ブロックに整形して返す。常に passive — 重力場を摂動しない。
 
+**Phase T Stage 5 — OR gate + gate_diagnostics (default ON)**: relevance gate は BM25「強一致」を主軸にしつつ、**BM25 reject では即空返しにならない** — passive recall を実行し `max(virtual_score) ≥ ambient_min_score` OR `max(raw_cos) ≥ config.ambient_semantic_raw_min`（既定 0.60）で accept、両軸とも下回れば空返し (off-topic 抑制は維持)。`ambient_gate_or_semantic=false` で legacy BM25 veto に rollback。レスポンスには **`gate_diagnostics`** が空・非空に関わらず常に attach される:
+
+```json
+{
+  "gate_diagnostics": {
+    "candidates_generated": 12,
+    "after_tag_exclusion": 10,
+    "after_dump_filter": 10,
+    "semantic_qualified": 4,
+    "direct_selected": 2,
+    "lensing_selected": 1,
+    "bm25_top_score": 38.2,
+    "bm25_gate": true,
+    "semantic_max_virtual": 0.812,
+    "semantic_max_raw": 0.774,
+    "empty_reason": null
+  },
+  "expose_breakdown": false
+}
+```
+
+`empty_reason` は離散一意: `bm25_veto` (legacy flag OFF で BM25 reject 即空) / `bm25_and_semantic_below_threshold` / `no_candidates` / `all_tag_excluded` / `all_dump_filtered`。`bm25_gate`/`bm25_top_score` は gate index 利用不可時 `null`、`semantic_max_raw` は breakdown が populate されていない場合 `null` (raw cosine 軸はその場合判定から外れる)。triage 表は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
+
 > **★ Breaking change (2026-05-25, Stage 3)**: `lensing` field は `AmbientMemory | null` → `list[AmbientMemory]` に変更されました。旧 client は `data["lensing"]` を `None`/object として読んでいた箇所を `data["lensing"]` が常に list (空の場合 `[]`) であることに合わせて update してください。Stage 3 以前のロジックを保持したい場合は `config.ambient_lensing_max_k=1` で「1 picks 上限」になり、`data["lensing"][0] if data["lensing"] else None` が旧 shape 等価。
 
 ### POST /explore
@@ -285,7 +314,9 @@ ReDoc: http://localhost:8000/redoc
 {"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true, "mode": "serendipity"}
 ```
 
-**レスポンス 200**: `items`（recall と同じ shape）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
+**レスポンス 200**: `items`（recall と同じ shape。Phase T breakdown 拡張 field も parity）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
+
+**Phase T Stage 6 — diversified presentation (default OFF・env opt-in `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=1`)**: flag ON かつ `diversity > 0` で engine 層の MMR selection (pool 拡大 `top_k × explore_diversity_pool_multiplier` / `explore_min_semantic` floor / cohort penalty) が有効になる。`diversity=0.0` は bit-for-bit legacy。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) explore 節。
 
 **Dormant mode (Phase O Stage 5):** `mode: "dormant"` で wave を bypass し counter-importance sampling。**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち `last_access` が `dormant_age_threshold_seconds` (既定 30 日) より古く、かつ `mass ≤ dormant_mass_threshold` (既定 2.0) を満たすノードからランダムに `top_k` 件返す。`query` は ignore、`training_delta` / `routing_hint` は常に `null` (simulation 走らず、aspect intent も検出しない)。
 

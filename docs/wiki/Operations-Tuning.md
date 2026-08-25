@@ -182,6 +182,33 @@ Phase M (mass 増の単一規則、入力側) + Phase N (mass 減の単一規則
 
 > **両者の関係**: P-α (Λ) は **deterministic** な長距離斥力 (時間平均的に cluster 構造が緩む)、P-β (Langevin) は **stochastic** な per-step ゆらぎ (個別 node が確率的に hop)。**両方有効** にしても干渉せず — Λ は acceleration loop、Langevin は post-acceleration position update に作用。両方とも default OFF で merge 済、env で個別に `GAOTTT_COSMOLOGICAL_LAMBDA_ENABLED=1` / `GAOTTT_LANGEVIN_TEMPERATURE_ENABLED=1` opt-in。
 
+## Semantic Requalification (Phase T — decay 契約・qualification・ambient OR gate・explore MMR、2026-08-25)
+
+SQLite/FAISS 復旧後に残った検索品質課題を「**意味的観測を土台に、重力場が順位・連想・人格を育てる**」の層分離で解消する 6 stage ([Plans — Phase T](Plans-Phase-T-Semantic-Requalification.md))。Stage 2 (semantic decay の half-life 化) と Stage 5 (ambient OR gate) は再現済み欠陥の修正として **default ON**、Stage 3 (direct qualification) / Stage 4 (TTT update qualification) / Stage 6 (explore MMR) は較正結果 ([docs/notes/phase-t/](../notes/phase-t/)) に基づき **default OFF + env opt-in**。観測 baseline は `scripts/score_baseline.py` (read-only、golden corpus で score 項寄与率 / qualification 率 / ambient gate 診断 / recall vs explore Jaccard、`--synthetic-age-seconds` で経年シミュレーション)。
+
+| パラメータ | 既定 | env | 影響 |
+|---|---|---|---|
+| `semantic_halflife_enabled` | `True` | `GAOTTT_SEMANTIC_HALFLIFE_ENABLED` | **Stage 2 (default ON)**: semantic decay を秒 rate `delta` (`exp(-δ·age)`、10 分で factor≈0.0025) から **half-life + floor 契約** (`floor + (1-floor)·0.5^(age/halflife)`) へ。`False` で legacy `delta` 経路に bit-for-bit rollback (startup に deprecation warning、[Troubleshooting](Operations-Troubleshooting.md)) |
+| `semantic_half_life_seconds` | `604800.0` (7日) | `GAOTTT_SEMANTIC_HALF_LIFE_SECONDS` | semantic 項の半減期。較正出力 (7d + floor 0.35 で 6 週間後に factor≈0.355 = floor 支配)。検証: `half_life_seconds > 0` で reject |
+| `semantic_floor` | `0.35` | `GAOTTT_SEMANTIC_FLOOR` | 経年 semantic 項の下限 — mass/wave が順位を完全支配するのを防ぐ。floor が保存するのは legacy 同様 `gravity_sim` 項 (virtual 位置との dot) で raw 意味論そのものではない点は既知の性質。`0` で完全消滅 (旧挙動に近い) |
+| `direct_qualification_enabled` | `False` | `GAOTTT_DIRECT_QUALIFICATION_ENABLED` | **Stage 3 (default OFF)**: direct 候補の presentation を qualified-first (forced → qualified → fallback) に並べ替え。fallback は breakdown `qualified=false` + reason 行 `gravity pick (below relevance floor)` で明示。`False` で legacy 順序 |
+| `direct_raw_cosine_min` | `0.75` | `GAOTTT_DIRECT_RAW_COSINE_MIN` | qualification の決定論的軸 (raw cosine)。baseline: raw p50=0.764 / p90=0.820 の RURI 狭帯に対し 0.75 で qualified 率 70.6% |
+| `direct_virtual_cosine_min` | `0.75` | `GAOTTT_DIRECT_VIRTUAL_COSINE_MIN` | qualification の正規化軸 (`virtual_cos_norm`、displacement+temperature 込みの新規計算) |
+| `direct_bm25_relative_min` | `0.40` | `GAOTTT_DIRECT_BM25_RELATIVE_MIN` | lexical strength 軸の相対比閾値 (pool top score 比、corpus size 非依存)。lexical 軸は absolute と **AND** の二重条件 (off-topic guard) |
+| `direct_bm25_absolute_min` | `8.0` | `GAOTTT_DIRECT_BM25_ABSOLUTE_MIN` | lexical 軸の absolute 閾値。baseline: on-topic top score 14-58 → 8.0 は弱一致 tail の off-topic guard |
+| `direct_bm25_pool_size` | `50` | `GAOTTT_DIRECT_BM25_POOL_SIZE` | lexical strength 計算用 BM25 pool size (top-K 予算別) |
+| `ttt_qualification_enabled` | `False` | `GAOTTT_TTT_QUALIFICATION_ENABLED` | **Stage 4 (default OFF)**: query-conditioned な TTT 更新 (**mass growth ×confidence / query kick / cooccurrence**) を qualified learn set のみに限定し bad gradient の自己強化を遮断。synthetic recall (dream loop) は免除。maintenance 系 (last_access / evaporation / sim_history+temperature / orbital N-body) は all reached のまま |
+| `ambient_gate_or_semantic` | `True` | `GAOTTT_AMBIENT_GATE_OR_SEMANTIC` | **Stage 5 (default ON)**: ambient gate を BM25 veto から **OR gate** へ。BM25 reject でも passive recall を実行し、`virtual_score ≥ ambient_min_score` OR `raw_cos ≥ ambient_semantic_raw_min` で accept (両軸 miss で空返し、off-topic 抑制は維持)。`False` で legacy veto に rollback。較正: 旧 veto で 19/19 on-topic golden query が空返し (gate score 5.8-8.8 vs 32.0、semantic_max 0.899) していたのが 19/19 surfaced |
+| `ambient_semantic_raw_min` | `0.60` | `GAOTTT_AMBIENT_SEMANTIC_RAW_MIN` | OR gate の raw cosine 軸閾値 (baseline: raw p50=0.764)。空返し診断は `gate_diagnostics` / `empty_reason` ([Troubleshooting](Operations-Troubleshooting.md) の triage 表) |
+| `explore_diversified_presentation_enabled` | `False` | `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED` | **Stage 6 (default OFF)**: `explore(diversity>0)` で engine 層 MMR presentation を有効化。`diversity=0.0`/`None` は flag ON でも完全 legacy (bit-for-bit) |
+| `explore_cohort_penalty` | `0.05` | `GAOTTT_EXPLORE_COHORT_PENALTY` | MMR 選択で同一 cluster (`cohort_id` OR `original_id`、source 分岐ゼロ) 既出への penalty (`diversity × penalty`) |
+| `explore_diversity_pool_multiplier` | `4` | `GAOTTT_EXPLORE_DIVERSITY_POOL_MULTIPLIER` | MMR 候補 pool の拡大倍率 (`top_k × multiplier` 件まで scoring 済み list を保持、追加 search は走らない) |
+| `explore_min_semantic` | `0.45` | `GAOTTT_EXPLORE_MIN_SEMANTIC` | diversity > 0 時の pool 候補への raw-cosine floor (lateral にも最低 relevance、forced items は豁免) |
+
+> **rollback まとめ**: Stage 2 は `semantic_halflife_enabled=False`、Stage 5 は `ambient_gate_or_semantic=False`、Stage 3/4/6 は default OFF なので何もしなければ legacy。各 flag は独立 (S3 off × S4 on 等の組み合わせも interaction test 済み)。
+
+> ⚠️ **multiverse 運用では env opt-in が実質効かない**: multiverse supervisor は backend spawn 時に spawn env から `GAOTTT_*` を**全て strip** し、明示的な 4 key (`GAOTTT_DATA_DIR` / `GAOTTT_EMBEDDER_ENDPOINT` / `GAOTTT_OWNER_LEASE_ENABLED` / `GAOTTT_BACKEND_TOKEN`) のみ再注入する (env-inheritance trap 対策、[Operations — Multiverse Setup](Operations-Multiverse-Setup.md))。したがって `GAOTTT_DIRECT_QUALIFICATION_ENABLED=1` 等を shell で export しても multiverse backend には届かない — **実質的な有効化は code default 昇格時** (config.py の default 値変更)。standalone (stdio / proxy) 運用では env がそのまま効く。
+
 ## Ambient Recall Enrichment
 
 `ambient_recall` ツール（[Claude Code フックが毎ターン呼ぶ](Guides-Ambient-Recall.md)）の構造化 passive recall を制御。詳細は [Plans — Ambient Recall Enrichment](Plans-Ambient-Recall-Enrichment.md)。

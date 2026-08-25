@@ -25,6 +25,20 @@ Stage 2 候補 (WAL audit / physics dynamics drift / JSON endpoint) と Stage 3 
 
 正常動作。初回クエリ時、`last_access` がインデックス時刻のため `decay = exp(-δ × 経過時間)` が非常に小さくなる。2 回目以降は decay ≈ 1.0。
 
+**Phase T Stage 2 (2026-08-25、default ON) で契約が変わった**: semantic decay は秒 rate `delta` から **half-life + floor** (`floor + (1−floor)·0.5^(age/halflife)`、既定 7 日 + floor 0.35) に置き換えられ、経年記憶でも semantic 項が `semantic_floor` を下回らなくなった (旧契約では 10 分で factor≈0.0025 に沈み、mass/wave が順位を完全支配)。age=0 で factor=1.0 は legacy と同一。旧挙動に戻すのは `GAOTTT_SEMANTIC_HALFLIFE_ENABLED=false` (下記 warning 参照)。
+
+## startup ログに semantic decay の deprecation warning が出る
+
+**症状**: engine 起動時に以下の WARNING が出る:
+
+```
+semantic_halflife_enabled=False: using legacy compute_decay with config.delta=0.01 — delta is a per-SECOND rate (deprecated contract) that zeroes the semantic score term within minutes. See docs/wiki/Plans-Phase-T-Semantic-Requalification.md §3.
+```
+
+**原因**: Phase T Stage 2 で legacy `delta` (秒 rate) 契約が deprecated になり、`semantic_halflife_enabled=False` (env `GAOTTT_SEMANTIC_HALFLIFE_ENABLED=false`) で明示的に legacy 経路を選んだときに 1 回だけ出る。エラーではなく「意図的な rollback であること」の確認ログ。
+
+**対処**: 意図的なら無視して OK。意図していないなら flag を外す (default `True` に戻す) — half-life + floor 契約のままだと経年記憶の semantic 項が消滅しない ([Tuning](Operations-Tuning.md) §Semantic Requalification)。
+
 ## 本番 acceptance test で新機能が一切検出されない (proxy mode backend が古いコードを保持)
 
 **症状**: 直前に commit/push した Phase X 機能 (新しい trailer / response field / mode arg 等) が、`mcp__gaottt__recall` / `mcp__gaottt__explore` 経由の本番 acceptance で 1 件も検出されない。`scripts/rest_smoke.py` / `scripts/mcp_smoke.py` (各 smoke は毎回新 engine を立てる) では green、テスト suite (`pytest tests/`) も green。
@@ -60,9 +74,19 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
    echo '{"prompt":"<関連しそうな長めのプロンプト>"}' | .venv/bin/python scripts/hooks/ambient_recall.py
    ```
    無出力なら下の 3〜5 を確認。
-3. **relevance gate に弾かれている** — 主たる gate は語単位 (Sudachi) BM25 の「強一致」gate。プロンプトの top BM25 が `config.ambient_bm25_min_score` (既定 32、コーパス規模・クエリ長依存) 未満だと注入しない — 高精度・低再現で、「その話題を実質的に議論したことがある」プロンプトでだけ発火する設計。`bm25-sudachi` extra 未導入 / `ambient_gate_use_bm25=False` だと `virtual_score` gate (`config.ambient_min_score`、既定 0.70、弱い分離) に自動フォールバック。しきい値の再校正は [Operations — Tuning](Operations-Tuning.md) の `ambient_*` 節（Guides の「しきい値の校正」も参照）。
+3. **relevance gate に弾かれている** — 主たる gate は語単位 (Sudachi) BM25 の「強一致」gate。top BM25 が `config.ambient_bm25_min_score` (既定 32、コーパス規模・クエリ長依存) 以上なら即 accept。**Phase T Stage 5 (default ON) では BM25 reject でも即空返しにならない** — passive recall が走り、`max(virtual_score) ≥ ambient_min_score` (0.70) OR `max(raw_cos) ≥ ambient_semantic_raw_min` (0.60) で accept、**両軸とも下回ったときだけ** 空返し (off-topic 抑制は維持)。`bm25-sudachi` extra 未導入 / `ambient_gate_use_bm25=False` だと `virtual_score` gate に自動フォールバック。しきい値の再校正は [Operations — Tuning](Operations-Tuning.md) の `ambient_*` 節（Guides の「しきい値の校正」も参照）。
 4. **プロンプトが短すぎる** — `GAOTTT_AMBIENT_MIN_CHARS` (既定 12) 文字未満のプロンプトはスキップ。
 5. **フックが無効化されている / 未登録** — `GAOTTT_AMBIENT_RECALL=0` が環境にある、または登録自体が無い。Claude Code は `.claude/settings.json` の `UserPromptSubmit` エントリ（`.claude/` は gitignore 対象なので clone では引き継がれない）、opencode は `~/.config/opencode/plugin/gaottt-ambient-recall.ts` の有無を確認。opencode プラグインは設計上 fail-safe で無言なので、`GAOTTT_AMBIENT_DEBUG=<path>` を設定すると各ステップの診断ログ（フック発火 / spawn の exit・stdout 長 / 注入有無）が出る。
+
+**Phase T Stage 5 — `empty_reason` による空返しの段階切り分け**: gate が空返しを返した理由は `AmbientRecallResponse.gate_diagnostics.empty_reason` (離散一意) で機械的に判別できる。REST は response JSON、MCP は `expose_breakdown=True` のとき `gate: <reason|passed> (...)` 診断行で読む:
+
+| `empty_reason` | 意味 | 次に見るもの |
+|---|---|---|
+| `bm25_veto` | legacy flag OFF (`ambient_gate_or_semantic=False`) で BM25 reject 即空 | rollback 意図なら正常。意図しなければ flag を戻す |
+| `bm25_and_semantic_below_threshold` | 候補は存在した (`candidates_generated > 0`) が BM25 も semantic 両軸とも閾値未満 | `gate_diagnostics` の `bm25_top_score` / `semantic_max_virtual` / `semantic_max_raw` と各閾値 (`ambient_bm25_min_score` 32.0 / `ambient_min_score` 0.70 / `ambient_semantic_raw_min` 0.60) の比較 — 言い換え系 query で BM25 が 5-9 に沈むのは既知 (gate は語彙一致のみ)。semantic が 0.6 を切るなら本当に無関係の可能性大 |
+| `no_candidates` | passive recall pool が 0 件 | corpus 側の問題 (DB 空 / FAISS 不整合)。下の「FAISS と SQLite のカウントが合わない」へ |
+| `all_tag_excluded` | 候補はあったが `exclude_tags` で全滅 | `GAOTTT_AMBIENT_EXCLUDE_TAGS` の substring が広すぎないか |
+| `all_dump_filtered` | 候補はあったが dump-shape gate (`ambient_dump_symbol_ratio`) で全滅 | corpus がコード / state-dump 中心でないか、`gate_diagnostics.after_dump_filter` と `after_tag_exclusion` の差分で |
 
 なお passive recall は `last_access` を更新しないため、ambient フックでしか surface されない記憶は decay し続ける（意図的 — Guides ページ「既知の性質」）。relevance gate は decay 非依存（BM25 語彙一致、フォールバックの `virtual_score` も同様）なので ambient 注入自体は古い記憶でも効き続ける。
 
@@ -306,6 +330,8 @@ follow-up（[Operations — Server Setup](Operations-Server-Setup.md)）。
 3. `compact(rebuild_faiss=True)` を実行
 4. 再度 `verify_faiss_recovery.py` で `Gap: 0` を確認
 
+**起動時 Tier B 診断 `tier_b_faiss_snapshot_mismatch` (ERROR)**: SQLite が restore / rollback されて FAISS file が新しい corpus snapshot のまま残っていると、FAISS が返す ID が SQLite に存在せず recall が空リストに劣化する (件数だけでは同規模 snapshot を弁別できないため、ID set の overlap 比で判定)。同診断は severe undersize (`tier_b_faiss_severe_undersize`) と同じく persist guard を latch し、この process が broken index を disk に書き戻すのを恒久的に block する。**対処**: 全 gaottt process 停止 → `scripts/rebuild_faiss_from_db.py --apply` (DB から再 embed、決定論でロスレス) → `--check` で検証 → 再起動。なお本診断は 2026-08-25 の semantic search 障害復旧 session に由来する **既存の未コミット変更** の一部として追加されたもの (ID-set 比較の強化。本項は事実の記載のみ)。
+
 ## 特定の memory が無関係なクエリでも上位に出続ける（重力井戸）
 
 **症状**: Phase I Stage 2/3 の query attraction や Phase J の累積 recall によって特定ノードの `displacement` が蓄積し、embedding 距離の遠いクエリでも wave の引力で浮上し続ける（重力井戸状態）。`recall` 結果の `displacement_norm` 値が 0.5 を超えている場合に疑う。
@@ -523,5 +549,6 @@ retrieval / mass / displacement の挙動を読み解くための副作用なし
 | `scripts/diag_dynamics.py` | mass / displacement / velocity の集計と時系列 hint | 全 node の `(mass, |d|, |v|)` 分布と簡易統計 |
 | `scripts/diag_cluster_coverage.py` | cluster (`cohort_id` / `original_id`) coverage 統計 — Stage 7.1 anti-hub の effective scope 確認 | cluster_key 保有率、cluster サイズ分布 |
 | `scripts/verify_faiss_recovery.py` | FAISS index と SQLite の整合性確認 (Tier B 自己診断の手動版) | ギャップ node ID 一覧、再 embed 要否 |
+| `scripts/score_baseline.py` | **Phase T Stage 1** の観測 baseline — golden corpus から隔離 DB を build し、score 項別寄与率 (semantic/wave/mass/…) / Stage 3 qualification 率 / ambient gate 診断 / recall vs explore Jaccard を測定 | `--out <json>` + 人間可読 summary、`--synthetic-age-seconds <n>` で経年シミュレーション。read-only (passive のみ)、Phase T knob の before/after 比較に |
 
 > **使い方の原則**: いずれも `--data-dir <path>` で本番 DB に向ける場合は他 MCP / REST プロセスを一旦停止 (read-only でも SQLite WAL のロック争奪は起こり得る、`cache - faiss` 整合性の write-behind 罠を避ける)。一時 DB で実験するなら `--data-dir ./.diag-tmp` のように project root 配下に置く (`/tmp` は外部 directory permission で拒否される環境あり)。

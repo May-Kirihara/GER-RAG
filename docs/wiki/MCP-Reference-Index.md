@@ -7,10 +7,10 @@ GaOTTT（旧 GER-RAG）が公開する **28 個の MCP ツール** の早見表�
 | ツール | 機能 | カテゴリ |
 |---|---|---|
 | `remember` | 知識を保存 | [Memory](MCP-Reference-Memory.md) |
-| `recall` | 重力波伝播による検索 | [Memory](MCP-Reference-Memory.md) |
+| `recall` | 重力波伝播による検索 (Phase T: breakdown に `qualified`/`direct_score`/`field_score`/`lensing_gap` 追加) | [Memory](MCP-Reference-Memory.md) |
 | `get_node` | ID 指定で 1 件取得 (read-only、seed pool 迂回) | [Memory](MCP-Reference-Memory.md) |
-| `ambient_recall` | 構造化 passive recall（フックが毎ターン注入） | [Memory](MCP-Reference-Memory.md) |
-| `explore` | 高温の創発的探索 | [Memory](MCP-Reference-Memory.md) |
+| `ambient_recall` | 構造化 passive recall（フックが毎ターン注入。Phase T: BM25 veto → semantic OR gate + `gate_diagnostics`/`empty_reason`） | [Memory](MCP-Reference-Memory.md) |
+| `explore` | 高温の創発的探索 (Phase T: engine 層 MMR presentation、default OFF) | [Memory](MCP-Reference-Memory.md) |
 | `reflect` | 状態分析（11 aspects） | [Memory](MCP-Reference-Memory.md) |
 | `ingest` | ファイル一括取り込み | [Memory](MCP-Reference-Memory.md) |
 | `auto_remember` | transcript から保存候補を抽出 | [Memory](MCP-Reference-Memory.md) |
