@@ -62,6 +62,40 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 
 **予防**: code 変更後の本番 acceptance ルーチンの **Step 0** として backend 起動時刻チェックを入れる。同じ pattern (process 内 state が外部 source-of-truth と乖離) は cache write-behind の「逆方向上書き罠」と同型 — CLAUDE.md の「bulk 書き換え時は他プロセス停止」ルールは **code update にも適用** する。memory: [[feedback-backend-kill-on-code-deploy]]。
 
+## backend の readiness が STARTING / FAILED に張り付く (Phase U WP-6b staged readiness)
+
+**仕組み**: HTTP backend (`readiness_protocol_enabled=True`, default) は transport 起動と同時に単一の engine startup task を開始し、状態を **`GET /admin/readiness`** (Bearer `GAOTTT_BACKEND_TOKEN` 認証 — supervisor が spawn した backend のみ token 必須、standalone dev は無認証) で露出する。単調遷移のみ:
+
+```text
+STARTING → SEMANTIC_READY → HYBRID_READY    (bm25 build 完了 / failed)
+STARTING → FAILED                           (startup task が raise)
+```
+
+- **SEMANTIC_READY** — startup 完了、BM25 は background build 中または同期 build 済み (`bm25_build_state` ∈ `building`/`idle`)。production 実測 7.3s (旧: 初回 tool call 129s)
+- **HYBRID_READY** — `bm25_build_state == "ready"`、または `"failed"` (検索は raw/virtual で稼働継続 — response に `bm25:"failed"` 印付き)
+- response body: `{state, elapsed_seconds, timings (engine.startup_timings — manifest/lease/store_init/ttl_scan/cache_load/faiss_load/virtual_faiss_load/bm25_build/background_loops/diagnostics/startup_total + node_count/index_size), bm25_size, node_count}`
+
+**STARTING に張り付く (正常 / 異常の切り分け)**:
+
+1. **正常**: 大規模 DB の cold start 中 (cache load 数秒 + BM25)。MCP tool call は共有 startup task を `readiness_wait_timeout_seconds=30s` まで bounded wait し、超過すれば **retryable な構造化 error** (`engine starting (state=STARTING, elapsed=..s) — retry shortly`) を返す — task は継続するので少し待って再 call すれば通る。
+2. **supervisor `/route` の挙動**: STARTING は `route_readiness_timeout_seconds=35s` まで poll し、超過しても error にせず **`readiness:"starting"` 付きで応答** を返す (即時 error ではなく観測可能な状態)。proxy shim はこれを 1 行 INFO log して接続を続行する。FAILED は 503。endpoint が無い旧 backend (404) は即時 legacy fallback。
+3. **異常 (恒久 STARTING)**: startup task が例外を吐いた場合は STARTING ではなく **FAILED** として sticky 記録される (下記復旧手順へ)。かつて flag OFF で「route だけ登録されて恒久 STARTING」になる退化があったが **WP-8 で解消** — flag OFF の backend は readiness route 自体を登録しないため、supervisor は 404 を即座に `READINESS_LEGACY` と解釈して poll なしで従来挙動へ fallback する (毎回の 35s 待ちは発生しない)。shim の `/route` HTTP timeout は `PROXY_ROUTE_TIMEOUT_SECONDS` — 完全 cold route の 3 stage (embedder lazy-spawn 90s + backend spawn probe 90s + readiness poll 35s) の和に margin を加えた **config field default からの derive 値** (現行 230s。bound を変えると自動追従) で supervisor の全待ち段を cover する。`--spawn-supervisor` の auto-spawn 経路では supervisor 起動 poll (`DEFAULT_SUPERVISOR_READINESS_TIMEOUT=200s`、起動専用 budget) と /route 本体 (full timeout) は **別 budget** — 起動が遅れても /route の timeout が短縮されることはない。
+
+**FAILED の復旧**: startup task の例外は sticky に記録され response の `error` に載る。engine は部分的に初期化された状態を best-effort で shutdown する。復旧は **backend の recycle (kill → supervisor の再 spawn)** または restart — FAILED 状態から自動復帰はしない。失敗原因は `error` 文字列と backend log (startup_timings のどこで止まったか) で特定する。
+
+**flag OFF (`GAOTTT_READINESS_PROTOCOL_ENABLED=0`) の注意**: legacy lazy 初回生成 (初回 tool call で engine 構築) に bit-for-bit 復帰し handler の bounded wait も無効化される。readiness route は登録されず supervisor `/route` は即時 legacy fallback する (WP-8 により 35s 待ち退化は解消済み — multiverse 配下でも安全)。ただし per-session lifespan が再び engine を tear down する (warm reconnect で再構築が走る) 点は legacy どおり。
+
+## BM25 snapshot が古い / 起動がまた遅い (Phase U WP-6d)
+
+**仕組み**: `bm25_snapshot_enabled=True` (default) のとき build 済み BM25 両 index (hybrid + ambient gate) は `data_dir/bm25.snapshot` に永続化される (checksum-verified pickle、tmp write → fsync → atomic rename)。次回 startup は fingerprint が一致すれば build を skip して load する。fingerprint は **content digest** (sorted `(id, sha256(content))` の sha256) + tokenizer identity + k1/b + format version + universe id — ID / timestamp 系だけの fingerprint は content 変更を取りこぼすため使わない。
+
+**運用上の要点**:
+
+- **stale snapshot は自然に self-heal する** — fingerprint 不一致 (content 変更・tokenizer 変更・cross-universe・破損) は単に rebuild に fallback する。fail-open ではなく「常に正しい index を保証する」方向の fallback なので、snapshot を手動で消す必要は基本的に無い
+- **size 注意**: snapshot は corpus 依存で大きくなる (production 42k nodes の初回 boot で **390MB** を書いた)。data_dir の disk 余裕と backup 対象への影響を確認すること
+- **保存タイミング**: build 完了時と graceful shutdown 時 (dirty flag) のみ — mutation ごとの再保存は行わない (write amplification 回避)。つまり常駐中の `remember` は snapshot に反映されず、次回の content digest が変わって rebuild になる (正しい挙動)
+- `bm25_snapshot_enabled=False` で永続化も load も無効化 (毎回 build — WP-6c 以前の挙動)。background build (`bm25_background_build_enabled=True`) と組み合わせれば rebuild も SEMANTIC_READY を block しない
+
 ## ambient recall フックが何も注入しない
 
 **症状**: ambient recall フック / opencode プラグイン ([Guides — Ambient Recall](Guides-Ambient-Recall.md)) を登録したのに、プロンプトを送っても `<gaottt-ambient-recall>` ブロックが文脈に現れない。
@@ -87,8 +121,36 @@ sleep 3 && ps -ef | grep "gaottt.server.mcp_server.*streamable-http" | grep -v g
 | `no_candidates` | passive recall pool が 0 件 | corpus 側の問題 (DB 空 / FAISS 不整合)。下の「FAISS と SQLite のカウントが合わない」へ |
 | `all_tag_excluded` | 候補はあったが `exclude_tags` で全滅 | `GAOTTT_AMBIENT_EXCLUDE_TAGS` の substring が広すぎないか |
 | `all_dump_filtered` | 候補はあったが dump-shape gate (`ambient_dump_symbol_ratio`) で全滅 | corpus がコード / state-dump 中心でないか、`gate_diagnostics.after_dump_filter` と `after_tag_exclusion` の差分で |
+| `composite_reject` | **Phase U WP-3・`ambient_gate_mode="composite"` のみ**: semantic composite 軸 (percentile / margin / raw) を評価したが閾値未達 | `gate_diagnostics` の `virt_percentile` / `margin` / `raw_top1` と 3 閾値 (`ambient_semantic_percentile_min` / `ambient_margin_min` / `ambient_raw_floor_composite`) の比較。下の「ambient composite gate」節 |
+| `composite_pool_too_small` | composite mode で pool < 2 件 (margin が未定義) | corpus / query 側の候補不足。`candidates_generated` を確認 |
+| `composite_reference_unavailable` | composite mode の参照 artifact が欠損・破損・fingerprint 不一致・count drift 超過 (**fail-closed** — BM25 のみが accept 経路) | 下の「ambient composite gate」節の再較正手順。意図せず出ているなら artifact が消えていないか `data_dir/ambient_composite_reference.json` を確認 |
 
 なお passive recall は `last_access` を更新しないため、ambient フックでしか surface されない記憶は decay し続ける（意図的 — Guides ページ「既知の性質」）。relevance gate は decay 非依存（BM25 語彙一致、フォールバックの `virtual_score` も同様）なので ambient 注入自体は古い記憶でも効き続ける。
+
+## ambient composite gate (Phase U WP-3) — off-topic 通過と fail-closed
+
+**背景 (R3)**: RURI cosine は大規模 corpus で 0.70-0.86 の狭帯に集中するため、**絶対閾値では off-topic を拒否できない** (ペンギン潜水艇 query が virt 0.835 / raw 0.805 で gate passed した実測)。Phase U は相対軸 (percentile / margin) を組み合わせた `ambient_gate_mode="composite"` を実装したが、**事前登録昇格 gate (held-out で negative FP=0 かつ positive FN≤10%) を較正が満たさなかった**ため default は `"or"` のまま ([較正記録](../notes/phase-u/ambient-composite-calibration.md) — R3 は user 判断待ち)。
+
+**composite 判定** (`ambient_gate_mode="composite"` のみ発動):
+
+```text
+accept = bm25_strong (word-BM25 ≥ ambient_bm25_min_score)
+      OR ( virt_percentile ≥ ambient_semantic_percentile_min    (参照分布に対する [0,100])
+           AND top_margin    ≥ ambient_margin_min               (top-1 virtual − pool virtual median)
+           AND raw_top1      ≥ ambient_raw_floor_composite )    (独自 raw FAISS 検索、breakdown 非依存)
+```
+
+**fail-closed 契約**: 参照 artifact (`data_dir/ambient_composite_reference.json`) の欠損・破損・fingerprint 不一致 (embedder 変更 / corpus digest 変更)・count drift 超過 (`ambient_composite_count_drift_max=0.05`) のいずれでも **BM25 のみが accept 経路になる** (`empty_reason="composite_reference_unavailable"`)。既知の false-positive 経路である `"or"` への open fallback は **しない** — ambient が沈黙しすぎたら `composite_reference_unavailable` で即座に気づける設計。
+
+**diagnostics**: composite mode で評価した場合、`gate_diagnostics` に `virt_percentile` / `margin` / `raw_top1` / `composite_signal` (accept: `bm25_strong` / `semantic_composite`、reject: `composite_reject` / `composite_pool_too_small` / `composite_reference_unavailable`) が populate される。`expose_breakdown=True` の gate 行は `pct=… margin=… raw=… sig=…` segment が追記される (mode="or" の行は byte-identical)。
+
+**再較正手順** (corpus 大幅変更後 / artifact fingerprint 不一致が続く場合):
+
+1. **production copy を作る** — `sqlite3 .backup` (online-safe) + FAISS / virtual FAISS / manifest の file copy。copy は較正専用とし restore source にしない
+2. **probe set を用意** — `scripts/ambient_probes_default.json` (positive = 障害/運用系 query + 日本語言い換え / negative = **記憶に存在しない話題** = off-topic) を corpus に合わせて更新
+3. **較正実行**: `.venv/bin/python scripts/calibrate_ambient_gate.py --data-dir <copy> --probes <probes.json> [--emit-artifact <copy>/ambient_composite_reference.json] [--seed 42]` — 本物の `ambient_recall` pipeline (passive) で pool 統計を記録し、3 閾値を stratified 50/50 split で grid search、held-out FP/FN + bootstrap CI を報告
+4. **昇格判断は PM (人間) が行う** — script は verdict を報告するだけ。事前登録 gate (FP=0 ∧ FN≤10%) を満たす場合のみ `ambient_gate_mode="composite"` へ
+5. **artifact を本番 data_dir に配置** して config 切替。artifact の fingerprint が本番 corpus と一致しないと fail-closed するので、copy と本番で content digest が同じであること (同一時点の copy から較正している限り一致する)
 
 ## ambient_recall が想定外の memo を surface する (composed query 不透明問題)
 
@@ -550,5 +612,8 @@ retrieval / mass / displacement の挙動を読み解くための副作用なし
 | `scripts/diag_cluster_coverage.py` | cluster (`cohort_id` / `original_id`) coverage 統計 — Stage 7.1 anti-hub の effective scope 確認 | cluster_key 保有率、cluster サイズ分布 |
 | `scripts/verify_faiss_recovery.py` | FAISS index と SQLite の整合性確認 (Tier B 自己診断の手動版) | ギャップ node ID 一覧、再 embed 要否 |
 | `scripts/score_baseline.py` | **Phase T Stage 1** の観測 baseline — golden corpus から隔離 DB を build し、score 項別寄与率 (semantic/wave/mass/…) / Stage 3 qualification 率 / ambient gate 診断 / recall vs explore Jaccard を測定 | `--out <json>` + 人間可読 summary、`--synthetic-age-seconds <n>` で経年シミュレーション。read-only (passive のみ)、Phase T knob の before/after 比較に |
+| `scripts/diag_config.py` | **Phase U WP-1** — GaOTTTConfig 全 field の effective value と **設定由来 (default / env / config-file) を per-field で表示** (`GaOTTTConfig.resolve_config_with_sources()` の true resolution-time provenance、heuristic diff ではない)。Phase T/U knob は先頭に grouping 表示 | `--knobs-only` (Phase T/U knob のみ) / `--all` (全 scalar field)。multiverse supervisor の env strip / allowlist で「この backend にどの flag が届いているか」を確認するのが主用途。DB / FAISS / engine は開かない (default data dir の mkdir のみ) |
+| `scripts/diag_target_trace.py` | **Phase U WP-4 (R4)** — query + target node ID を与えると raw FAISS rank / virtual FAISS rank / hybrid BM25 rank / ambient word-BM25 rank / qualification verdict / final rank + ScoreBreakdown / pool diagnosis (どこの段階で落ちたか) を一括表示 | `--data-dir <copy> --query "…" --target-id <uuid> [--top-n 20] [--json]`。passive 契約 (active query なし、write-behind 停止) だが **必ず production COPY に対して使うこと** (manifest 生成 / TTL scan の既知例外あり、copy は診断専用) |
+| `scripts/calibrate_ambient_gate.py` | **Phase U WP-3** — ambient composite gate の較正。labeled probe set を本物の `ambient_recall` (passive) で流して参照 virt-top-1 分布を構築、3 閾値を grid search、held-out FP/FN + bootstrap CI を報告。`--emit-artifact` で runtime 参照 artifact (schema v1) を生成 | `--data-dir <copy> --probes scripts/ambient_probes_default.json [--emit-artifact …] [--seed 42]`。**production COPY 専用**。昇格判断 (FP=0 ∧ FN≤10%) は script は報告のみ、PM が行う — 上の「ambient composite gate」節 |
 
 > **使い方の原則**: いずれも `--data-dir <path>` で本番 DB に向ける場合は他 MCP / REST プロセスを一旦停止 (read-only でも SQLite WAL のロック争奪は起こり得る、`cache - faiss` 整合性の write-behind 罠を避ける)。一時 DB で実験するなら `--data-dir ./.diag-tmp` のように project root 配下に置く (`/tmp` は外部 directory permission で拒否される環境あり)。

@@ -188,7 +188,10 @@ ReDoc: http://localhost:8000/redoc
         "qualified": true,
         "direct_score": 0.185,
         "field_score": 0.305,
-        "lensing_gap": 0.043
+        "lensing_gap": 0.043,
+        "cohort": "3663aa4912bb",
+        "provenance": "virtual",
+        "in_learn_set": true
       }
     }
   ],
@@ -198,7 +201,7 @@ ReDoc: http://localhost:8000/redoc
 
 **Phase O Stage 1 — Score breakdown**: 各 item に `score_breakdown` が attach され、`final_score` の additive な内訳が露出する。`final_score ≈ (virtual_cosine · decay_factor + wave_score + mass_boost + emotion_term + certainty_term) × saturation`。`raw_cosine` / `persona_proximity` / `bm25_contributed` / `forced_inclusion` は informational (sum に入らない)。`config.expose_score_breakdown=false` で `score_breakdown=null` 返却 (legacy 互換)。
 
-**Phase T — breakdown 拡張 field (informational、追加のみ)**: `qualified` (bool | null — `null` は qualification flag 両方 OFF の legacy、`false` は fallback pick)、`direct_score` (pre-saturation の semantic-direct 項 = `virtual_cos_norm × decay_factor`)、`field_score` (pre-saturation の field 項 = `wave + mass + emo + cert`)、`lensing_gap` (query path では `virtual_cos_norm − raw_cos`)。**Phase T Stage 3 (direct qualification、default OFF・env opt-in `GAOTTT_DIRECT_QUALIFICATION_ENABLED=1`)** ON 時は direct 候補の presentation が qualified-first (forced → qualified → fallback) になり、fallback pick は `qualified=false` で明示される。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) recall 節、[Plans — Phase T](Plans-Phase-T-Semantic-Requalification.md)。
+**Phase T — breakdown 拡張 field (informational、追加のみ)**: `qualified` (bool | null — `null` は qualification flag 両方 OFF の legacy、`false` は fallback pick)、`direct_score` (pre-saturation の semantic-direct 項 = `virtual_cos_norm × decay_factor`)、`field_score` (pre-saturation の field 項 = `wave + mass + emo + cert`)、`lensing_gap` (query path では `virtual_cos_norm − raw_cos`)。**Phase T Stage 3 (direct qualification) は Phase U WP-1 で default ON 昇格** (rollback `GAOTTT_DIRECT_QUALIFICATION_ENABLED=false`) — direct 候補の presentation が qualified-first (forced → qualified → fallback) になり、fallback pick は `qualified=false` で明示される。**raw-top rescue (Phase U WP-4b)**: qualified item のうち pool 内 raw cosine rank ≤ `direct_rescue_raw_rank` (既定 3) の item は qualified group の先頭に lift。**Phase U WP-5 — selection trace field (追加のみ)**: `cohort` (structural cluster key = `cohort_id` OR `original_id`)、`provenance` (`"raw"` / `"virtual"` / `"forced"` — candidate generation の由来)、`in_learn_set` (bool | null — Stage 4 TTT learn-set membership。passive / ttt-OFF recall では `null`)。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) recall 節、[Plans — Phase U](Plans-Phase-U-Review-Hardening.md)。
 
 **Phase O Stage 2 — Training delta**: response root に `training_delta` field が attach される (recall + explore で同じ shape)。caller が起こした state 変化 (backward pass) を JSON で受け取れる:
 
@@ -296,13 +299,17 @@ ReDoc: http://localhost:8000/redoc
     "bm25_gate": true,
     "semantic_max_virtual": 0.812,
     "semantic_max_raw": 0.774,
+    "virt_percentile": null,
+    "margin": null,
+    "raw_top1": null,
+    "composite_signal": null,
     "empty_reason": null
   },
   "expose_breakdown": false
 }
 ```
 
-`empty_reason` は離散一意: `bm25_veto` (legacy flag OFF で BM25 reject 即空) / `bm25_and_semantic_below_threshold` / `no_candidates` / `all_tag_excluded` / `all_dump_filtered`。`bm25_gate`/`bm25_top_score` は gate index 利用不可時 `null`、`semantic_max_raw` は breakdown が populate されていない場合 `null` (raw cosine 軸はその場合判定から外れる)。triage 表は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
+`empty_reason` は離散一意: `bm25_veto` (legacy flag OFF で BM25 reject 即空) / `bm25_and_semantic_below_threshold` / `no_candidates` / `all_tag_excluded` / `all_dump_filtered`、および **`ambient_gate_mode="composite"` (Phase U WP-3) のときのみ** `composite_reject` (semantic 軸 未達) / `composite_pool_too_small` (pool < 2 で margin 未定義) / `composite_reference_unavailable` (参照 artifact 欠損・破損・fingerprint 不一致・count drift 超過 — **fail-closed**、BM25 のみ accept 経路)。`bm25_gate`/`bm25_top_score` は gate index 利用不可時 `null`、`semantic_max_raw` は breakdown が populate されていない場合 `null` (raw cosine 軸はその場合判定から外れる)。**composite 軸 (Phase U WP-3、`ambient_gate_mode="composite"` で判定した場合のみ populate、それ以外は `null`)**: `virt_percentile` (参照分布に対する [0,100] の empirical percentile) / `margin` (pool top-1 virtual − pool virtual median) / `raw_top1` (ambient_recall 内部の独自 raw FAISS 検索による top-1 cosine、`expose_score_breakdown` 非依存) / `composite_signal` (`bm25_strong` / `semantic_composite` = accept、拒否理由は `empty_reason` と同値)。composite mode は実装済みだが default は `"or"` (昇格 gate を較正が満たさず)。triage 表は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
 
 > **★ Breaking change (2026-05-25, Stage 3)**: `lensing` field は `AmbientMemory | null` → `list[AmbientMemory]` に変更されました。旧 client は `data["lensing"]` を `None`/object として読んでいた箇所を `data["lensing"]` が常に list (空の場合 `[]`) であることに合わせて update してください。Stage 3 以前のロジックを保持したい場合は `config.ambient_lensing_max_k=1` で「1 picks 上限」になり、`data["lensing"][0] if data["lensing"] else None` が旧 shape 等価。
 
@@ -314,9 +321,9 @@ ReDoc: http://localhost:8000/redoc
 {"query": "connections between themes", "diversity": 0.7, "top_k": 10, "auto_route": true, "mode": "serendipity"}
 ```
 
-**レスポンス 200**: `items`（recall と同じ shape。Phase T breakdown 拡張 field も parity）+ `diversity` + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
+**レスポンス 200**: `items`（recall と同じ shape。Phase T breakdown 拡張 field + Phase U selection trace field (`cohort`/`provenance`/`in_learn_set`) も parity）+ `diversity` + `wave_depth` / `wave_reached` (**Phase U WP-5** — wave 伝播の実効 depth と到達 node 数。`training_delta.wave_max_depth` / `wave_reached_count` と同値を response root でも露出。dormant mode では `null`) + `training_delta` + `routing_hint` (Phase O Stage 2 / 3 — recall と parity)。
 
-**Phase T Stage 6 — diversified presentation (default OFF・env opt-in `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=1`)**: flag ON かつ `diversity > 0` で engine 層の MMR selection (pool 拡大 `top_k × explore_diversity_pool_multiplier` / `explore_min_semantic` floor / cohort penalty) が有効になる。`diversity=0.0` は bit-for-bit legacy。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) explore 節。
+**Phase T Stage 6 — diversified presentation (**Phase U WP-5 で default ON 昇格**・rollback `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=false`)**: flag ON かつ `diversity > 0` で engine 層の MMR selection (pool 拡大 `top_k × explore_diversity_pool_multiplier` / `explore_min_semantic` floor / cohort penalty) が有効になる。`diversity=0.0` は bit-for-bit legacy。詳細: [MCP Reference — Memory](MCP-Reference-Memory.md) explore 節。
 
 **Dormant mode (Phase O Stage 5):** `mode: "dormant"` で wave を bypass し counter-importance sampling。**自己発信 source class** (`agent` / `value` / `intention` / `commitment` / `note` / `reference`) のうち `last_access` が `dormant_age_threshold_seconds` (既定 30 日) より古く、かつ `mass ≤ dormant_mass_threshold` (既定 2.0) を満たすノードからランダムに `top_k` 件返す。`query` は ignore、`training_delta` / `routing_hint` は常に `null` (simulation 走らず、aspect intent も検出しない)。
 
@@ -649,6 +656,10 @@ Phase M follow-up — `displacement = velocity` を 1 orbital timestep ぶん一
 
 **用途**: M004 直後 (または M005 の代替として live server に対して実行する場合)。既定 `overwrite=false` は冪等で、追加の dream tick 蓄積を壊さない。`overwrite=true` は M002/M004 直後の cold cosmos を完全 reseed したい時のみ使う（destructive）。同等の効果を migration ledger に記録したい場合は `scripts/migrate.py --apply --step M005`。
 
+### GET /admin/readiness — FastMCP HTTP app 専用 (parity 例外、本 app には無し)
+
+**Phase U WP-6b** の staged readiness endpoint (`STARTING` → `SEMANTIC_READY` → `HYBRID_READY` / `FAILED` + `timings` + `bm25_size` + `node_count`) は **MCP HTTP backend (`gaottt.server.mcp_server`、streamable-http / SSE) の FastMCP app にのみ存在**し、本 REST app (`server/app.py`) には実装されない。supervisor の `/route` がこの endpoint を poll する (Bearer `GAOTTT_BACKEND_TOKEN` 認証)。**MCP/REST parity 鉄則の文書化された例外** — `/reset` と同じ扱い (管理面・backend lifecycle の確認は LLM の engine 能力ではなく運用面。詳細は [Architecture — Overview](Architecture-Overview.md) 設計判断表)。triage は [Operations — Troubleshooting](Operations-Troubleshooting.md)「backend の readiness が STARTING / FAILED に張り付く」。
+
 ---
 
 ## MCP との関係（Phase S 以降）
@@ -661,6 +672,7 @@ REST と MCP は同じ `gaottt/services/` レイヤを叩く **2 つのトラン
 同じ操作なので、バグ修正は一箇所で両方に効きます。差異は:
 - MCP は LLM 向け整形済み文字列、REST は構造化 JSON
 - `/reset` は REST 専用（LLM に破壊的操作を露出しない設計判断）
+- `/admin/readiness` は FastMCP HTTP app 専用（Phase U WP-6b — 上記、parity 例外）
 - `/index` `/query` は REST 専用の Phase A 互換
 
 → サービス層の設計: [`docs/maintainers/rest-mcp-unification-plan.md`](https://github.com/May-Kirihara/GaOTTT/blob/main/docs/maintainers/rest-mcp-unification-plan.md)

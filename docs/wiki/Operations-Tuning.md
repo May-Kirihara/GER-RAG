@@ -184,30 +184,89 @@ Phase M (mass 増の単一規則、入力側) + Phase N (mass 減の単一規則
 
 ## Semantic Requalification (Phase T — decay 契約・qualification・ambient OR gate・explore MMR、2026-08-25)
 
-SQLite/FAISS 復旧後に残った検索品質課題を「**意味的観測を土台に、重力場が順位・連想・人格を育てる**」の層分離で解消する 6 stage ([Plans — Phase T](Plans-Phase-T-Semantic-Requalification.md))。Stage 2 (semantic decay の half-life 化) と Stage 5 (ambient OR gate) は再現済み欠陥の修正として **default ON**、Stage 3 (direct qualification) / Stage 4 (TTT update qualification) / Stage 6 (explore MMR) は較正結果 ([docs/notes/phase-t/](../notes/phase-t/)) に基づき **default OFF + env opt-in**。観測 baseline は `scripts/score_baseline.py` (read-only、golden corpus で score 項寄与率 / qualification 率 / ambient gate 診断 / recall vs explore Jaccard、`--synthetic-age-seconds` で経年シミュレーション)。
+SQLite/FAISS 復旧後に残った検索品質課題を「**意味的観測を土台に、重力場が順位・連想・人格を育てる**」の層分離で解消する 6 stage ([Plans — Phase T](Plans-Phase-T-Semantic-Requalification.md))。Stage 2 (semantic decay の half-life 化) と Stage 5 (ambient OR gate) は再現済み欠陥の修正として、Stage 3 (direct qualification) / Stage 4 (TTT update qualification) / Stage 6 (explore MMR) は Phase U WP-1/WP-5 (2026-08-25) で **code default True に昇格済み** (下記「Phase U — Review Hardening」節参照)。観測 baseline は `scripts/score_baseline.py` (read-only、golden corpus で score 項寄与率 / qualification 率 / ambient gate 診断 / recall vs explore Jaccard、`--synthetic-age-seconds` で経年シミュレーション)。
 
 | パラメータ | 既定 | env | 影響 |
 |---|---|---|---|
 | `semantic_halflife_enabled` | `True` | `GAOTTT_SEMANTIC_HALFLIFE_ENABLED` | **Stage 2 (default ON)**: semantic decay を秒 rate `delta` (`exp(-δ·age)`、10 分で factor≈0.0025) から **half-life + floor 契約** (`floor + (1-floor)·0.5^(age/halflife)`) へ。`False` で legacy `delta` 経路に bit-for-bit rollback (startup に deprecation warning、[Troubleshooting](Operations-Troubleshooting.md)) |
 | `semantic_half_life_seconds` | `604800.0` (7日) | `GAOTTT_SEMANTIC_HALF_LIFE_SECONDS` | semantic 項の半減期。較正出力 (7d + floor 0.35 で 6 週間後に factor≈0.355 = floor 支配)。検証: `half_life_seconds > 0` で reject |
 | `semantic_floor` | `0.35` | `GAOTTT_SEMANTIC_FLOOR` | 経年 semantic 項の下限 — mass/wave が順位を完全支配するのを防ぐ。floor が保存するのは legacy 同様 `gravity_sim` 項 (virtual 位置との dot) で raw 意味論そのものではない点は既知の性質。`0` で完全消滅 (旧挙動に近い) |
-| `direct_qualification_enabled` | `False` | `GAOTTT_DIRECT_QUALIFICATION_ENABLED` | **Stage 3 (default OFF)**: direct 候補の presentation を qualified-first (forced → qualified → fallback) に並べ替え。fallback は breakdown `qualified=false` + reason 行 `gravity pick (below relevance floor)` で明示。`False` で legacy 順序 |
+| `direct_qualification_enabled` | `True` (**Phase U WP-1 で昇格**) | `GAOTTT_DIRECT_QUALIFICATION_ENABLED` | **Stage 3**: direct 候補の presentation を qualified-first (forced → qualified → fallback) に並べ替え。fallback は breakdown `qualified=false` + reason 行 `gravity pick (below relevance floor)` で明示。`False` で legacy 順序 |
 | `direct_raw_cosine_min` | `0.75` | `GAOTTT_DIRECT_RAW_COSINE_MIN` | qualification の決定論的軸 (raw cosine)。baseline: raw p50=0.764 / p90=0.820 の RURI 狭帯に対し 0.75 で qualified 率 70.6% |
 | `direct_virtual_cosine_min` | `0.75` | `GAOTTT_DIRECT_VIRTUAL_COSINE_MIN` | qualification の正規化軸 (`virtual_cos_norm`、displacement+temperature 込みの新規計算) |
 | `direct_bm25_relative_min` | `0.40` | `GAOTTT_DIRECT_BM25_RELATIVE_MIN` | lexical strength 軸の相対比閾値 (pool top score 比、corpus size 非依存)。lexical 軸は absolute と **AND** の二重条件 (off-topic guard) |
 | `direct_bm25_absolute_min` | `8.0` | `GAOTTT_DIRECT_BM25_ABSOLUTE_MIN` | lexical 軸の absolute 閾値。baseline: on-topic top score 14-58 → 8.0 は弱一致 tail の off-topic guard |
 | `direct_bm25_pool_size` | `50` | `GAOTTT_DIRECT_BM25_POOL_SIZE` | lexical strength 計算用 BM25 pool size (top-K 予算別) |
-| `ttt_qualification_enabled` | `False` | `GAOTTT_TTT_QUALIFICATION_ENABLED` | **Stage 4 (default OFF)**: query-conditioned な TTT 更新 (**mass growth ×confidence / query kick / cooccurrence**) を qualified learn set のみに限定し bad gradient の自己強化を遮断。synthetic recall (dream loop) は免除。maintenance 系 (last_access / evaporation / sim_history+temperature / orbital N-body) は all reached のまま |
+| `ttt_qualification_enabled` | `True` (**Phase U WP-1 で昇格**) | `GAOTTT_TTT_QUALIFICATION_ENABLED` | **Stage 4**: query-conditioned な TTT 更新 (**mass growth ×confidence / query kick / cooccurrence**) を qualified learn set のみに限定し bad gradient の自己強化を遮断。synthetic recall (dream loop) は免除。maintenance 系 (last_access / evaporation / sim_history+temperature / orbital N-body) は all reached のまま |
 | `ambient_gate_or_semantic` | `True` | `GAOTTT_AMBIENT_GATE_OR_SEMANTIC` | **Stage 5 (default ON)**: ambient gate を BM25 veto から **OR gate** へ。BM25 reject でも passive recall を実行し、`virtual_score ≥ ambient_min_score` OR `raw_cos ≥ ambient_semantic_raw_min` で accept (両軸 miss で空返し、off-topic 抑制は維持)。`False` で legacy veto に rollback。較正: 旧 veto で 19/19 on-topic golden query が空返し (gate score 5.8-8.8 vs 32.0、semantic_max 0.899) していたのが 19/19 surfaced |
 | `ambient_semantic_raw_min` | `0.60` | `GAOTTT_AMBIENT_SEMANTIC_RAW_MIN` | OR gate の raw cosine 軸閾値 (baseline: raw p50=0.764)。空返し診断は `gate_diagnostics` / `empty_reason` ([Troubleshooting](Operations-Troubleshooting.md) の triage 表) |
-| `explore_diversified_presentation_enabled` | `False` | `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED` | **Stage 6 (default OFF)**: `explore(diversity>0)` で engine 層 MMR presentation を有効化。`diversity=0.0`/`None` は flag ON でも完全 legacy (bit-for-bit) |
+| `explore_diversified_presentation_enabled` | `True` (**Phase U WP-5 で昇格**) | `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED` | **Stage 6**: `explore(diversity>0)` で engine 層 MMR presentation を有効化。`diversity=0.0`/`None` は flag ON でも完全 legacy (bit-for-bit) |
 | `explore_cohort_penalty` | `0.05` | `GAOTTT_EXPLORE_COHORT_PENALTY` | MMR 選択で同一 cluster (`cohort_id` OR `original_id`、source 分岐ゼロ) 既出への penalty (`diversity × penalty`) |
 | `explore_diversity_pool_multiplier` | `4` | `GAOTTT_EXPLORE_DIVERSITY_POOL_MULTIPLIER` | MMR 候補 pool の拡大倍率 (`top_k × multiplier` 件まで scoring 済み list を保持、追加 search は走らない) |
 | `explore_min_semantic` | `0.45` | `GAOTTT_EXPLORE_MIN_SEMANTIC` | diversity > 0 時の pool 候補への raw-cosine floor (lateral にも最低 relevance、forced items は豁免) |
 
-> **rollback まとめ**: Stage 2 は `semantic_halflife_enabled=False`、Stage 5 は `ambient_gate_or_semantic=False`、Stage 3/4/6 は default OFF なので何もしなければ legacy。各 flag は独立 (S3 off × S4 on 等の組み合わせも interaction test 済み)。
+> **rollback まとめ**: Stage 2 は `semantic_halflife_enabled=False`、Stage 5 は `ambient_gate_or_semantic=False`。Stage 3/4/6 は Phase U で **default ON 昇格済み** — rollback は各 env (`GAOTTT_DIRECT_QUALIFICATION_ENABLED=false` / `GAOTTT_TTT_QUALIFICATION_ENABLED=false` / `GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=false`)。各 flag は独立 (S3 off × S4 on 等の組み合わせも interaction test 済み)。
 
-> ⚠️ **multiverse 運用では env opt-in が実質効かない**: multiverse supervisor は backend spawn 時に spawn env から `GAOTTT_*` を**全て strip** し、明示的な 4 key (`GAOTTT_DATA_DIR` / `GAOTTT_EMBEDDER_ENDPOINT` / `GAOTTT_OWNER_LEASE_ENABLED` / `GAOTTT_BACKEND_TOKEN`) のみ再注入する (env-inheritance trap 対策、[Operations — Multiverse Setup](Operations-Multiverse-Setup.md))。したがって `GAOTTT_DIRECT_QUALIFICATION_ENABLED=1` 等を shell で export しても multiverse backend には届かない — **実質的な有効化は code default 昇格時** (config.py の default 値変更)。standalone (stdio / proxy) 運用では env がそのまま効く。
+> ⚠️ **multiverse 運用での env delivery**: multiverse supervisor は backend spawn 時に spawn env から `GAOTTT_*` を strip していたが、**Phase U WP-2 で tuning knob のみ正確名 allowlist 経由で伝播するようになった** (下記「Phase U — supervisor tuning env allowlist」節 — 28 変数、`GAOTTT_DIRECT_QUALIFICATION_ENABLED` 等の rollback env を含む)。allowlist 外の `GAOTTT_*` (identity 系 4 key を除く) は引き続き strip。standalone (stdio / proxy) 運用では env がそのまま効く。
+
+## Phase U — Review Hardening (R1-R5 対応、2026-08-26)
+
+実 MCP レビュー ([handoff](../handoff/2026-08-25-post-recovery-retrieval-quality.md) §改善実装後の実MCP再検証) の 5 課題 (R1 qualification env 不達 / R2 explore diversity 非反映 / R3 ambient off-topic 通過 / R4 既知障害 node top-5 外 / R5 cold start 129s) への対応として追加された knob 群。計画書: [Plans — Phase U](Plans-Phase-U-Review-Hardening.md)。
+
+### 昇格済み default (WP-1 / WP-5)
+
+Phase T から昇格 (`direct_qualification_enabled` / `ttt_qualification_enabled` / `explore_diversified_presentation_enabled` とも `True`、上の Phase T 表参照)。rollback env は上記 rollback まとめのとおり。較正 round ([docs/notes/phase-t/calibration-round.md](../notes/phase-t/calibration-round.md)) と promoted-combination suite を以て昇格判断を通過。
+
+### 新規 knob
+
+| パラメータ | 既定 | env | 影響 |
+|---|---|---|---|
+| `direct_rescue_raw_rank` | `3` | `GAOTTT_DIRECT_RESCUE_RAW_RANK` | **WP-4b — raw-top rescue**: Stage 3 並べ替えの拡張。qualified な natural item のうち scored pool 内 **raw cosine rank が本値以下** の item を qualified group の先頭 tier に lift (tier 内は raw cosine 降順)。生成直後の genesis/priming kick で displacement が raw content 方向から逸脱した node が、raw rank 1 でも virtual cosine 低迷で top-K から消える病理 (root cause: [docs/notes/phase-u/wp4-trace-findings.md](../notes/phase-u/wp4-trace-findings.md)) への「観測を field の drift から守る最小の防腐剤」。presentation 専用 (score / physics / breakdown には書き込まない)。forced/injected 経路には不適用。`0` で無効 (Stage 3 挙動に bit-for-bit 復帰)。`direct_qualification_enabled=False` なら rescue も無効 (rescue は qualified item 上に定義) |
+| `ambient_gate_mode` | `"or"` | `GAOTTT_AMBIENT_GATE_MODE` | **WP-3 — ambient gate mode**。`"or"` (default, Phase T Stage 5 の OR gate を bit-for-bit 維持) \| `"composite"` (`accept = bm25_strong OR (virt_percentile ≥ percentile_min AND top_margin ≥ margin_min AND raw_top1 ≥ raw_floor_composite)`)。**composite は実装済みだが事前登録昇格 gate (held-out FP=0 ∧ FN≤10%) を較正が満たさなかったため default は `"or"` のまま** — 判定記録は [docs/notes/phase-u/ambient-composite-calibration.md](../notes/phase-u/ambient-composite-calibration.md)、R3 は user 判断待ち |
+| `ambient_semantic_percentile_min` | `85.0` (provisional) | `GAOTTT_AMBIENT_SEMANTIC_PERCENTILE_MIN` | composite mode の percentile 軸 — 参照分布 (較正 artifact の virt top-1 分布) に対する top-1 virtual cosine の empirical percentile 下限 [0,100]。狭帯の正規化であり判別は labeled 閾値選定で担保 |
+| `ambient_margin_min` | `0.02` (provisional) | `GAOTTT_AMBIENT_MARGIN_MIN` | composite mode の margin 軸 — pool top-1 virtual − pool virtual median の下限。pool 全体が同じ高い帯に張り付く off-topic を拒否する相対軸 |
+| `ambient_raw_floor_composite` | `0.80` (provisional) | `GAOTTT_AMBIENT_RAW_FLOOR_COMPOSITE` | composite mode の raw 軸 — ambient_recall 内部の独自 raw FAISS 検索による top-1 cosine の下限。`expose_score_breakdown` に非依存 (Phase T の raw 軸欠損問題の再発防止契約) |
+| `ambient_composite_reference_filename` | `"ambient_composite_reference.json"` | `GAOTTT_AMBIENT_COMPOSITE_REFERENCE_FILENAME` | composite mode の参照 artifact path (data_dir 基準)。`scripts/calibrate_ambient_gate.py --emit-artifact` が生成 (schema v1、fingerprint = embedder id/version + corpus digest + active_count)。**allowlist 外 (config-file only)** — supervisor env 経由では変更できない (deployment の構造選択のため) |
+| `ambient_composite_count_drift_max` | `0.05` | `GAOTTT_AMBIENT_COMPOSITE_COUNT_DRIFT_MAX` | runtime staleness guard — `\|active_count − reference_count\| / reference_count` がこの値を超えたら参照は stale とみなし fail-closed (full digest scan は初回 composite 使用時のみ、per-call はこの cheap count check) |
+| `bm25_background_build_enabled` | `True` | `GAOTTT_BM25_BACKGROUND_BUILD_ENABLED` | **WP-6c — BM25 build の background 化**。新規 index object への snapshot build + build 窓内 mutation の journal replay + engine lock 下での atomic swap。production 実測で BM25 build 147s = startup 153s の **96%** を占めた ([startup-timings](../notes/phase-u/startup-timings.md)) ので同期 build を startup 経路から外し SEMANTIC_READY ≈6s を達成。build 窓内は hybrid seed pool が raw/virtual 縮退運転し ambient gate は semantic fallback。`engine.bm25_build_state` ∈ `idle`/`building`/`ready`/`failed`。`False` で同期 build (旧挙動) に復帰 |
+| `bm25_snapshot_enabled` | `True` | `GAOTTT_BM25_SNAPSHOT_ENABLED` | **WP-6d — BM25 index の永続化** (`data_dir/bm25.snapshot`、checksum-verified pickle、tmp write → fsync → atomic rename)。fingerprint = content digest (sorted (id, sha256(content)) の sha256) + tokenizer identity + k1/b + format version + universe id。一致なら build を skip して load、不一致 (content 変更・tokenizer 変更・cross-universe・破損) は rebuild。保存は build 完了時と graceful shutdown 時のみ。`False` で永続化も load も無効化 (毎回 build) |
+| `readiness_protocol_enabled` | `True` | `GAOTTT_READINESS_PROTOCOL_ENABLED` | **WP-6b — staged readiness protocol**。HTTP backend transport の起動 (app lifespan) と同時に単一の engine startup task を開始 (lazy 初回 tool-call 生成を廃止)。全 MCP handler は共有 task を `readiness_wait_timeout_seconds` で bounded wait。engine の生存期間は transport に紐づき per-session lifespan では tear down しない (warm reconnect で再構築されない)。状態は `GET /admin/readiness` が露出。`False` で legacy lazy 初回生成に bit-for-bit 復帰 (handler の bounded wait も無効化)。**WP-8 後の挙動**: flag OFF では readiness route 自体が登録されない → supervisor は 404 を検知して即時 legacy fallback (poll deadline を消費しない) — multiverse 配下でも安全に OFF にできる ([Troubleshooting](Operations-Troubleshooting.md) readiness triage 参照) |
+| `readiness_wait_timeout_seconds` | `30.0` | `GAOTTT_READINESS_WAIT_TIMEOUT_SECONDS` | MCP handler が共有 startup task を待つ上限 (秒)。超過時は retryable な構造化 error (`engine starting (state=STARTING, elapsed=..s) — retry shortly`)、task 自体は継続 |
+| `route_readiness_timeout_seconds` | `35.0` | `GAOTTT_ROUTE_READINESS_TIMEOUT_SECONDS` | **supervisor 側** — `/route` が backend の `GET /admin/readiness` を poll する deadline (秒)。STARTING 中はここまで待ち、超過しても error にせず `readiness:"starting"` 付きで応答 (client は接続して backend 側の bounded wait に委ねられる)。FAILED は 503、endpoint 無し (404) は即時 legacy fallback。backend 側 `readiness_wait_timeout_seconds=30s` より長く取り SEMANTIC_READY 到達を /route 内で完結させる |
+
+### Phase U — supervisor tuning env allowlist (WP-2)
+
+multiverse supervisor の backend spawn env は、`gaottt/multiverse/tuning_env.py` の **閉じた完全名 allowlist** `RUNTIME_TUNING_ENV_ALLOWLIST` (28 変数) に一致する `GAOTTT_*` のみを通す。Phase T/U の rollback・tuning knob の env delivery 経路 (R1 の rollback 面)。
+
+**Allowlist (28 変数、exact-name 一致のみ)**:
+
+```text
+GAOTTT_SEMANTIC_HALFLIFE_ENABLED        GAOTTT_SEMANTIC_HALF_LIFE_SECONDS
+GAOTTT_SEMANTIC_FLOOR                    GAOTTT_DIRECT_QUALIFICATION_ENABLED
+GAOTTT_DIRECT_RAW_COSINE_MIN             GAOTTT_DIRECT_VIRTUAL_COSINE_MIN
+GAOTTT_DIRECT_BM25_RELATIVE_MIN          GAOTTT_DIRECT_BM25_ABSOLUTE_MIN
+GAOTTT_DIRECT_BM25_POOL_SIZE             GAOTTT_TTT_QUALIFICATION_ENABLED
+GAOTTT_DIRECT_RESCUE_RAW_RANK            GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED
+GAOTTT_EXPLORE_COHORT_PENALTY            GAOTTT_EXPLORE_MIN_SEMANTIC
+GAOTTT_EXPLORE_DIVERSITY_POOL_MULTIPLIER GAOTTT_AMBIENT_GATE_OR_SEMANTIC
+GAOTTT_AMBIENT_SEMANTIC_RAW_MIN          GAOTTT_AMBIENT_BM25_MIN_SCORE
+GAOTTT_AMBIENT_MIN_SCORE                 GAOTTT_AMBIENT_GATE_USE_BM25
+GAOTTT_AMBIENT_GATE_MODE                 GAOTTT_AMBIENT_SEMANTIC_PERCENTILE_MIN
+GAOTTT_AMBIENT_MARGIN_MIN                GAOTTT_AMBIENT_RAW_FLOOR_COMPOSITE
+GAOTTT_AMBIENT_COMPOSITE_COUNT_DRIFT_MAX GAOTTT_READINESS_PROTOCOL_ENABLED
+GAOTTT_BM25_BACKGROUND_BUILD_ENABLED     GAOTTT_BM25_SNAPSHOT_ENABLED
+```
+
+**意味論**:
+
+- **exact-name 一致のみ** — prefix / wildcard 一致は無く、未来の knob は自動的に deny (allowlist 拡張は review 経由のみ)。allowlist 項目が `GaOTTTConfig` の実 field に対応しなくなった場合は **常時 error** (staleness guard)
+- **`GAOTTT_CONFIG` は伝播しない** — 任意 config field を含め得るため tuning-only allowlist と矛盾する (Codex review 指摘を採用)。**恒久 rollback / 恒久設定変更は supervisor を起動する service 定義 (systemd 等) に env を置く運用**で対応
+- **`GAOTTT_AMBIENT_COMPOSITE_REFERENCE_FILENAME` も allowlist 外 (config-file only)** — 参照 artifact の置き場所は deployment の構造選択 (universe data_dir と紐づく) なので、runtime env 経由の変更は想定しない (Phase U WP-3 の 5 composite knob のうちしきい値系のみ伝播)
+- **値検証は fail-fast**: bool は `1/true/yes/on/0/false/no/off` の認識 token のみ (それ以外は拒否)、int/float は `GaOTTTConfig._coerce_env` と同一の coercion で parse できなければ拒否、float は NaN/±Infinity を拒否、str enum (`GAOTTT_AMBIENT_GATE_MODE`) は `'or'`/`'composite'` 閉集合外を拒否。**不正値は backend spawn を拒否し `/route` が 500 (validation error detail 付き) を返す** — backend 側が黙って False coerce する「設定したのに効かない」静かな事故を防ぐ
+- **identity 系は常に supervisor の明示上書きが勝つ**: `GAOTTT_DATA_DIR` / `GAOTTT_EMBEDDER_ENDPOINT` / `GAOTTT_OWNER_LEASE_ENABLED` / `GAOTTT_BACKEND_TOKEN` は allowlist 外・従来どおり明示上書き (caller は `tuning_env` 経由では触れない)
+- MV5 review #7 維持: `LITESTREAM` / `BACKUP` 系が spawn env に存在しないことの assertion は残存
+
+> **allowlist への追加は review 経由で拡張する** 運用ルール (Plans §8 仮定 ledger)。追加したい knob がある場合は `RUNTIME_TUNING_ENV_ALLOWLIST` と本表を同時に更新し、`tests/unit/test_tuning_env.py` / `tests/integration/test_supervisor_tuning_env.py` の staleness guard が通ることを確認する。
 
 ## Ambient Recall Enrichment
 

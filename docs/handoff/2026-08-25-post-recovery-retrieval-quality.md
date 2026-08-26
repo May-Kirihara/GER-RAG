@@ -487,6 +487,326 @@ STARTING
 修正の北極星は物理項を削除することではない。意味的関連性を観測の土台として保持し、
 その上で重力場が順位・連想・人格を育てる構造へ戻すことである。
 
+## 改善実装後の実MCP再検証
+
+### 検証概要
+
+- 検証日: 2026-08-25
+- 経路: Codexから実際のGaOTTT multiverse MCPを呼び出し
+- 対象: cold start、通常recall、high-diversity explore、ambient recall、既知障害node
+- 総合判定: **部分改善。semantic decayとambient silent emptyは改善したが、productionで
+  qualification / explore diversityが有効になっておらず、ambient false positiveと
+  cold-start問題が残る**
+
+### 改善を確認できた項目
+
+#### semantic decay
+
+次のqueryをpassive recallした。
+
+```text
+GaOTTT semantic decay half-life floor mass dominance Phase T
+```
+
+上位3件のbreakdownはいずれも`decay=0.999`で、変更前に観測された`decay≈0.000`は
+解消した。
+
+```text
+top-1: cos=0.813 vcos=0.815 decay=0.999 score=0.9398
+top-2: cos=0.817 vcos=0.818 decay=0.999 score=0.9274
+top-3: cos=0.812 vcos=0.813 decay=0.999 score=0.9267
+```
+
+したがってhalf-life + floor経路自体はproduction MCPで動作している。
+
+#### 通常recall
+
+```text
+recall(
+  query="GaOTTTの設計思想と長期記憶の運用知見",
+  top_k=5,
+  passive=true,
+  force_refresh=true
+)
+```
+
+5件を正常に返した。上位は次の通り。
+
+1. GaOTTT自由探索記録（score 0.9922）
+2. Phase T semantic decay記録（score 0.9508）
+3〜5. OpenAI会話由来のTTT / long-context関連記録
+
+変更前のshabero削除flowによるtop-5占有は解消し、少なくとも上位2件はqueryへ直接関連
+するようになった。ただし3〜5位は広義のTTT関連に留まり、GaOTTT設計思想への直接性は
+まだ弱い。
+
+#### ambient OR gateと診断表示
+
+```text
+ambient_recall(
+  query="GaOTTTのsemantic search障害を復旧し、今後の運用を確認する",
+  direct_k=3,
+  expose_breakdown=true
+)
+```
+
+以前の`(関連する記憶なし)`ではなく3件を返した。
+
+```text
+gate: passed (
+  bm25_top=27.0/32.0,
+  virt_max=0.856,
+  raw_max=0.861,
+  candidates=15
+)
+```
+
+BM25が閾値未満でもsemantic signalによって通過しており、旧BM25 vetoは解消した。
+gate diagnosticsもMCP出力へ表示される。
+
+#### データ到達性
+
+既知障害nodeを`get_node`で正常取得した。
+
+```text
+de1b528f-f95a-46e8-a28d-7a4fbd580806
+source=agent
+tags=[gaottt, troubleshooting, faiss, embedding-down]
+mass=1.39
+```
+
+DB上の内容とphysics stateを取得できるため、データ消失ではない。
+
+#### warm MCP latency
+
+backend起動後は各callが概ね2〜5秒で完了した。warm経路は利用可能。
+
+### 未完了・新たに確認した問題
+
+#### P0: productionでqualificationが無効
+
+recall breakdownにはPhase Tで追加されたはずの次の表示がなかった。
+
+```text
+q=+ / q=-
+d=<direct_score>
+f=<field_score>
+gap=<lensing_gap>
+```
+
+同じMCP探索で得た運用記録には次の内容があった。
+
+```text
+multiverse supervisorはbackend spawn envからGAOTTT_*をstripする。
+direct_qualification / ttt_qualification / explore MMRはdefault OFFのため、
+env opt-inがbackendへ届かずproductionでは実質無効。
+```
+
+現行code defaultも次の状態。
+
+```text
+direct_qualification_enabled = False
+ttt_qualification_enabled = False
+```
+
+このため、実装済みでも本番MCP経路ではbad-gradient防止が動いていない。
+
+##### 推奨修正
+
+次のいずれかを行う。
+
+1. golden corpus較正後、対象flagをcode default ONへ昇格する。
+2. supervisorに安全な`GAOTTT_*` allowlistを作り、必要なretrieval設定だけbackendへ渡す。
+3. universe configへ明示的に保存し、環境変数へ依存しない。
+
+rollback可能性とuniverse間の再現性を考えると、永続universe config + supervisor allowlistの
+組み合わせが望ましい。
+
+##### 受け入れ条件
+
+- 実multiverse MCPのrecall breakdownに`q/d/f/gap`が表示される。
+- low-relevance候補が`q=-`となり、active recallでもphysics更新されない。
+- config確認用diagnosticでeffective valueと設定由来を取得できる。
+
+#### P1: explore diversityが結果へ反映されない
+
+```text
+explore(
+  query="GaOTTTの設計思想と長期記憶の運用知見",
+  top_k=5,
+  diversity=0.8
+)
+```
+
+通常recallと同じ5件・同じ順序だった。Jaccard@5は`1.0`。
+
+```text
+wave_reached=57
+depth=4
+```
+
+wave自体は深くなったが、presentation段の多様化には反映されていない。さらにactive
+exploreにより、関連性の弱いOpenAI会話nodeを含む結果へmass / displacement更新が入った。
+
+```text
+Δmass top:
+  exploration-report +0.0600
+  openai会話node     +0.0488
+```
+
+##### 推奨修正
+
+- explore MMR / cohort penaltyをproductionで有効化する。
+- final selection前にqualificationし、`q=-`候補を更新対象から外す。
+- wave depth、raw/virtual由来、cohortをselection traceへ出す。
+
+##### 受け入れ条件
+
+- 同queryでdiversity=0.8のJaccard@5が1.0未満になる。
+- 1〜2件の妥当なlateral resultが入る。
+- low-relevance lateral candidateへTTT更新が発生しない。
+
+#### P0: ambient semantic OR gateがoff-topicも通す
+
+次の意図的なoff-topic queryでfalse positiveを確認した。
+
+```text
+南極のペンギン用潜水艇の塗装色を決める
+```
+
+結果:
+
+```text
+gate: passed (
+  bm25_top=17.8/32.0,
+  virt_max=0.835,
+  raw_max=0.805,
+  candidates=15
+)
+```
+
+surfaceされた3件は、技術的負債のクロスドメイン解決、船内奴隷の文章、ラップトップの
+pixel artであり、queryとの実質的関連性は低い。RURIのcosineが大規模corpusで0.8前後の
+狭い帯へ集中するため、`virtual cosine >= absolute threshold`だけではoff-topicを拒否
+できない。
+
+##### 推奨修正
+
+ambient gateを単純な絶対値ORではなく、次の複合判定にする。
+
+- BM25 strong match
+- raw / virtual cosineのcorpus percentile
+- top-1と候補分布のmarginまたはz-score
+- rawとvirtualの双方が最低条件を満たすか
+- persona / lensing resonanceはdirect acceptと分離する
+
+例:
+
+```text
+accept_direct = bm25_strong
+             OR (
+                  semantic_percentile >= p
+                  AND top_margin >= margin_min
+                  AND raw_cosine >= raw_floor
+                )
+```
+
+絶対閾値はlanguage / embedder / corpus sizeで変わるため、production corpusでnegative query
+を含む較正を行う。
+
+##### 受け入れ条件
+
+- 既知障害queryは通過する。
+- ペンギン潜水艇queryは空返しになる。
+- 日本語の言い換えqueryはBM25弱でもsemantic側から通過できる。
+- diagnosticsにpercentile、margin、accept signalを表示する。
+
+#### P1: 既知障害nodeのsemantic順位が弱い
+
+次の、障害nodeとほぼ同じ語彙のqueryを実行した。
+
+```text
+recall explore ambient_recall が全件空返し FAISS 埋め込みパイプライン 沈黙エラー
+```
+
+既知node`de1b528f-...`はtop-5に入らなかった。一方で`get_node`では存在を確認できる。
+候補生成、狭帯cosine、mass / saturation、chunk sizeのいずれが順位を落としたかを、
+target IDを指定したoffline score traceで調査する必要がある。
+
+##### 受け入れ条件
+
+- 対象node本文から作った近同文queryでtop-5へ入る。
+- target IDについてraw rank、virtual rank、BM25 rank、qualification、final rankを一括表示
+  できる診断scriptを用意する。
+
+#### P0: cold startが依然として遅い
+
+最初の`reflect(summary)`は応答まで約129秒を要した。応答後のsummaryは正常だった。
+
+```text
+Total memories: 42,060
+Active (mass > 1): 41,708
+Displaced by gravity: 39,787
+Co-occurrence edges: 196,695
+```
+
+warm callは2〜5秒なので、検索処理そのものではなくstartup同期処理が主要因と考えられる。
+
+##### 推奨修正
+
+- MCP session終了とbackend process lifespanを分離する。
+- supervisor/proxyに`STARTING → SEMANTIC_READY → HYBRID_READY`を実装する。
+- semantic-ready後にrequestを受け、BM25等はbackground構築する。
+- cache、FAISS、BM25、ambient補助indexの各startup時間を個別計測する。
+
+##### 受け入れ条件
+
+- cold clientがtimeoutせず、starting状態を観測しながら接続できる。
+- semantic-readyが30秒以内。
+- warm reconnectでengine再構築が走らない。
+
+### 再検証時の固定プローブ
+
+次回は変更前後で以下を同じ順序で実行する。
+
+```text
+1. reflect(aspect="summary")
+
+2. recall(
+     query="GaOTTTの設計思想と長期記憶の運用知見",
+     top_k=5, passive=true, force_refresh=true, output_mode="full"
+   )
+
+3. explore(
+     query="GaOTTTの設計思想と長期記憶の運用知見",
+     top_k=5, diversity=0.8
+   )
+
+4. ambient_recall(
+     query="GaOTTTのsemantic search障害を復旧し、今後の運用を確認する",
+     direct_k=3, expose_breakdown=true
+   )
+
+5. ambient_recall(
+     query="南極のペンギン用潜水艇の塗装色を決める",
+     direct_k=3, expose_breakdown=true
+   )
+
+6. recall(
+     query="recall explore ambient_recall が全件空返し FAISS 埋め込みパイプライン 沈黙エラー",
+     top_k=5, passive=true, force_refresh=true
+   )
+```
+
+期待値:
+
+- probe 2: GaOTTT設計記録が複数入り、breakdownに`q/d/f/gap`が出る
+- probe 3: probe 2と完全一致せず、低関連候補を更新しない
+- probe 4: gate通過し障害・Phase T記録を返す
+- probe 5: `empty_reason`付きで空返し
+- probe 6: `de1b528f-f95a-46e8-a28d-7a4fbd580806`がtop-5へ入る
+- cold probe 1: semantic-readyまで30秒以内、以後warm再利用
+
 ## 運用上の暫定回避
 
 - cold start直後のproxy timeoutは、backendが起動継続中なら少し待って再接続する。
@@ -495,3 +815,6 @@ STARTING
 - ambientが空でも通常recallが正常なら、直ちにFAISS破損とは判断しない。
 - `explore`は重力場を更新する。診断でfieldを変えたくない場合はpassive recallとの比較を
   主にし、explore実行回数を限定する。
+
+---
+2026-08-26: 上記レビューへの対応は Phase U で実施 — docs/handoff/2026-08-26-phase-u-review-hardening.md 参照 (R3 のみ判断待ち)

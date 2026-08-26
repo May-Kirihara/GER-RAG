@@ -1,0 +1,37 @@
+{
+  "_note": "Phase U WP-3 curated probe set v2 — negative 構成概念を 'not-about-GaOTTT' から 'absent-from-memory' に再操作化 (2026-08-26 PM). v1 で日常系 negative が本人の健康・生活会話記憶に実際に関連コンテンツを取得しており (sanity 出力で match 高)、FP 要求を不当に厳しくしていた。真の negative = corpus に存在しない話題。ペンギン query は review 受け入れ条件により verbatim 必須。",
+  "positives": [
+    {"query": "GaOTTTのsemantic search障害を復旧し、今後の運用を確認する"},
+    {"query": "recall explore ambient_recall が全件空返し FAISS 埋め込みパイプライン 沈黙エラー"},
+    {"query": "FAISS index と SQLite の件数が一致しないときの診断方法"},
+    {"query": "write-behind キャッシュが古い値で新しい値を上書きする問題"},
+    {"query": "multiverse の supervisor が GAOTTT 環境変数を剥がす件"},
+    {"query": "cold start で最初の reflect が2分かかる問題"},
+    {"query": "BM25 の閾値で ambient が全部空返しになった病理"},
+    {"query": "semantic decay の半減期と floor の契約"},
+    {"query": "重力波の伝播で seed pool を広げる実装"},
+    {"query": "Phase T の semantic requalification で何を変えたか"},
+    {"query": "テストの StubEmbedder がランダム埋め込みだと flaky になる件"},
+    {"query": "記憶検索が何も返さなくなったとき何を確認すべきか"},
+    {"query": "バックエンドの起動が遅いんだけど何が原因？"},
+    {"query": "埋め込みの検索が壊れたときの直し方"},
+    {"query": "MCP と REST は常に同じタイミングで更新する規約"},
+    {"query": "owner lease を失ったプロセスは読み取り専用に落ちる"}
+  ],
+  "negatives": [
+    {"query": "南極のペンギン用潜水艇の塗装色を決める"},
+    {"query": "南極観測隊の食料の長期保管方法"},
+    {"query": "柔道の背負い投げの習得練習メニュー"},
+    {"query": "ハワイのレイ作りに使う花の種類"},
+    {"query": "エッフェル塔の塗装色の歴史"},
+    {"query": "競走馬の育成の年間スケジュール"},
+    {"query": "紅茶の等級 FTGFOP の意味"},
+    {"query": "洞窟潜水に必要な装備の一覧"},
+    {"query": "アルパカの毛刈りの時期と手順"},
+    {"query": "違法伐採を調査するドローンの運用"},
+    {"query": "オペラ座の怪人の舞台装置の設計"},
+    {"query": "アンティーク時計のゼンマイ交換の相場"},
+    {"query": "ラッコの貝殻の叩き方の観察記録"},
+    {"query": "図書館の蔵書の除籍処分の基準"}
+  ]
+}

@@ -1,0 +1,87 @@
+== ambient composite gate calibration ==
+data-dir : /tmp/opencode/gaottt-prod-calib.iDhpzi
+probes   : /tmp/opencode/ambient_probes_v2.json (16 positives / 14 negatives)
+seed     : 42
+Loading weights:   0%|          | 0/152 [00:00<?, ?it/s]Loading weights: 100%|██████████| 152/152 [00:00<00:00, 8246.46it/s]
+/mnt/holyland/Project/GaOTTT/gaottt/embedding/ruri.py:41: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  return self._model.get_sentence_embedding_dimension()
+Manifest embedder_version mismatch: manifest='unpinned', runtime='18b60fb8c2b9df296fb4212bb7d23ef94e579cd3' (v1: warning only — HF revision drift does not block startup).
+
+-- stage 1: probe collection (ambient_recall, composite axes) --
+  [pos] bm25=26.9829 virt1=0.8466 med=0.7939 margin=0.0527 raw=0.8814 pool=12  GaOTTTのsemantic search障害を復旧し、今後の運用を確認する
+  [pos] bm25=96.2110 virt1=0.8582 med=0.8403 margin=0.0179 raw=0.8967 pool=14  recall explore ambient_recall が全件空返し FAISS 埋め込みパイプライン 沈黙エラー
+  [pos] bm25=38.3279 virt1=0.8470 med=0.8356 margin=0.0114 raw=0.8883 pool=15  FAISS index と SQLite の件数が一致しないときの診断方法
+  [pos] bm25=42.1232 virt1=0.8810 med=0.8520 margin=0.0290 raw=0.9147 pool=15  write-behind キャッシュが古い値で新しい値を上書きする問題
+  [pos] bm25=43.0849 virt1=0.8927 med=0.8362 margin=0.0565 raw=0.9070 pool=13  multiverse の supervisor が GAOTTT 環境変数を剥がす件
+  [pos] bm25=19.1373 virt1=0.8789 med=0.8504 margin=0.0285 raw=0.8785 pool=15  cold start で最初の reflect が2分かかる問題
+  [pos] bm25=65.7567 virt1=0.9092 med=0.8167 margin=0.0926 raw=0.9086 pool=15  BM25 の閾値で ambient が全部空返しになった病理
+  [pos] bm25=41.0805 virt1=0.8824 med=0.7993 margin=0.0831 raw=0.8931 pool=15  semantic decay の半減期と floor の契約
+  [pos] bm25=37.0669 virt1=0.8194 med=0.7873 margin=0.0321 raw=0.8656 pool=14  重力波の伝播で seed pool を広げる実装
+  [pos] bm25=22.9046 virt1=0.8697 med=0.8322 margin=0.0374 raw=0.8693 pool=15  Phase T の semantic requalification で何を変えたか
+  [pos] bm25=60.4730 virt1=0.8522 med=0.8015 margin=0.0507 raw=0.9390 pool=15  テストの StubEmbedder がランダム埋め込みだと flaky になる件
+  [pos] bm25=25.7287 virt1=0.8509 med=0.8337 margin=0.0172 raw=0.8582 pool=15  記憶検索が何も返さなくなったとき何を確認すべきか
+  [pos] bm25=24.2477 virt1=0.8800 med=0.8533 margin=0.0267 raw=0.8794 pool=15  バックエンドの起動が遅いんだけど何が原因？
+  [pos] bm25=22.3671 virt1=0.8603 med=0.8382 margin=0.0222 raw=0.8803 pool=15  埋め込みの検索が壊れたときの直し方
+  [pos] bm25=35.4264 virt1=0.8454 med=0.7926 margin=0.0528 raw=0.8917 pool=15  MCP と REST は常に同じタイミングで更新する規約
+  [pos] bm25=19.3626 virt1=0.8291 med=0.7846 margin=0.0445 raw=0.8532 pool=14  owner lease を失ったプロセスは読み取り専用に落ちる
+  [neg] bm25=17.7753 virt1=0.8144 med=0.7949 margin=0.0195 raw=0.8243 pool=15  南極のペンギン用潜水艇の塗装色を決める
+  [neg] bm25=16.3629 virt1=0.8369 med=0.8035 margin=0.0334 raw=0.8370 pool=15  南極観測隊の食料の長期保管方法
+  [neg] bm25=30.8081 virt1=0.8032 med=0.7870 margin=0.0162 raw=0.8817 pool=15  柔道の背負い投げの習得練習メニュー
+  [neg] bm25=19.3065 virt1=0.8039 med=0.7828 margin=0.0211 raw=0.8083 pool=14  ハワイのレイ作りに使う花の種類
+  [neg] bm25=28.0219 virt1=0.7935 med=0.7798 margin=0.0137 raw=0.8454 pool=14  エッフェル塔の塗装色の歴史
+  [neg] bm25=15.3020 virt1=0.8480 med=0.7913 margin=0.0567 raw=0.8479 pool=14  競走馬の育成の年間スケジュール
+  [neg] bm25=13.4704 virt1=0.8351 med=0.7962 margin=0.0389 raw=0.8491 pool=15  紅茶の等級 FTGFOP の意味
+  [neg] bm25=21.3243 virt1=0.8167 med=0.8009 margin=0.0159 raw=0.8560 pool=15  洞窟潜水に必要な装備の一覧
+  [neg] bm25=15.9806 virt1=0.8165 med=0.7978 margin=0.0187 raw=0.8245 pool=15  アルパカの毛刈りの時期と手順
+  [neg] bm25=17.0297 virt1=0.8075 med=0.7937 margin=0.0137 raw=0.8185 pool=15  違法伐採を調査するドローンの運用
+  [neg] bm25=23.0800 virt1=0.8148 med=0.8054 margin=0.0093 raw=0.8193 pool=15  オペラ座の怪人の舞台装置の設計
+  [neg] bm25=17.6282 virt1=0.7856 med=0.7684 margin=0.0171 raw=0.8090 pool=15  アンティーク時計のゼンマイ交換の相場
+  [neg] bm25=13.7142 virt1=0.8148 med=0.8057 margin=0.0091 raw=0.8299 pool=15  ラッコの貝殻の叩き方の観察記録
+  [neg] bm25=18.9009 virt1=0.7855 med=0.7588 margin=0.0267 raw=0.8594 pool=15  図書館の蔵書の除籍処分の基準
+
+-- stage 2: sanity eyeball (positives, passive recall top-1) --
+  (match = query char-bigram overlap count — 目視補助のみ)
+  match=  7  top1: ## User ありがとう！ ここまでの健康状態チェックの方法をCanvasにまとめてくれると嬉しい！  まとめたよ。 
+  match= 17  top1: ambient_recall の BM25 gate veto 病理: word-BM25 閾値 32.0 に対し go
+  match=  5  top1: ## User fsckで、 Free blocks count wrong (23847835, counted=22
+  match=  9  top1: ## User ありがとう！ここまでの内容、パフォーマンスチェックの方法も含めて纏めて、CANVASを更新してくれると嬉
+  match= 11  top1: ## User cmd変数の中身をprintで出力したところ以下のように実行されるようです。 /media/misaki
+  match=  9  top1: ## User ありがとう。CloudflareWARP経由だとめっちゃ遅いんだけど、なにか対処法はある？  ## As
+  match= 16  top1: ambient_recall の BM25 gate veto 病理: word-BM25 閾値 32.0 に対し go
+  match=  3  top1: ## User 弥勒菩薩が下生するまでの単位を、対数単位などを用いて10分割くらいに分けられますか  ## Assist
+  match=  4  top1: ```python class EnhancedDPOTraining:     def __init__(self):
+  match= 23  top1: Phase T の TTT update qualification は dream loop (synthetic r
+  match= 17  top1: 【PM durable lessons — embedder lazy spawn by supervisor 実装（2
+  match=  1  top1: ambient_recall の BM25 gate veto 病理: word-BM25 閾値 32.0 に対し go
+  match=  7  top1: ## User あれ、バックエンドにPythonってあるのかな？ transformer.jsとかで叩いてたりするのかな
+  match=  8  top1: ## User あー、なるほど、モデルによっても違うんだね！ 想定していたパターンは、 ・スパムサイトの画像やソースコー
+  match=  4  top1: Phase T の TTT update qualification は dream loop (synthetic r
+  match=  8  top1: ## User Navigated to: file:////home/misaki_maihara/Desktop/D
+
+reference distribution: n=30 min=0.7855 max=0.9092
+split (seeded, stratified): calibration=15 held-out=15
+
+-- stage 3: grid search on calibration split --
+  goal: FP_cal=0 → min FN_cal → laxer thresholds (deterministic)
+  pct_min  margin  raw_fl  FP_cal  FN_cal
+     70.0  0.000   0.75    0.0%    0.0%
+     70.0  0.000   0.78    0.0%    0.0%
+     70.0  0.000   0.80    0.0%    0.0%
+     70.0  0.000   0.82    0.0%    0.0%
+     70.0  0.000   0.85    0.0%    0.0%
+     70.0  0.010   0.75    0.0%    0.0%
+     70.0  0.010   0.78    0.0%    0.0%
+     70.0  0.010   0.80    0.0%    0.0%
+     70.0  0.010   0.82    0.0%    0.0%
+     70.0  0.010   0.85    0.0%    0.0%
+
+recommended thresholds: percentile_min=70.0 margin_min=0.0 raw_floor=0.75
+
+-- stage 4: held-out evaluation + bootstrap CI --
+  held-out n: 8 positives / 7 negatives
+  FP rate: 0.0%  (95% CI 0.0%–0.0%)
+  FN rate: 37.5%  (95% CI 0.0%–83.3%)
+
+  pre-registered promotion gate (FP=0 AND FN<=10%): FAIL — keep default 'or' and escalate per plan §4 WP-3
+
+(no --emit-artifact — nothing written)
