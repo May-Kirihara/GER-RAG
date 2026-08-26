@@ -4,8 +4,12 @@ import asyncio
 import hashlib
 import logging
 import os
+import pickle
+import stat
 import time
 import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -59,6 +63,236 @@ from gaottt.store.lease import LeaseLostError, OwnerLease
 from gaottt.store.sqlite_store import SqliteStore
 
 logger = logging.getLogger(__name__)
+
+# WP-6c (Phase U / R5) — background BM25 build の fill を thread 投入する
+# chunk 幅。tokenization は CPU-bound なので asyncio.to_thread で chunk ごとに
+# 投入し、chunk 境界で cancellation が届くようにする (1 chunk = 数百 doc で
+# cancel 待ちが数秒に収まる)。sync 経路 (rollback flag) は従来どおり
+# 一括で event loop 内で add する。
+_BM25_BG_FILL_CHUNK = 512
+
+# WP-6d (Phase U / R5) — BM25 snapshot 永続化の file format 定数。
+# layout: 65 byte header (sha256(body) の hex 64 字 + b"\n") + pickle body。
+# checksum を header に置くことで、body を unpickle する **より前に**
+# 破損・改竄を検出できる。format_version は module-level 定数として
+# guard する (不一致は「ファイルが無い」と同じ扱い = build に fallback)。
+_BM25_SNAPSHOT_FILENAME = "bm25.snapshot"
+_BM25_SNAPSHOT_FORMAT_VERSION = 1
+_BM25_SNAPSHOT_HEADER_LEN = 65
+
+
+def _bm25_index_state(index: BM25Index) -> dict:
+    """WP-6d — BM25Index の内部状態を plain-data dict に抽出する。
+
+    BM25Index は tokenizer として lambda/closure を保持するため object
+    ごと pickle できない (かつ本 WP では index/bm25_index.py が scope 外)。
+    抽出結果は全要素が builtin 型なので payload 丸ごと安全に pickle できる。
+    copy を取ってから to_thread の write に渡す — publish 中の mutation で
+    辞書が動かないようにするため。
+    """
+    return {
+        "k1": index.k1,
+        "b": index.b,
+        "doc_ids": list(index._doc_ids),
+        "doc_lens": list(index._doc_lens),
+        "id_to_idx": dict(index._id_to_idx),
+        "inverted": {t: list(p) for t, p in index._inverted.items()},
+        "removed": set(index._removed),
+        "active_count": index._active_count,
+        "active_total_dl": index._active_total_dl,
+    }
+
+
+def _bm25_index_from_state(state: dict, tokenizer: str) -> BM25Index:
+    """WP-6d — state dict から BM25Index を再構成する。
+
+    tokenizer は名前から再生成する (identity 検証済みなので config の名前
+    は snapshot 保存時と一致する)。内部配列をそのまま戻すので、検索結果
+    (tie-break の insertion order 含む) は build 時と bit-for-bit 同一。
+    """
+    index = BM25Index(k1=state["k1"], b=state["b"], tokenizer=tokenizer)
+    index._doc_ids = state["doc_ids"]
+    index._doc_lens = state["doc_lens"]
+    index._id_to_idx = state["id_to_idx"]
+    index._inverted = state["inverted"]
+    index._removed = state["removed"]
+    index._active_count = state["active_count"]
+    index._active_total_dl = state["active_total_dl"]
+    return index
+
+
+def _bm25_snapshot_trusted(path: Path) -> tuple[bool, str]:
+    """WP-8 — snapshot file の trusted-file policy 検査 (unpickle の前提)。
+
+    checksum は攻撃者が再計算できる (= 偶然の破損検出のみ) ので、pickle を
+    unpickle してよいかの真正性は file の所有権・権限で担保する。信頼境界は
+    ``data_dir`` (FAISS file と同じ domain)。全条件を満たす場合のみ
+    ``(True, "")``:
+
+    - 通常 file であること (symlink は lstat で拒否 — link 先の所有権が
+      検査を迂回するのを防ぐ)
+    - 所有 uid が process の euid と一致すること (他人が植えた file は
+      checksum が正当でも拒否)
+    - group/other write bit が無いこと (``mode & 0o022 == 0``)
+    - 親 directory (data_dir) も group/world-writable でないこと
+
+    違反時は ``(False, reason)`` — 呼び出し側は snapshot を存在しない扱い
+    (通常 build への fallback) にする。決して unpickle しない。
+    """
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        return False, f"stat failed: {exc}"
+    if stat.S_ISLNK(st.st_mode):
+        return False, "snapshot is a symlink"
+    if not stat.S_ISREG(st.st_mode):
+        return False, "snapshot is not a regular file"
+    if st.st_uid != os.geteuid():
+        return False, (
+            f"snapshot owner uid {st.st_uid} != process euid {os.geteuid()}"
+        )
+    if st.st_mode & 0o022:
+        return False, "snapshot is group/world-writable"
+    try:
+        dst = os.stat(path.parent)
+    except OSError as exc:
+        return False, f"data_dir stat failed: {exc}"
+    if dst.st_mode & 0o022:
+        return False, "data_dir is group/world-writable"
+    return True, ""
+
+
+def _bm25_snapshot_read(path: Path) -> dict | None:
+    """WP-6d — snapshot file を trust policy + checksum 検証してから
+    unpickle する。
+
+    checksum (header sha256) は **偶然の破損** の検出のみを担う — 攻撃者は
+    checksum を再計算できるため、真正性は unpickle 前に
+    :func:`_bm25_snapshot_trusted` の所有権・権限 policy で検査する
+    (信頼境界 = data_dir)。以降は header sha256 と body 再計算が一致した
+    場合のみ unpickle する。format_version 不一致・任意の読み込み例外は
+    「ファイルが無い」のと同じ扱い (None) — 呼び出し側は通常の build に
+    fallback する。
+    """
+    trusted, reason = _bm25_snapshot_trusted(Path(path))
+    if not trusted:
+        logger.error(
+            "BM25 snapshot untrusted (%s) — treating as absent, "
+            "falling back to build: %s",
+            reason, path,
+        )
+        return None
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if len(data) <= _BM25_SNAPSHOT_HEADER_LEN:
+        return None
+    try:
+        header = data[:_BM25_SNAPSHOT_HEADER_LEN]
+        if header[64:65] != b"\n":
+            return None
+        expected = header[:64].decode("ascii")
+        int(expected, 16)  # hex 以外は ValueError で落とす
+    except (ValueError, UnicodeDecodeError):
+        return None
+    body = data[_BM25_SNAPSHOT_HEADER_LEN:]
+    if hashlib.sha256(body).hexdigest() != expected:
+        return None
+    try:
+        payload = pickle.loads(body)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("format_version") != _BM25_SNAPSHOT_FORMAT_VERSION:
+        return None
+    return payload
+
+
+def _bm25_snapshot_write(path: Path, payload: dict) -> bool:
+    """WP-6d — snapshot の atomic publish (tmp write → fsync → os.replace
+    → directory fsync → read-back checksum 検証)。
+
+    manifest.py の atomic-write 規約に読み戻し検証を加えたもの。失敗時は
+    例外を伝播させず False を返す — snapshot 欠落は次 boot の再 build で
+    自動回復するので、build 完了 / shutdown を落とさない方が重要。
+    """
+    path = Path(path)
+    try:
+        body = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        digest = hashlib.sha256(body).hexdigest()
+        blob = digest.encode("ascii") + b"\n" + body
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # tmp file は明示 0o600 で作る — umask が 0o002 等だと default 作成
+        # が 0o664 (group-writable) になり、読み込み側の trust policy が
+        # 自分の書いた snapshot を拒否してしまうため (policy との一貫性)。
+        tmp = path.parent / (
+            f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        )
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            # os.open の mode 引数は umask で削られる (0o077 級の hostile
+            # umask で owner bit が落ちると読み取れない file になる) ので、
+            # open 済み fd に対して明示 enforce する (round-2 review)。
+            os.fchmod(f.fileno(), 0o600)
+            f.write(blob)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        # directory fsync — rename で入れ替わった dirent 自体は file fsync
+        # の管轄外なので、crash 直後に rename が失われる filesystem を防ぐ
+        # (final review non-blocking 指摘)。
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        # read-back 検証: replace 後の file の checksum が書いた内容と一致
+        written = path.read_bytes()
+        if (
+            len(written) <= _BM25_SNAPSHOT_HEADER_LEN
+            or written[64:65] != b"\n"
+            or hashlib.sha256(
+                written[_BM25_SNAPSHOT_HEADER_LEN:],
+            ).hexdigest() != written[:64].decode("ascii", errors="replace")
+        ):
+            logger.error("BM25 snapshot read-back verification failed: %s", path)
+            return False
+        return True
+    except OSError as exc:
+        logger.error("BM25 snapshot write failed (%s): %s", path, exc)
+        return False
+
+
+@dataclass
+class _BM25JournalEntry:
+    """WP-6c — background build 窓内の BM25-affecting mutation の記録。
+
+    sync 経路 (現行の mutation コード) が各 index に適用する操作と
+    **まったく同じ対象・同じ順**で replay するための最小情報:
+      * ``add`` — index_documents。sync 経路は hybrid + gate の両方に
+        add するので ``gate_too=True``。
+      * ``remove`` — archive / forget(hard) / merge / compact expiry。
+        sync 経路は hybrid のみに remove する (gate index は次の
+        compact rebuild まで removed doc を保持する現行挙動) ので
+        ``gate_too=False``。
+      * ``restore`` — restore。sync 経路は hybrid のみ。snapshot に無い
+        doc への restore は postings が無いので soft-remove 復帰できず、
+        content からの add に fallback する (そのため texts を持つ)。
+    """
+
+    op: str                                   # "add" | "remove" | "restore"
+    ids: list[str]
+    texts: list[str] | None = None            # add / restore 用
+    gate_too: bool = field(default=False)     # add のみ True (sync 経路と同じ対象)
 
 
 def _rrf_forced_key(
@@ -163,8 +397,68 @@ class GaOTTTEngine:
         self._lease_task: asyncio.Task | None = None
         self._lease_stop: asyncio.Event | None = None
         self._lease_lost_warned: bool = False
+        # WP-6a (Phase U / R5): startup() のフェーズ別所要時間 (秒、
+        # monotonic perf_counter 差分)。startup() 呼び出し前にも属性参照され
+        # 得る契約 (WP-6b readiness) のため空 dict として常在させる。キーは
+        # startup() 内の計装コメントに列挙した安定名。
+        self.startup_timings: dict[str, float] = {}
+        # WP-6c (Phase U / R5) — BM25 background build 状態。WP-6b readiness
+        # (SEMANTIC_READY / HYBRID_READY 区分) が参照する canonical 属性:
+        #   "idle"     — build 未開始 (index 未接続 / shutdown cancel 後)
+        #   "building" — background task 実行中 (または sync build 実行中)
+        #   "ready"    — build 完了 (swap 済み or 同期 build 済み)
+        #   "failed"   — retry まで尽して give up (index は空のまま運用継続)
+        self.bm25_build_state: str = "idle"
+        # background 経路の試行回数 (single-retry 契約の観測用; sync 経路は 0)
+        self.bm25_build_attempts: int = 0
+        self._bm25_build_task: asyncio.Task | None = None
+        # non-None の間だけ mutation 経路が journal に append する
+        # (= background build が in flight)。journal への append と
+        # replay+swap は同じ asyncio.Lock で直列化する。
+        self._bm25_journal: list[_BM25JournalEntry] | None = None
+        self._bm25_journal_lock: asyncio.Lock | None = None
+        # BM25-affecting mutation すべてで増える世代カウンタ (journal 有無
+        # にかかわらず観測用)。build 開始/完了 log で参照する。
+        self._bm25_mutation_generation: int = 0
+        # compact(rebuild_faiss=True) が build 窓内で現行 index を再構築し
+        # た場合に立つフラグ — background build の新 object は古い snapshot
+        # 基底なので swap せず破棄する (現行 index の方が新しい)。
+        self._bm25_bg_invalidated: bool = False
+        # WP-6d (Phase U / R5) — BM25 snapshot (data_dir/bm25.snapshot) 状態。
+        # dirty: 現行 index に mutation が適用され、on-disk snapshot が現状
+        #   を映さなくなった (再保存は build 完了時か graceful shutdown 時
+        #   のみ — mutation ごとには書き直さない)。
+        # gate_diverged: remove 系 mutation が hybrid のみに適用された
+        #   (sync 経路の契約) 結果、gate index が store-active 構成から
+        #   乖離した。compact の full rebuild で再収束するまで snapshot に
+        #   保存しない — 「load した index は fresh build と同一結果を返す」
+        #   という不変条件のため。
+        self._bm25_snapshot_dirty: bool = False
+        self._bm25_snapshot_gate_diverged: bool = False
+        self._bm25_snapshot_block_warned: bool = False
+        # startup で manifest から設定 (snapshot の universe_id 検証用)
+        self._universe_id: str = ""
 
     async def startup(self) -> None:
+        # WP-6a (Phase U / R5) — startup フェーズ計装。各フェーズの所要時間を
+        # startup_timings に記録する。純観測であり、呼び出し順・例外伝播・
+        # 挙動は計装なしと完全同一 (フェーズ途中で例外が出た場合はそこまで
+        # の記録のみ残り、例外はそのまま伝播する)。キーは安定名:
+        # manifest / lease / store_init / ttl_scan / cache_load / faiss_load /
+        # virtual_faiss_load / bm25_build / background_loops / diagnostics
+        # (+ startup_total / node_count / index_size)。スキップされたフェーズ
+        # (index 未接続等) もキー自体は常に存在し値 ≈0.0 となる。
+        # WP-6c 例外 (documented exception): bm25_background_build_enabled=True
+        # のとき bm25_build は startup 時点では同期区間 ≈0.0 を記録し、
+        # background build の完了時に実際の所要時間で **上書き** される
+        # (post-completion update)。失敗の canonical 状態は timing 値ではなく
+        # engine.bm25_build_state == "failed" (WP-6b readiness が参照)。
+        # WP-6d 例外 (追加): bm25_snapshot_enabled=True で snapshot が
+        # fingerprint 一致により load された場合、bm25_build は build の
+        # 代わりに「fingerprint pass + load」の所要時間を記録する。
+        # WP-6c/6d 着手の decision gate と WP-6b readiness が参照する。
+        self.startup_timings = {}
+        t_total = time.perf_counter()
         # Phase T Stage 2 — legacy semantic decay contract selected. ``delta``
         # is a per-SECOND rate (deprecated contract): exp(-0.01*600) ≈ 0.0025,
         # so the semantic score term goes numerically extinct within minutes.
@@ -185,6 +479,7 @@ class GaOTTTEngine:
         # below swallows exceptions, so this gate must sit above it. The
         # runtime embedder identity (embedder_id / version) is verified in
         # ``build_engine``; here we only guard the manifest-vs-config dim.
+        t_phase = time.perf_counter()
         from pathlib import Path
         from gaottt.store.manifest import ensure_manifest
 
@@ -206,23 +501,38 @@ class GaOTTTEngine:
                 manifest.embedding_dim,
                 self.config.embedding_dim,
             )
+        self.startup_timings["manifest"] = time.perf_counter() - t_phase
+        # WP-6d — snapshot の cross-universe 検証に使う (以降の phase で
+        # manifest object を持ち回さなくてよい)。
+        self._universe_id = manifest.universe_id
         # MV2 — owner lease. Fires when owner_lease_enabled OR manifest.managed.
         # Both False (standalone default) → skip entirely: no owner.lock, no
         # heartbeat task, no release on shutdown. This is the "default 不変"
         # gate — existing deployments that never set the flag are bit-exact.
         # LeaseHeldError from acquire() propagates unmasked (the caller's
         # startup fails loudly, signalling "another process owns this dir").
+        t_phase = time.perf_counter()
         if self.config.owner_lease_enabled or manifest.managed:
             self._lease = OwnerLease(
                 Path(self.config.data_dir), self.config,
             )
             self._lease.acquire(force=self.config.lease_force_takeover)
+        self.startup_timings["lease"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         await self.store.initialize()
+        self.startup_timings["store_init"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         expired = await self.store.expire_due_nodes(time.time())
         if expired:
             logger.info("Auto-expired %d nodes past their TTL", expired)
+        self.startup_timings["ttl_scan"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         await self.cache.load_from_store(self.store)
+        self.startup_timings["cache_load"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         self.faiss_index.load(self.config.faiss_index_path)
+        self.startup_timings["faiss_load"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         if self.virtual_faiss_index is not None:
             virtual_path = self.config.virtual_faiss_index_path
             self.virtual_faiss_index.load(virtual_path)
@@ -232,12 +542,53 @@ class GaOTTTEngine:
                     "Virtual FAISS missing; building from raw + displacement"
                 )
                 await self._rebuild_virtual_faiss_index()
+        self.startup_timings["virtual_faiss_load"] = (
+            time.perf_counter() - t_phase
+        )
         # Phase L Stage 1: build BM25 index from active document content.
-        # D2: in-memory only — no disk persistence in Stage 1, so we always
-        # rebuild from SQLite content at startup. Also builds the ambient
-        # gate index (word-level BM25) when wired.
+        # Also builds the ambient gate index (word-level BM25) when wired.
+        # WP-6c (Phase U / R5): bm25_background_build_enabled=True なら同期
+        # build を skip し background task に委譲する — startup は
+        # SEMANTIC_READY (~6s) で返り、build 完了時に journal replay +
+        # atomic swap で HYBRID_READY に遷移する (実測では同期 build が
+        # startup の 96% を占めていた)。rollback (False) は同期 build に
+        # bit-for-bit 復帰。
+        # WP-6d (Phase U / R5): bm25_snapshot_enabled=True なら最初に
+        # snapshot の load を試みる — fingerprint (content digest) が一致
+        # すれば build ごと skip して両 index を load する (cold start から
+        # 147s の build を除去)。不一致・破損・cross-universe・params 変更は
+        # 通常の WP-6c 経路に fallback し、build 成功時に snapshot を保存。
+        t_phase = time.perf_counter()
+        self.bm25_build_state = "idle"
+        # snapshot 状態は boot ごとに初期化 (load/build 完了時に更新される)
+        self._bm25_snapshot_dirty = False
+        self._bm25_snapshot_gate_diverged = False
         if self.bm25_index is not None or self.ambient_gate_index is not None:
-            await self._build_bm25_from_store()
+            self.bm25_build_state = "building"
+            try:
+                loaded = False
+                if self.config.bm25_snapshot_enabled:
+                    loaded = await self._try_load_bm25_snapshot()
+                if loaded:
+                    self.bm25_build_state = "ready"
+                elif self.config.bm25_background_build_enabled:
+                    self._start_bm25_background_build()
+                else:
+                    # sync build に journal replay の消費先は無い — load 試行
+                    # で開いた journal を閉じてから現行 (WP-6c 以前) どおり
+                    # 同期 build する。成功時 (mutation が無ければ) snapshot
+                    # を保存する。
+                    await self._close_bm25_journal()
+                    fp = await self._build_bm25_from_store()
+                    self.bm25_build_state = "ready"
+                    await self._save_bm25_snapshot_if_clean(fp)
+            except Exception:
+                # sync 経路の例外は現行どおり伝播 (startup 失敗)。WP-6b 用に
+                # state だけ失敗を記録してから re-raise。
+                self.bm25_build_state = "failed"
+                raise
+        self.startup_timings["bm25_build"] = time.perf_counter() - t_phase
+        t_phase = time.perf_counter()
         self.cache.start_write_behind(self.store)
         if self.config.faiss_save_interval_seconds > 0:
             self._faiss_save_stop = asyncio.Event()
@@ -266,6 +617,9 @@ class GaOTTTEngine:
         if self._lease is not None and self.config.lease_heartbeat_seconds > 0:
             self._lease_stop = asyncio.Event()
             self._lease_task = asyncio.create_task(self._lease_heartbeat_loop())
+        self.startup_timings["background_loops"] = (
+            time.perf_counter() - t_phase
+        )
         logger.info(
             "Engine started: %d nodes cached, %d vectors indexed, %d displacements",
             len(self.cache.node_cache),
@@ -277,6 +631,7 @@ class GaOTTTEngine:
         # Imported lazily so test fixtures that construct engines without
         # the diagnostics module on the path don't break. Failures of
         # individual checks are captured in the report, not raised.
+        t_phase = time.perf_counter()
         try:
             from gaottt.diagnostics import run_startup_checks
             await run_startup_checks(self, self.config)
@@ -285,6 +640,7 @@ class GaOTTTEngine:
                 "Startup diagnostics raised — engine remains operational: %s: %s",
                 type(e).__name__, e,
             )
+        self.startup_timings["diagnostics"] = time.perf_counter() - t_phase
 
         # Phase N candidate β Stage 1 — cold-start mass evaporation sweep.
         # If the engine was offline for longer than τ_grace, no recall path
@@ -295,6 +651,7 @@ class GaOTTTEngine:
         # this on the same shutdown→startup gap produces the same result.
         # No-op when ``mass_evaporation_enabled=False`` (per-call guard inside
         # ``evaporate_mass``), so the loop cost is only paid post-rollout.
+        # WP-6a: この sweep は計装キー対象外 — コストは startup_total のみに現れる。
         if self.config.mass_evaporation_enabled:
             now_sweep = time.time()
             swept = 0
@@ -313,8 +670,36 @@ class GaOTTTEngine:
                     "Phase N β cold-start sweep: %d nodes settled mass debt",
                     swept,
                 )
+        self.startup_timings["startup_total"] = time.perf_counter() - t_total
+        # informational な規模値 (int) — gate 分析と WP-6b readiness 表示用。
+        self.startup_timings["node_count"] = len(self.cache.node_cache)
+        self.startup_timings["index_size"] = self.faiss_index.size
+        logger.info(
+            "Engine startup timings: %s",
+            " ".join(
+                f"{k}={v}" if isinstance(v, int) else f"{k}={v:.3f}s"
+                for k, v in self.startup_timings.items()
+            ),
+        )
 
     async def shutdown(self) -> None:
+        # WP-6c — background BM25 build を最初に止める。fill は worker
+        # thread で chunk 実行されているので、cancel は次の chunk 境界
+        # (または現在 chunk の完了) で届く。engine は build 完了を待たず
+        # shutdown できる。swap 前に止まった場合、新 object は破棄され
+        # 現行 index は空のまま (中途半端な swap は起こさない)。
+        if self._bm25_build_task is not None and not self._bm25_build_task.done():
+            self._bm25_build_task.cancel()
+            try:
+                await asyncio.wait_for(self._bm25_build_task, timeout=10.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        # task handle は他の background loop (_faiss_save_task 等) と同じく
+        # 残す — done 状態を観測可能にしておく (null 化しない)。
+        if self._bm25_journal is not None:
+            # cancel が thread 完了待ちで timeout した場合の防備: 以降の
+            # mutation が journal に溜り続けないように閉じる。
+            self._bm25_journal = None
         await self.prefetch_pool.drain(timeout=5.0)
         if self._dream_stop is not None:
             self._dream_stop.set()
@@ -363,6 +748,10 @@ class GaOTTTEngine:
         if self._lease is not None and not self._lease.is_active:
             self._on_lease_lost()
         await self.cache.flush_to_store(self.store)
+        # WP-6d — dirty な BM25 snapshot の再保存。flush **後** に実行する
+        # ので fingerprint pass は pending 書き込みを含む store の最終状態
+        # を読む (index 内容 = built content + 適用済み mutation と一致)。
+        await self._save_bm25_snapshot_on_shutdown()
         # Final synchronous save guarantees durability even if the loop
         # was disabled or skipped a final tick — but still honour the
         # reverse-overwrite guard so a broken-index process doesn't clobber a
@@ -868,6 +1257,12 @@ class GaOTTTEngine:
         # Phase L Stage 1: feed BM25 with the document text so lexical
         # matches on the new docs are findable immediately, without waiting
         # for the next compact/startup rebuild.
+        # WP-6c: journal append は現行 index への適用の **前** に行う。
+        # append 完了 → (await なし) add の間に swap が入る余地がなく、
+        # 「旧 object に適用されたが journal には無い」隙間が生じない。
+        # journal が閉じている (= build 完了後) 場合、直後の add は
+        # swap 済みの新 object に当たる。
+        await self._journal_bm25_mutation("add", ids, contents, gate_too=True)
         if self.bm25_index is not None:
             self.bm25_index.add(ids, contents)
         if self.ambient_gate_index is not None:
@@ -1046,6 +1441,7 @@ class GaOTTTEngine:
         passive: bool = False,
         multi_source: bool | None = None,
         diversity: float | None = None,
+        out_wave_stats: dict | None = None,
     ) -> list[QueryResultItem]:
         """Run a recall query.
 
@@ -1099,6 +1495,13 @@ class GaOTTTEngine:
         carry ``diversity``, and a cached diversified (or plain) entry
         must not leak into the other selection mode.
 
+        ``out_wave_stats`` (Phase U WP-5) — optional observation side
+        channel: when a dict is passed, the engine records the effective
+        wave depth (``"depth"``) and the wave reach (``"reached"``) into
+        it, unconditionally of ``passive`` (pure observation). Never
+        populated on a prefetch-cache hit — callers that need the stats
+        must bypass the cache (explore always does via gamma_override).
+
         Either explicit argument bypasses the prefetch cache.
         """
         # MV2 — read-only transition: when the lease was lost, a query still
@@ -1138,6 +1541,7 @@ class GaOTTTEngine:
             passive=passive,
             multi_source=multi_source,
             diversity=diversity if diversity_active else None,
+            out_wave_stats=out_wave_stats,
         )
         # A passive recall never writes the shared prefetch cache: a cached
         # passive result would let a subsequent active recall hit the cache
@@ -1161,6 +1565,7 @@ class GaOTTTEngine:
         passive: bool = False,
         multi_source: bool | None = None,
         diversity: float | None = None,
+        out_wave_stats: dict | None = None,
     ) -> list[QueryResultItem]:
         # MV2 — when the lease was lost, force passive so mass / displacement
         # / co-occurrence / return_count updates are all skipped. Putting this
@@ -1253,6 +1658,18 @@ class GaOTTTEngine:
             segment_vectors=segment_vecs,
         )
 
+        # Phase U WP-5 — wave propagation observability side channel.
+        # Populated before any early exit so the caller always sees the
+        # depth actually used (``wave_depth`` override or config default —
+        # same expression the training-delta block reports) and the raw
+        # wave reach, passive or not.
+        if out_wave_stats is not None:
+            out_wave_stats["depth"] = (
+                wave_depth if wave_depth is not None
+                else self.config.wave_max_depth
+            )
+            out_wave_stats["reached"] = len(reached)
+
         if not reached:
             return []
 
@@ -1325,6 +1742,69 @@ class GaOTTTEngine:
         # legacy path stays bit-for-bit identical.
         qualification_map: dict[str, bool] = {}
         learn_confidences: dict[str, float] = {}
+
+        # Phase U WP-5 — selection-trace provenance (observability only;
+        # never a scoring / ordering input). The raw-vs-virtual seed
+        # origin is not recorded inside the wave (gravity._union_pool
+        # merges the pools id-wise and discards per-pool membership), so
+        # classify at the engine: re-draw the seed pool at the SAME size
+        # the wave used (mirror of propagate_gravity_wave's pool sizing)
+        # and test membership. Classification:
+        #   injected → "forced"; raw-pool member → "raw"; anything else
+        #   entered through the displacement-aware virtual index (virtual
+        #   seed pool, or Phase H Stage 5 virtual neighbor expansion) →
+        #   "virtual"; with no virtual index the raw index drove every
+        #   expansion → "raw". Multi-source queries (segment
+        #   superposition) approximate with the centroid query — the
+        #   trace is informational, and this path never gates anything.
+        prov_raw_ids: set[str] = set()
+        prov_virt_ids: set[str] = set()
+        prov_virtual_neighbors = (
+            self.config.wave_neighbor_use_virtual
+            and self.virtual_faiss_index is not None
+            and self.virtual_faiss_index.size > 0
+        )
+        if self.config.expose_score_breakdown:
+            prov_initial_k = (
+                wave_k if wave_k is not None else self.config.wave_initial_k
+            )
+            prov_has_boost = (
+                self.config.wave_seed_mass_alpha > 0.0
+                or (
+                    persona_proximities is not None
+                    and self.config.persona_boost_alpha > 0.0
+                )
+            )
+            if source_filter:
+                prov_pool_n = max(
+                    prov_initial_k, self.config.wave_k_with_filter,
+                )
+            elif prov_has_boost or injected_ids:
+                prov_pool_n = max(
+                    prov_initial_k, self.config.wave_seed_pool_size,
+                )
+            else:
+                prov_pool_n = prov_initial_k
+            prov_raw_ids = {
+                nid for nid, _ in self.faiss_index.search(query_vec, prov_pool_n)
+            }
+            if (
+                self.virtual_faiss_index is not None
+                and self.virtual_faiss_index.size > 0
+            ):
+                prov_virt_ids = {
+                    nid for nid, _ in
+                    self.virtual_faiss_index.search(query_vec, prov_pool_n)
+                }
+
+            def _provenance_of(nid: str) -> str:
+                if injected_ids and nid in injected_ids:
+                    return "forced"
+                if nid in prov_raw_ids:
+                    return "raw"
+                if nid in prov_virt_ids or prov_virtual_neighbors:
+                    return "virtual"
+                return "raw"
 
         for node_id in reached_ids:
             state = self.cache.get_node(node_id)
@@ -1458,6 +1938,12 @@ class GaOTTTEngine:
                         if virtual_cos_norm is not None
                         else 0.0
                     ),
+                    # Phase U WP-5 — selection trace (informational only;
+                    # cohort uses the Stage 7.1 structural cluster key so
+                    # the trace and the anti-hub/MMR penalties speak the
+                    # same cluster identity).
+                    cohort=cluster_key_from_cache(self.cache, node_id),
+                    provenance=_provenance_of(node_id),
                 )
 
             results.append(
@@ -1484,6 +1970,55 @@ class GaOTTTEngine:
                     "database snapshot. Stop all GaOTTT processes, run "
                     "`scripts/rebuild_faiss_from_db.py --apply`, then restart."
                 )
+
+        # Phase U WP-4b — raw-top rescue の準備 (presentation 専用)。
+        # scored results 全体 (sort 前) で raw cosine 降順の 1-based rank
+        # を作り、qualified ∧ rank ≤ direct_rescue_raw_rank の natural
+        # item を sort step で先頭 tier に lift する。rank は観測の土台
+        # (raw cosine) 上の順位 — genesis kick 等で displacement が
+        # 発散し virtual cosine が沈んだ near-exact match が final_score
+        # 最下位帯で top-K から消える病理 (docs/notes/phase-u/
+        # wp4-trace-findings.md, target de1b528f) への防腐剤。
+        # knob=0 または qualification OFF は構築すらスキップし、legacy
+        # 経路は bit-for-bit 不変 (rollback 契約)。
+        rescue_active = (
+            self.config.direct_qualification_enabled
+            and self.config.direct_rescue_raw_rank > 0
+        )
+        rescued_ids: set[str] = set()
+        if rescue_active:
+            raw_rank_map: dict[str, int] = {
+                r.id: rank
+                for rank, r in enumerate(
+                    sorted(
+                        results,
+                        key=lambda r: (
+                            -pure_raw_cosines.get(r.id, 0.0), r.id,
+                        ),
+                    ),
+                    start=1,
+                )
+            }
+            _rescue_cap = self.config.direct_rescue_raw_rank
+            rescued_ids = {
+                r.id
+                for r in results
+                if qualification_map.get(r.id, False)
+                and raw_rank_map.get(r.id, _rescue_cap + 1) <= _rescue_cap
+            }
+
+        def _natural_rescue_key(r: QueryResultItem) -> tuple[int, int, float]:
+            # 3-tier: rescued → qualified → fallback。rescued tier の
+            # 内部順のみ raw cosine 降順 (観測信号。rescued は構成上
+            # ≤ cap 件)、他 tier は Stage 3 契約どおり final_score
+            # 降順。
+            if r.id in rescued_ids:
+                return (0, 0, -pure_raw_cosines.get(r.id, 0.0))
+            return (
+                1,
+                0 if qualification_map.get(r.id) else 1,
+                -r.final_score,
+            )
 
         # Step 4: Sort and take top-K for presentation to LLM.
         # Phase J Stage 2: when explicit injection is requested, force the
@@ -1557,7 +2092,12 @@ class GaOTTTEngine:
                     reverse=True,
                 )
             others.sort(key=lambda r: r.final_score, reverse=True)
-            if self.config.direct_qualification_enabled:
+            if rescue_active:
+                # Phase U WP-4b — natural item を 3-tier (rescued →
+                # qualified → fallback) で並べ替え。forced set は上の
+                # Phase J 規則のまま (rescue は forced に触れない)。
+                others.sort(key=_natural_rescue_key)
+            elif self.config.direct_qualification_enabled:
                 # Phase T Stage 3 — qualified-first partition on the natural
                 # items only; the forced set keeps the Phase J rule above.
                 others.sort(
@@ -1579,7 +2119,12 @@ class GaOTTTEngine:
                     results = forced + others[:n_rest]
         else:
             results.sort(key=lambda r: r.final_score, reverse=True)
-            if self.config.direct_qualification_enabled:
+            if rescue_active:
+                # Phase U WP-4b — 3-tier rescue 並べ替え (上の injected
+                # branch と同一 key)。diversity (MMR) はこの並べ替え後
+                # の pool から選択する — rescued item は候補のまま。
+                results.sort(key=_natural_rescue_key)
+            elif self.config.direct_qualification_enabled:
                 # Phase T Stage 3 — stable secondary sort: qualified natural
                 # items (final_score desc, from the sort above) precede
                 # fallback picks (final_score desc). Result count is
@@ -1676,6 +2221,18 @@ class GaOTTTEngine:
             learn_conf_map = {
                 nid: learn_confidences.get(nid, 0.0) for nid in learn_ids
             }
+
+        # Phase U WP-5 — learn-set membership trace on the presented items.
+        # Only written where the Stage 4 gate actually restricted learning
+        # (active, non-synthetic, ttt ON): elsewhere the learn set is
+        # all-reached and the field stays None (WP-5 contract — a True
+        # there would carry no information).
+        if learn_ids is not None:
+            learn_trace = set(learn_ids)
+            for r in results:
+                if r.score_breakdown is not None:
+                    r.score_breakdown.in_learn_set = r.id in learn_trace
+
         if not passive:
             self._update_simulation(
                 all_reached_ids, reached, original_embs, now,
@@ -1994,7 +2551,10 @@ class GaOTTTEngine:
             self.cache.evict_node(nid)
         # Phase L Stage 1: drop archived ids from BM25 so search excludes
         # them immediately (the postings remain until compact/rebuild).
+        # WP-6c: sync 経路と同じ条件・同じ対象 (hybrid のみ) で journal に
+        # 記録してから現行 index に適用する。
         if self.bm25_index is not None and affected:
+            await self._journal_bm25_mutation("remove", node_ids)
             self.bm25_index.remove(node_ids)
         if affected:
             self.prefetch_cache.invalidate()
@@ -2026,7 +2586,11 @@ class GaOTTTEngine:
             # Calling restore is cheap (just flips the soft-remove flag);
             # if the postings were already compacted away, this is a no-op
             # and the next startup rebuild picks them up.
+            # WP-6c: snapshot に無い doc (build 窓内で restore された
+            # archived doc) は新 index に postings が無いので、journal が
+            # content を取得して replay 時に add へ fallback する。
             if self.bm25_index is not None and affected:
+                await self._journal_bm25_restore(node_ids)
                 self.bm25_index.restore(node_ids)
             self.prefetch_cache.invalidate()
         logger.info("Restored %d nodes", affected)
@@ -2055,6 +2619,7 @@ class GaOTTTEngine:
         # for now just drop them from active statistics so search excludes
         # them.
         if self.bm25_index is not None and deleted:
+            await self._journal_bm25_mutation("remove", node_ids)
             self.bm25_index.remove(node_ids)
         if deleted:
             self.prefetch_cache.invalidate()
@@ -2294,6 +2859,7 @@ class GaOTTTEngine:
             # Phase L Stage 1: drop absorbed from BM25 so the survivor wins
             # all lexical searches (the absorbed content is now redundant).
             if self.bm25_index is not None:
+                await self._journal_bm25_mutation("remove", [absorbed.id])
                 self.bm25_index.remove([absorbed.id])
         if outcomes:
             self.prefetch_cache.invalidate()
@@ -2342,6 +2908,7 @@ class GaOTTTEngine:
                     self.cache.evict_node(state.id)
             # Phase L Stage 1: drop expired ids from BM25 active stats.
             if self.bm25_index is not None and expired_ids:
+                await self._journal_bm25_mutation("remove", expired_ids)
                 self.bm25_index.remove(expired_ids)
             report["expired"] = n
 
@@ -2498,38 +3065,373 @@ class GaOTTTEngine:
             "Virtual FAISS rebuilt: %d active vectors", len(virtual_ids),
         )
 
-    async def _build_bm25_from_store(self) -> None:
-        """Phase L Stage 1: Initial BM25 build at startup.
+    async def _bm25_active_snapshot(
+        self,
+    ) -> tuple[list[str], list[str], int, str, int]:
+        """store + cache から現時点の active document 一覧を 1 回で読む。
 
-        Loads every document content from SQLite and adds the active ones
-        (those present in ``cache.node_cache`` — archived/expired ids are
-        skipped) to the in-memory BM25 index. Decision D2 dictates that
-        Stage 1 has no disk persistence, so this rebuild happens on every
-        startup. The cost is proportional to total content length; at 24k
-        documents it completes in a few seconds.
+        ``_build_bm25_from_store`` と同一規則 (cache.node_cache に載って
+        いる = archived/expired は除外、空 content は除外)。WP-6c の
+        background build は task 冒頭でこれを 1 回だけ呼び、以降の構築は
+        この stable snapshot に対して行う (構築中の cache 変化を拾わない
+        — その役割は journal)。3 番目の戻り値は全 contents 件数
+        (sync 経路の log 用)。
+
+        WP-6d: 4/5 番目の戻り値は corpus fingerprint (digest, active_count)。
+        digest = sorted な (id, sha256(content)) 列を順に連結したものの
+        sha256 — content そのものの digest なので、timestamp 系の proxy
+        (count + max(updated_at) 等) と違い in-place content 変更を
+        取りこぼさない (WP-3 と同じ Codex review 仕様)。fingerprint は
+        この pass と同じ 1 回の store scan で計算する (追加 scan なし)。
+        id 順に iterate するので SQLite の row order に依存せず、build も
+        この順で add する — loaded index と freshly-built index の検索結果
+        (tie-break の insertion order 含む) が一致する要件の一部。
         """
-        if self.bm25_index is None and self.ambient_gate_index is None:
-            return
         contents = await self.store.get_all_contents()
         active_ids: list[str] = []
         active_texts: list[str] = []
-        for nid, text in contents.items():
+        fp = hashlib.sha256()
+        for nid, text in sorted(contents.items()):
             if nid in self.cache.node_cache and text:
                 active_ids.append(nid)
                 active_texts.append(text)
-        if not active_ids:
-            return
-        if self.bm25_index is not None:
-            self.bm25_index.add(active_ids, active_texts)
+                fp.update(nid.encode("utf-8"))
+                fp.update(b"\x00")
+                fp.update(hashlib.sha256(text.encode("utf-8")).digest())
+                fp.update(b"\x00")
+        return (
+            active_ids, active_texts, len(contents), fp.hexdigest(),
+            len(active_ids),
+        )
+
+    def _fill_bm25_indexes(
+        self,
+        bm25_index: BM25Index | None,
+        ambient_gate_index: BM25Index | None,
+        active_ids: list[str],
+        active_texts: list[str],
+    ) -> int:
+        """BM25 index への doc 追加 — sync / background 両経路の共有 helper。
+
+        sync 経路 (rollback flag) は startup から直接呼ぶ。background 経路
+        (WP-6c) は asyncio.to_thread から chunk 単位で呼ぶ — tokenization は
+        CPU-bound なので event loop を block しない。呼び出し側の lock 管理
+        (engine 側) に対し、index object 自体は常に単一 owner でのみ触られる
+        (build 中は新 object が build task 専有、swap 後は mutation 経路専有)。
+        """
+        if bm25_index is not None:
+            bm25_index.add(active_ids, active_texts)
         # Ambient Recall Enrichment: the word-level gate index is built from
         # the same content scan. Sudachi tokenisation is slower than the
         # char-trigram default, so this adds to startup time on a large corpus.
-        if self.ambient_gate_index is not None:
-            self.ambient_gate_index.add(active_ids, active_texts)
+        if ambient_gate_index is not None:
+            ambient_gate_index.add(active_ids, active_texts)
+        return len(active_ids)
+
+    async def _build_bm25_from_store(self) -> tuple[str, int] | None:
+        """Phase L Stage 1: Initial BM25 build at startup (sync path).
+
+        Loads every document content from SQLite and adds the active ones
+        (those present in ``cache.node_cache`` — archived/expired ids are
+        skipped) to the in-memory BM25 index. Decision D2 dictated that
+        Stage 1 has no disk persistence; WP-6d supersedes it with the
+        fingerprint-guarded snapshot (callers decide whether to persist).
+
+        WP-6d: build した内容の corpus fingerprint (digest, active_count)
+        を返す — 呼び出し側が「build 成功時に snapshot を保存」する際の
+        内容保証に使う。index が未接続・active doc が 0 件の場合は None
+        (snapshot に意味が無い / 次 boot の build は自明に速い)。
+        """
+        if self.bm25_index is None and self.ambient_gate_index is None:
+            return None
+        active_ids, active_texts, total, digest, active_count = (
+            await self._bm25_active_snapshot()
+        )
+        if not active_ids:
+            return None
+        self._fill_bm25_indexes(
+            self.bm25_index, self.ambient_gate_index, active_ids, active_texts,
+        )
         logger.info(
             "BM25 index built: %d active docs (skipped %d archived/missing)",
-            len(active_ids), len(contents) - len(active_ids),
+            len(active_ids), total - len(active_ids),
         )
+        return digest, active_count
+
+    # --- WP-6c (Phase U / R5): background BM25 build -----------------------
+    # 「新規 index object への snapshot build + build 窓内 mutation の
+    # journal replay + engine lock 下での atomic swap」。現行 index object
+    # への in-place 書き込みは行わない (BM25Index は lock を持たない
+    # single-owner 設計のため、並行 writer を作らない)。
+
+    async def _journal_bm25_mutation(
+        self,
+        op: str,
+        ids: list[str],
+        texts: list[str] | None = None,
+        *,
+        gate_too: bool = False,
+    ) -> None:
+        """BM25-affecting mutation を journal に記録する (build 中のみ)。
+
+        契約: mutation 経路は「本メソッドの await」→「現行 index への適用」
+        の順で呼び、両者の間に await を入れない。これで journal 追加と
+        現行 index への適用が同じ世代に対して行われ、swap をまたいだ
+        mutation の取りこぼしが構造的に起きない。
+        """
+        # WP-6d: journal の有無にかかわらず、mutation は現行 index にも
+        # 適用される = on-disk snapshot はもう現状を映していない。build
+        # 完了時の条件付き保存は dirty で skip され、graceful shutdown 時
+        # に fingerprint を取り直して再保存される (mutation ごとの再保存
+        # は write amplification なので行わない)。remove は sync 経路の
+        # 契約どおり hybrid のみに適用されるため、gate は store-active
+        # 構成から乖離する (diverged — compact の full rebuild で再収束)。
+        self._bm25_snapshot_dirty = True
+        if op == "remove":
+            self._bm25_snapshot_gate_diverged = True
+        if self._bm25_journal is None or self._bm25_journal_lock is None:
+            return
+        async with self._bm25_journal_lock:
+            # lock 取得待ちの間に swap が journal を閉じ得る — 閉じていたら
+            # 記録不要 (直後の現行 index への適用が swap 済みの新 object に
+            # 当たるため、mutation は失われない)
+            if self._bm25_journal is None:
+                return
+            self._bm25_journal.append(
+                _BM25JournalEntry(
+                    op=op, ids=list(ids), texts=texts, gate_too=gate_too,
+                )
+            )
+            self._bm25_mutation_generation += 1
+
+    async def _journal_bm25_restore(self, node_ids: list[str]) -> None:
+        """restore 用の journal 記録 (content 取得付き)。
+
+        snapshot に無い doc への restore は新 index に postings が無い
+        ため、replay 時に add へ fallback できるよう content を journal
+        時点で取得しておく。build 中のみ store 読み込みが発生する。
+        """
+        if self._bm25_journal is None or self._bm25_journal_lock is None:
+            return
+        ids: list[str] = []
+        texts: list[str] = []
+        for nid in node_ids:
+            doc = await self.store.get_document(nid)
+            if doc is not None and doc.get("content"):
+                ids.append(nid)
+                texts.append(doc["content"])
+        await self._journal_bm25_mutation("restore", ids, texts)
+
+    def _wire_fresh_bm25_indexes(
+        self,
+    ) -> tuple[BM25Index | None, BM25Index | None]:
+        """background build 用の新規 index 対。
+
+        runtime.build_engine が wiring に使うのと同一 param で生成する
+        (hybrid: k1/b/tokenizer、gate: gate tokenizer + default k1/b)。
+        既存 index と同一 param なので、swap 後の検索挙動は同期 build と
+        同一になる。
+        """
+        new_hybrid = (
+            BM25Index(
+                k1=self.config.bm25_k1,
+                b=self.config.bm25_b,
+                tokenizer=self.config.bm25_tokenizer,
+            )
+            if self.bm25_index is not None
+            else None
+        )
+        new_gate = (
+            BM25Index(tokenizer=self.config.ambient_gate_tokenizer)
+            if self.ambient_gate_index is not None
+            else None
+        )
+        return new_hybrid, new_gate
+
+    @staticmethod
+    def _replay_bm25_journal_entry(
+        entry: _BM25JournalEntry,
+        new_hybrid: BM25Index | None,
+        new_gate: BM25Index | None,
+        present: set[str],
+    ) -> None:
+        """journal entry を新 index に 1 件 replay (sync、lock 内で呼ぶ)。
+
+        ``present`` は新 index に postings が存在する id 集 (snapshot +
+        add 済み id)。restore の add-fallback 判定に使う (BM25Index は
+        contains 持ちの API を持たないため engine 側で追跡)。
+        add/remove は BM25Index 側で冪等 (dup add skip / 未知 id の
+        remove・restore は no-op)。
+        """
+        if entry.op == "add":
+            if entry.texts is not None:
+                if new_hybrid is not None:
+                    new_hybrid.add(entry.ids, entry.texts)
+                if entry.gate_too and new_gate is not None:
+                    new_gate.add(entry.ids, entry.texts)
+            present.update(entry.ids)
+        elif entry.op == "remove":
+            # sync 経路と同じく hybrid のみ (gate は compact rebuild まで
+            # removed doc を保持する現行挙動を維持)
+            if new_hybrid is not None:
+                new_hybrid.remove(entry.ids)
+        elif entry.op == "restore":
+            if new_hybrid is not None and entry.texts is not None:
+                have: list[str] = []
+                miss_ids: list[str] = []
+                miss_texts: list[str] = []
+                for nid, text in zip(entry.ids, entry.texts):
+                    if nid in present:
+                        have.append(nid)
+                    elif text:
+                        miss_ids.append(nid)
+                        miss_texts.append(text)
+                if have:
+                    new_hybrid.restore(have)
+                if miss_ids:
+                    # snapshot に無かった doc — postings が無いので content
+                    # から add する (sync 経路では起動 build が必ず含めて
+                    # いた状態に相当)
+                    new_hybrid.add(miss_ids, miss_texts)
+                    present.update(miss_ids)
+
+    def _start_bm25_background_build(self) -> None:
+        """background build task を起動する (startup から呼ぶ)。
+
+        journal を **先に** 開いてから snapshot を取る — snapshot 読み込み
+        中の mutation も journal に入り、replay の冪等性 (dup add skip /
+        remove 冪等) が二重適用を吸収する。WP-6d: snapshot load 試行で
+        既に journal が開いている場合はそのまま再利用する (load 試行中の
+        mutation 記録を失わない — entries は build の replay が消費する)。
+        """
+        if self._bm25_journal is None or self._bm25_journal_lock is None:
+            self._bm25_journal_lock = asyncio.Lock()
+            self._bm25_journal = []
+        self._bm25_bg_invalidated = False
+        self.bm25_build_attempts = 0
+        self.bm25_build_state = "building"
+        self._bm25_build_task = asyncio.create_task(
+            self._bm25_background_build(), name="bm25-background-build",
+        )
+
+    async def _bm25_background_build(self) -> None:
+        """WP-6c background build 本体。
+
+        1 attempt = snapshot 取得 → thread での chunk fill → journal
+        replay + atomic swap (1 つの lock 区間、await なしの sync block)。
+        例外は single automatic retry (計 2 attempt)、それでも失敗したら
+        state="failed" で give up — engine は落とさない。cancel
+        (shutdown) は現行 index を空のまま残して即座に終了する。
+        """
+        t0 = time.perf_counter()
+        max_attempts = 2  # 初回 + single retry (WP-6c retry 契約)
+        try:
+            for attempt in range(1, max_attempts + 1):
+                self.bm25_build_attempts = attempt
+                if self._bm25_bg_invalidated:
+                    # compact が現行 index を再構築済み — 新 object は
+                    # 古い snapshot 基底なので swap しない
+                    break
+                try:
+                    new_hybrid, new_gate = self._wire_fresh_bm25_indexes()
+                    active_ids, active_texts, _total, fp_digest, fp_count = (
+                        await self._bm25_active_snapshot()
+                    )
+                    for i in range(0, len(active_ids), _BM25_BG_FILL_CHUNK):
+                        await asyncio.to_thread(
+                            self._fill_bm25_indexes,
+                            new_hybrid,
+                            new_gate,
+                            active_ids[i:i + _BM25_BG_FILL_CHUNK],
+                            active_texts[i:i + _BM25_BG_FILL_CHUNK],
+                        )
+                    # --- journal replay + atomic swap ---
+                    # lock 区間は await なしの sync block: mutation の
+                    # journal append と完全に直列化され、「replay 済み
+                    # journal に append されたが swap 前の index に適用
+                    # された」という取りこぼしが構造的に起きない。
+                    async with self._bm25_journal_lock:
+                        if self._bm25_bg_invalidated:
+                            break
+                        present = set(active_ids)
+                        for entry in list(self._bm25_journal):
+                            self._replay_bm25_journal_entry(
+                                entry, new_hybrid, new_gate, present,
+                            )
+                        # search 経路はすべて ``self.bm25_index`` を
+                        # search ごとに読むため、参照の差し替えだけで
+                        # 新検索から新 object が見える (実行中の search は
+                        # 旧 object 上で完結する)。2 index は同時に swap。
+                        if new_hybrid is not None:
+                            self.bm25_index = new_hybrid
+                        if new_gate is not None:
+                            self.ambient_gate_index = new_gate
+                        journal_len = len(self._bm25_journal)
+                        self._bm25_journal = None
+                    self.bm25_build_state = "ready"
+                    # WP-6a 計装契約の documented exception: 完了時に実際の
+                    # 所要時間で上書きする (startup 時点では ≈0 を記録済み)
+                    self.startup_timings["bm25_build"] = time.perf_counter() - t0
+                    logger.info(
+                        "BM25 background build ready: hybrid=%s gate=%s "
+                        "(%d journal entries replayed, mutation_generation=%d, "
+                        "%.2fs)",
+                        new_hybrid.size if new_hybrid is not None else None,
+                        new_gate.size if new_gate is not None else None,
+                        journal_len,
+                        self._bm25_mutation_generation,
+                        self.startup_timings["bm25_build"],
+                    )
+                    # WP-6d: build 成功時に snapshot を保存。fp はこの
+                    # attempt の snapshot pass 由来 — 新 index が表現する
+                    # 内容と正確に対応する。窓内 mutation があった
+                    # (dirty / gate diverged) 場合は保存を skip し、
+                    # graceful shutdown 時の再保存 or 次 boot の再 build に
+                    # 任せる (fp が内容を正確に記述している保証を優先)。
+                    await self._save_bm25_snapshot_if_clean(
+                        (fp_digest, fp_count),
+                    )
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if attempt < max_attempts:
+                        logger.error(
+                            "BM25 background build failed (attempt %d/%d) — "
+                            "retrying: %s: %s",
+                            attempt, max_attempts, type(exc).__name__, exc,
+                        )
+                        continue
+                    logger.error(
+                        "BM25 background build failed (attempt %d/%d) — giving "
+                        "up; BM25 indexes stay empty. Hybrid retrieval falls "
+                        "back to raw+virtual; the ambient gate falls back to "
+                        "the semantic path. Recover: restart the backend or "
+                        "run compact(rebuild_faiss=True).",
+                        attempt, max_attempts,
+                    )
+                    self.bm25_build_state = "failed"
+                    self.startup_timings["bm25_build"] = time.perf_counter() - t0
+                    async with self._bm25_journal_lock:
+                        self._bm25_journal = None
+                    return
+            # invalidate 経由の到達 — compact が現行 index を再構築済み
+            # なので現行のままで ready とする
+            self.bm25_build_state = "ready"
+            self.startup_timings["bm25_build"] = time.perf_counter() - t0
+            async with self._bm25_journal_lock:
+                self._bm25_journal = None
+            logger.info(
+                "BM25 background build discarded (invalidated by compact "
+                "rebuild) — compact-built indexes remain active",
+            )
+        except asyncio.CancelledError:
+            # shutdown 中の cancel: swap せずに終了する。state は "idle" に
+            # 戻す ("failed" と違い、WP-6b が build 未達と誤読しない)。
+            self.bm25_build_state = "idle"
+            async with self._bm25_journal_lock:
+                self._bm25_journal = None
+            raise
 
     async def _rebuild_bm25_from_store(self) -> None:
         """Phase L Stage 1: Full BM25 rebuild during compact.
@@ -2540,11 +3442,288 @@ class GaOTTTEngine:
         """
         if self.bm25_index is None and self.ambient_gate_index is None:
             return
+        # WP-6c: build 窓内で compact が走った場合、この再構築 (store の
+        # 現在内容からの full rebuild) の方が background build の snapshot
+        # より新しい。in-flight build を invalidation して swap を止める
+        # (他プロセス書き込み含め compact 時点の store が勝つ)。
+        if self._bm25_journal is not None:
+            self._bm25_bg_invalidated = True
+        # WP-6d: full rebuild で両 index は store-active 構成に再収束する
+        # (remove 系 mutation で生じていた gate の divergence を解消)。
+        # 内容が前回保存した snapshot と同じとは限らないので dirty を
+        # 立て、graceful shutdown 時に fingerprint を取り直して再保存する。
+        self._bm25_snapshot_dirty = True
+        self._bm25_snapshot_gate_diverged = False
         if self.bm25_index is not None:
             self.bm25_index.reset()
         if self.ambient_gate_index is not None:
             self.ambient_gate_index.reset()
         await self._build_bm25_from_store()
+
+    # --- WP-6d (Phase U / R5): BM25 snapshot persistence ---------------------
+    # 「build 済み index の data_dir/bm25.snapshot への永続化 + 次回 startup
+    # での fingerprint 検証付き load」。保存は build 完了時と graceful
+    # shutdown 時 (dirty) のみ。load は WP-6c の swap 機構と同じ journal
+    # replay + 参照差し替えで行う (= load も「build 完了」の一種)。
+
+    def _bm25_snapshot_identity(self) -> dict:
+        """WP-6d — snapshot の tokenizer identity (検証対象)。
+
+        k1 / b / tokenizer 名は BM25Index の内容と scoring を完全に定義
+        する parameter なので、この組 (と wiring 有無 = None) が一致すれば
+        load した index は現在の config で build したものと同一になる。
+        hybrid は config 値、gate は BM25Index default を wiring に使う
+        現行構成に合わせ、実際に wired された index object から読む。
+        """
+        return {
+            "hybrid": (
+                {
+                    "tokenizer": self.config.bm25_tokenizer,
+                    "k1": self.bm25_index.k1,
+                    "b": self.bm25_index.b,
+                }
+                if self.bm25_index is not None
+                else None
+            ),
+            "gate": (
+                {
+                    "tokenizer": self.config.ambient_gate_tokenizer,
+                    "k1": self.ambient_gate_index.k1,
+                    "b": self.ambient_gate_index.b,
+                }
+                if self.ambient_gate_index is not None
+                else None
+            ),
+        }
+
+    async def _close_bm25_journal(self) -> None:
+        """journal を閉じる (replay 消費先が無い経路での leak 防止)。
+
+        WP-6d の load 試行後に sync build へ fallthrough する場合など、
+        journal が開いたまま consumer を持たない経路で mutation 記録が
+        無限に溜るのを防ぐ。以降の mutation は journal 無し (= sync 経路
+        と同じ、現行 index への直接適用) で動く。
+        """
+        if self._bm25_journal_lock is None:
+            return
+        async with self._bm25_journal_lock:
+            self._bm25_journal = None
+
+    async def _try_load_bm25_snapshot(self) -> bool:
+        """WP-6d — snapshot が新鮮なら build を skip して両 index を load。
+
+        WP-6c と同じ ordering 契約 (journal を開いてから fingerprint pass)
+        に従う: pass 中の mutation は journal に記録され、load 成功時に
+        background build と同じ要領で replay + swap される (mid-startup
+        mutation の取りこぼし構造的に無い)。検証は checksum (file 読み
+        込み時) → format_version → universe_id → tokenizer identity →
+        corpus fingerprint の順。いずれかが失敗したら False を返し、
+        呼び出し側は通常の build 経路に fallback する。journal は開いた
+        まま残す (background build が再利用 / sync 経路は呼び出し側で
+        閉じる)。
+        """
+        if self._bm25_journal is None or self._bm25_journal_lock is None:
+            self._bm25_journal_lock = asyncio.Lock()
+            self._bm25_journal = []
+        _ids, _texts, _total, digest, active_count = (
+            await self._bm25_active_snapshot()
+        )
+        path = Path(self.config.data_dir) / _BM25_SNAPSHOT_FILENAME
+        payload = _bm25_snapshot_read(path)
+        if payload is None:
+            logger.info(
+                "BM25 snapshot absent/corrupt/format-mismatch — rebuilding (%s)",
+                path,
+            )
+            return False
+        if payload.get("universe_id") != self._universe_id:
+            logger.info(
+                "BM25 snapshot universe mismatch (snapshot=%r, engine=%r) — "
+                "rebuilding",
+                payload.get("universe_id"), self._universe_id,
+            )
+            return False
+        identity = self._bm25_snapshot_identity()
+        if payload.get("tokenizer_identity") != identity:
+            logger.info(
+                "BM25 snapshot tokenizer/params mismatch — rebuilding "
+                "(snapshot=%r, current=%r)",
+                payload.get("tokenizer_identity"), identity,
+            )
+            return False
+        fp = payload.get("corpus_fingerprint")
+        if (
+            not isinstance(fp, dict)
+            or fp.get("digest") != digest
+            or fp.get("active_count") != active_count
+        ):
+            logger.info(
+                "BM25 snapshot corpus fingerprint mismatch (content changed) "
+                "— rebuilding"
+            )
+            return False
+        hybrid_state = payload.get("hybrid_state")
+        gate_state = payload.get("gate_state")
+        # identity 検証済みなので state の有無 (= wiring 有無) は現在の
+        # engine と一致している。tokenizer は identity の名前から再生成。
+        new_hybrid = (
+            _bm25_index_from_state(
+                hybrid_state, identity["hybrid"]["tokenizer"],
+            )
+            if hybrid_state is not None
+            else None
+        )
+        new_gate = (
+            _bm25_index_from_state(gate_state, identity["gate"]["tokenizer"])
+            if gate_state is not None
+            else None
+        )
+        # --- journal replay + atomic swap (build 完了時と同一構造) ---
+        async with self._bm25_journal_lock:
+            entries = list(self._bm25_journal)
+            had_entries = bool(entries)
+            present: set[str] = (
+                set(hybrid_state["doc_ids"]) if hybrid_state is not None else set()
+            )
+            for entry in entries:
+                self._replay_bm25_journal_entry(
+                    entry, new_hybrid, new_gate, present,
+                )
+            if new_hybrid is not None:
+                self.bm25_index = new_hybrid
+            if new_gate is not None:
+                self.ambient_gate_index = new_gate
+            self._bm25_journal = None
+        # journal が空だった場合、load した index は on-disk snapshot の内容
+        # そのもの — dirty / diverged を初期化する。窓内に mutation があった
+        # (entries が replay された) 場合は on-disk 側にその内容が無いので
+        # dirty は立てたままにし、graceful shutdown 時の再保存に任せる。
+        if not had_entries:
+            self._bm25_snapshot_dirty = False
+            self._bm25_snapshot_gate_diverged = False
+        logger.info(
+            "BM25 snapshot loaded: hybrid=%s gate=%s (fingerprint=%s…, %d docs)",
+            new_hybrid.size if new_hybrid is not None else None,
+            new_gate.size if new_gate is not None else None,
+            digest[:12], active_count,
+        )
+        return True
+
+    async def _save_bm25_snapshot_if_clean(
+        self, fp: tuple[str, int] | None,
+    ) -> None:
+        """WP-6d — build 完了時の条件付き snapshot 保存。
+
+        保存してよいのは「現行 index が fp の内容を正確に表現している」
+        場合のみ: build 窓内に mutation があった (dirty) / remove 系 mutation
+        で gate が store-active 構成から乖離している (diverged) 場合は
+        skip し、graceful shutdown 時の再保存 or 次 boot の再 build に任せ
+        る。skip しても snapshot が stale/absent になるだけで、次 boot の
+        fingerprint 検証が必ず再 build に落とすので安全側に倒れている。
+        """
+        if not self.config.bm25_snapshot_enabled or fp is None:
+            return
+        if self._bm25_snapshot_dirty or self._bm25_snapshot_gate_diverged:
+            return
+        await self._publish_bm25_snapshot(fp[0], fp[1])
+
+    async def _publish_bm25_snapshot(
+        self, digest: str, active_count: int,
+    ) -> bool:
+        """checksum 付き atomic publish (共通下請け)。
+
+        ``_persist_blocked`` (owner-lease loss) 下では書かない (INFO 1 回
+        のみ)。size 整合検証: hybrid / gate とも現行 index の active 件数が
+        fingerprint の active_count と一致すること — restore で postings が
+        無く index に載らなかった doc (index ⊊ store) 等、内容を正確に
+        表現していない状態では保存しない。
+        """
+        if self._persist_blocked:
+            if not self._bm25_snapshot_block_warned:
+                self._bm25_snapshot_block_warned = True
+                logger.info(
+                    "BM25 snapshot save skipped — persist blocked (lease "
+                    "lost); snapshot will be rebuilt on next boot",
+                )
+            return False
+        if self.bm25_index is not None and self.bm25_index.size != active_count:
+            logger.info(
+                "BM25 snapshot save skipped — hybrid size %d != fingerprint "
+                "active_count %d",
+                self.bm25_index.size, active_count,
+            )
+            return False
+        if (
+            self.ambient_gate_index is not None
+            and self.ambient_gate_index.size != active_count
+        ):
+            logger.info(
+                "BM25 snapshot save skipped — gate size %d != fingerprint "
+                "active_count %d",
+                self.ambient_gate_index.size, active_count,
+            )
+            return False
+        # payload は現 index から同期的に copy してから thread に渡す
+        # (write 中の mutation が payload を動かさないようにするため)
+        payload = {
+            "format_version": _BM25_SNAPSHOT_FORMAT_VERSION,
+            "universe_id": self._universe_id,
+            "tokenizer_identity": self._bm25_snapshot_identity(),
+            "corpus_fingerprint": {
+                "digest": digest,
+                "active_count": active_count,
+            },
+            "created_at": time.time(),
+            "hybrid_state": (
+                _bm25_index_state(self.bm25_index)
+                if self.bm25_index is not None
+                else None
+            ),
+            "gate_state": (
+                _bm25_index_state(self.ambient_gate_index)
+                if self.ambient_gate_index is not None
+                else None
+            ),
+        }
+        path = Path(self.config.data_dir) / _BM25_SNAPSHOT_FILENAME
+        ok = await asyncio.to_thread(_bm25_snapshot_write, path, payload)
+        if ok:
+            logger.info(
+                "BM25 snapshot saved: %d docs → %s", active_count, path,
+            )
+        return ok
+
+    async def _save_bm25_snapshot_on_shutdown(self) -> None:
+        """WP-6d — graceful shutdown 時の dirty snapshot 再保存。
+
+        ``cache.flush_to_store`` の後で呼ぶこと (fingerprint pass が store
+        の最終状態を読む)。build が in flight (cancel timeout で worker
+        thread が残る例外的経路) の場合や state が ready でない場合は
+        現行 index の内容を信用しない — skip しても stale snapshot は
+        次 boot で再 build されるだけ。書き込み中に mutation が重なる
+        可能性が残るため dirty はクリアしない (プロセスはここで終了)。
+        """
+        if not self.config.bm25_snapshot_enabled or not self._bm25_snapshot_dirty:
+            return
+        if self._bm25_build_task is not None and not self._bm25_build_task.done():
+            logger.info(
+                "BM25 snapshot save skipped on shutdown — build still in "
+                "flight; snapshot will be rebuilt on next boot",
+            )
+            return
+        if self.bm25_build_state != "ready":
+            return
+        if self._bm25_snapshot_gate_diverged:
+            logger.info(
+                "BM25 snapshot save skipped on shutdown — ambient gate "
+                "diverged from store-active docs (remove mutations); "
+                "rebuilding on next boot",
+            )
+            return
+        _ids, _texts, _total, digest, active_count = (
+            await self._bm25_active_snapshot()
+        )
+        await self._publish_bm25_snapshot(digest, active_count)
 
     # --- Phase M Stage 1: orbital-state reset (legacy BH residue cleanup) ---
 

@@ -132,6 +132,22 @@ def _format_breakdown(b) -> str:
         segs.append(f"gap={b.lensing_gap:+.2f}")
     if segs:
         qual_str += " " + " ".join(segs)
+    # Phase U WP-5 — selection-trace segments, strictly TRAILING after the
+    # segments above (CLAUDE.md formatter rule: existing line formats and
+    # order are contract; new information joins as appended segments
+    # only). c= shows the Stage 7.1 cluster key (cohort_id OR
+    # original_id, 8-char prefix), src= the raw/virtual/forced candidate
+    # origin, learn=± the Stage 4 learn-set membership (only where the
+    # gate ran — passive/ttt-OFF recalls omit the segment).
+    trace_segs = []
+    if b.cohort:
+        trace_segs.append(f"c={b.cohort[:8]}")
+    if b.provenance:
+        trace_segs.append(f"src={b.provenance}")
+    if b.in_learn_set is not None:
+        trace_segs.append("learn=+" if b.in_learn_set else "learn=-")
+    if trace_segs:
+        qual_str += " " + " ".join(trace_segs)
     line = (
         f"  breakdown: cos={b.raw_cosine:.3f} vcos={b.virtual_cosine:.3f}·"
         f"decay={b.decay_factor:.3f} +wave={b.wave_score:.3f} "
@@ -322,7 +338,20 @@ def format_explore(result: ExploreResponse, mode: str = "serendipity") -> str:
         return "No memories found for exploration." + _format_routing_hint(
             result.routing_hint,
         )
-    lines = [f"Exploration (diversity={result.diversity:.1f}):"]
+    # Phase U WP-5 — selection-trace header line: the wave propagation
+    # observability (effective depth + wave reach) behind the item list.
+    # Appended directly under the existing header, inside the first
+    # joined block — existing lines (header + per-item) keep their exact
+    # format; ``lines` joins blocks with the "---" divider, so a separate
+    # list element would wedge a divider between header and wave line.
+    # Dormant mode never reaches here (its own branch above bypasses the
+    # wave entirely, fields stay None).
+    header_block = f"Exploration (diversity={result.diversity:.1f}):"
+    if result.wave_depth is not None and result.wave_reached is not None:
+        header_block += (
+            f"\nwave: depth={result.wave_depth} reached={result.wave_reached}"
+        )
+    lines = [header_block]
     for i, item in enumerate(result.items):
         lines.append(
             f"[{i+1}] (score={item.final_score:.4f}, source={item.source})\n"
@@ -408,6 +437,19 @@ def _ambient_gate_line(diag, config=None) -> str:
     if diag.semantic_max_raw is not None:
         parts.append(f"raw_max={diag.semantic_max_raw:.3f}")
     parts.append(f"candidates={diag.candidates_generated}")
+    # Phase U WP-3 — composite segments. Additive only: gated on
+    # ``composite_signal`` (set iff mode="composite" ran the composite
+    # judgment), so mode="or" lines stay byte-identical. Axes are appended
+    # when present; rejects still show whichever axes were computable so
+    # silence triage can read *why* the gate closed.
+    if getattr(diag, "composite_signal", None):
+        if diag.virt_percentile is not None:
+            parts.append(f"pct={diag.virt_percentile:.1f}")
+        if diag.margin is not None:
+            parts.append(f"margin={diag.margin:.3f}")
+        if diag.raw_top1 is not None:
+            parts.append(f"raw={diag.raw_top1:.3f}")
+        parts.append(f"sig={diag.composite_signal}")
     return f"gate: {diag.empty_reason or 'passed'} ({', '.join(parts)})"
 
 

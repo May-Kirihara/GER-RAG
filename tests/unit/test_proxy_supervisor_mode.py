@@ -27,7 +27,9 @@ PROXY = "gaottt.server.mcp_proxy"
 
 def test_route_to_supervisor_success():
     """200 with {url, token} → (url, token). POST body is {api_key}."""
-    from gaottt.server.mcp_proxy import _route_to_supervisor
+    from gaottt.server.mcp_proxy import (
+        PROXY_ROUTE_TIMEOUT_SECONDS, _route_to_supervisor,
+    )
 
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -43,7 +45,7 @@ def test_route_to_supervisor_success():
     mock_post.assert_called_once_with(
         "http://sup:7880/route",
         json={"api_key": "mykey"},
-        timeout=10.0,
+        timeout=PROXY_ROUTE_TIMEOUT_SECONDS,
     )
 
 

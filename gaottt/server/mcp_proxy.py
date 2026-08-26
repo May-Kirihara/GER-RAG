@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import socket
@@ -58,8 +59,53 @@ DEFAULT_PORT = 7878
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_IDLE_TIMEOUT = 300.0   # backend self-shutdown after 5 minutes of silence
 DEFAULT_PING_INTERVAL = 60.0   # proxy heartbeat cadence
-# A cold /route can spend up to 90s starting the embedder and another 90s
-# loading a universe backend, so the shim must cover both stages.
+
+
+def _config_default(field_name: str) -> float:
+    """GaOTTTConfig の field default を副作用なく読む。
+
+    GaOTTTConfig を instantiate すると ``__post_init__`` の mkdir 等が
+    走るため、dataclass の field 定義から default 値だけを取り出す
+    (env / config file も見ない — code default 同士の導出が目的)。
+    """
+    from gaottt.config import GaOTTTConfig
+
+    for f in dataclasses.fields(GaOTTTConfig):
+        if f.name == field_name:
+            return float(f.default)
+    raise KeyError(field_name)
+
+
+# 1 回の POST /route に掛ける shim 側 HTTP timeout。完全に冷えた (fully
+# cold) /route は supervisor 内で最大 3 段階の **直列** 待ちになり得る:
+#   (1) embedder service lazy spawn の readiness 待ち
+#       (embedder_spawn_readiness_timeout_seconds = 90s)
+#   (2) universe backend spawn の readiness probe 待ち
+#       (supervisor_readiness_timeout = 90s)
+#   (3) backend engine readiness の poll 待ち
+#       (route_readiness_timeout_seconds = 35s)
+# shim がこの和 (+ margin) より短いと readiness:"starting" 応答が shim 側
+# で頭打ちになり、cold client は「起動中」を観測できず timeout してしまう
+# (final review r2 blocking #1)。各 bound は config field default から導出
+# — どれかを釣り上げても追従を忘れないよう tests/unit/test_proxy_route_
+# timeout.py が fence する。
+_EMBEDDER_SPAWN_BOUND = _config_default("embedder_spawn_readiness_timeout_seconds")
+_BACKEND_SPAWN_BOUND = _config_default("supervisor_readiness_timeout")
+_ROUTE_READINESS_BOUND = _config_default("route_readiness_timeout_seconds")
+_COLD_ROUTE_MARGIN_S = 15.0  # HTTP transport / supervisor handler 余剰
+PROXY_ROUTE_TIMEOUT_SECONDS: float = (
+    _EMBEDDER_SPAWN_BOUND
+    + _BACKEND_SPAWN_BOUND
+    + _ROUTE_READINESS_BOUND
+    + _COLD_ROUTE_MARGIN_S
+)
+
+# ensure-supervisor 予算 — supervisor 自身の起動 (openapi.json 応答を待つ
+# poll loop) だけに適用される。起動完了後の /route はこの予算と独立に
+# full PROXY_ROUTE_TIMEOUT_SECONDS を受け取る (下の autospawn 経路) ので、
+# この値が cold route 予算を cover する必要はない (round-2 review: かつて
+# 「起動予算の残り」を /route に流用していた頃は grace + route 予算の和が
+# 必要だったが、budget 分離で不要になった)。
 DEFAULT_SUPERVISOR_READINESS_TIMEOUT = 200.0
 
 
@@ -222,7 +268,8 @@ class _SupervisorUnreachable(RuntimeError):
 
 
 def _route_to_supervisor(
-    supervisor_url: str, api_key: str, timeout: float = 10.0,
+    supervisor_url: str, api_key: str,
+    timeout: float = PROXY_ROUTE_TIMEOUT_SECONDS,
 ) -> tuple[str, str]:
     """Resolve a backend ``(url, token)`` via the supervisor's ``POST /route``.
 
@@ -251,6 +298,15 @@ def _route_to_supervisor(
     if response.status_code != 200:
         raise RuntimeError(f"Supervisor route failed: {response.status_code}")
     data = response.json()
+    # Phase U WP-6b: supervisor が readiness:"starting" を返してもそのまま
+    # 接続を続ける (backend 側 handler が共有 startup task を bounded wait
+    # する)。ここで block loop を作らない — 1 回だけ INFO で観測可能にする。
+    if data.get("readiness") == "starting":
+        logger.info(
+            "Backend %s is still starting (engine STARTING) — connecting "
+            "anyway; tool calls will bounded-wait server-side",
+            data.get("url"),
+        )
     return data["url"], data["token"]
 
 
@@ -332,12 +388,18 @@ async def _route_with_supervisor_autospawn(
                 f"{supervisor_url.rstrip('/')}/openapi.json", timeout=1.0,
             )
             if response.status_code < 500:
-                # /route may cold-start both embedder and backend. Give that
-                # single request the full readiness budget; do not issue
-                # overlapping route requests that could rotate tokens.
-                remaining = max(1.0, deadline - time.monotonic())
+                # Supervisor startup has spent only its OWN budget above
+                # (readiness_timeout). The /route request is a separate
+                # stage: fully cold, it may legally spend embedder spawn +
+                # backend spawn + engine readiness poll, so it gets the
+                # FULL route bound regardless of how long the openapi
+                # polling took — handing it ``deadline - now`` would
+                # conflate the two budgets and truncate the cold path
+                # (round-2 review blocking #1). Single call: no overlapping
+                # route requests that could rotate tokens.
                 return _route_to_supervisor(
-                    supervisor_url, api_key, timeout=remaining,
+                    supervisor_url, api_key,
+                    timeout=PROXY_ROUTE_TIMEOUT_SECONDS,
                 )
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             last_error = exc
@@ -699,8 +761,8 @@ async def run_proxy(
     missing local supervisor; it is opt-in so remote URLs and existing
     deployments retain their previous behaviour.
     """
-    # Local import: keep mcp_proxy importable without pulling the full config
-    # module at module-load time (it is heavy and not needed for the helpers).
+    # Point-of-use import: gaottt.config (stdlib-only) is already pulled at
+    # module import by the timeout-derivation block above.
     from gaottt.config import GaOTTTConfig
 
     config = GaOTTTConfig.from_config_file()

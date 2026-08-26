@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import random
 import re
+import statistics
 import time
 from bisect import bisect_right
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
@@ -44,6 +47,15 @@ from gaottt.core.types import (
 )
 from gaottt.core.explain import explain_score
 from gaottt.services import query_routing, reflection as reflection_service
+from gaottt.services.ambient_composite import (
+    CompositeGateThresholds,
+    CompositeReferenceError,
+    CompositeVerdict,
+    compute_corpus_digest,
+    composite_gate_decision,
+    load_composite_reference,
+)
+from gaottt.store.manifest import load_manifest
 
 # Strip any <gaottt-NAME>...</gaottt-NAME> block before heuristic extraction.
 # Prevents the meta-extraction loop where ``save_candidates`` re-extracts
@@ -1006,7 +1018,7 @@ def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
     Plans-Ambient-Recall-Enrichment.md. Returns:
 
       ``True``  — top BM25 score clears the threshold → inject
-      ``False`` — below threshold → suppress
+      ``False``  — below threshold → suppress
       ``None``  — gate index unavailable (disabled / empty / bm25-sudachi
                   extra missing) → the caller falls back to virtual_score
     """
@@ -1014,6 +1026,179 @@ def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
     if top is None:
         return None
     return top >= engine.config.ambient_bm25_min_score
+
+
+# --- Phase U WP-3 — ambient composite gate (runtime glue) ----------------------
+# 純関数 (判定・percentile・digest・artifact loader) は services.ambient_composite。
+# ここは engine を扱う runtime 部分: raw FAISS 軸の自前計算と、参照 artifact の
+# lazy load + fingerprint 検証 + per-engine cache。
+
+@dataclass
+class _CompositeValidatedState:
+    """参照 artifact の検証済み snapshot (engine attribute に cache)。
+
+    一度検証を通ったら同一 engine 内では再 load しない (plan 契約:
+    "lazily load + validate ... once per engine")。per-call の staleness
+    check は ``reference_count`` に対する active count drift のみ (cheap)。
+    """
+
+    reference: list[float]
+    reference_count: int
+    corpus_digest: str
+
+
+_COMPOSITE_STATE_ATTR = "_ambient_composite_state"
+
+
+def _composite_raw_top1(engine: GaOTTTEngine, query: str) -> float | None:
+    """Breakdown 非依存の raw cosine 軸 — engine 自身の raw FAISS 検索。
+
+    Phase T の「raw 軸は breakdown populate 時のみ存在する」制約を回避する
+    ため、composite gate は ``expose_score_breakdown`` とは無関係に自前で
+    top-1 raw cosine を計算する (WP-3 契約)。空 index / 空ヒットは None
+    (決定関数が reject する)。追加 1 回の ``encode_query`` は許容コスト
+    (embedder 側 cache があればさらに安い)。
+    """
+    if engine.faiss_index.size == 0:
+        return None
+    vec = engine.embedder.encode_query(query)
+    hits = engine.faiss_index.search(vec, 1)
+    return hits[0][1] if hits else None
+
+
+def _count_drift_exceeds(current: int, reference_count: int, max_drift: float) -> bool:
+    if reference_count <= 0:
+        return True
+    return abs(current - reference_count) / reference_count > max_drift
+
+
+async def _composite_reference_for(
+    engine: GaOTTTEngine,
+) -> tuple[list[float] | None, int | None, str | None]:
+    """参照分布を返す — (values, reference_count, fail_detail)。
+
+    fail_closed 契約 (Plans-Phase-U §4 WP-3): artifact 欠損・破損・
+    fingerprint (embedder id/version, corpus digest) 不一致・count drift
+    超過のいずれかで ``values=None`` を返し、呼び出し側は BM25 のみの
+    accept 経路に落とす (empty_reason="composite_reference_unavailable")。
+    "or" への open fallback はしない。検証失敗は cache しない — 修復後の
+    再挑戦 (engine 再起動なし) を許すため。高コストな full digest scan は
+    初回 composite 使用時のみで、その前に cheap check (load / identity /
+    count drift) を済ませる。
+    """
+    cfg = engine.config
+    state: _CompositeValidatedState | None = getattr(engine, _COMPOSITE_STATE_ATTR, None)
+    if state is not None:
+        if _count_drift_exceeds(
+            len(engine.cache.node_cache), state.reference_count,
+            cfg.ambient_composite_count_drift_max,
+        ):
+            return (
+                None, state.reference_count,
+                f"active count drift beyond "
+                f"{cfg.ambient_composite_count_drift_max:.1%} of reference_count="
+                f"{state.reference_count} (re-calibration required)",
+            )
+        return state.reference, state.reference_count, None
+
+    path = Path(cfg.data_dir) / cfg.ambient_composite_reference_filename
+    try:
+        ref = load_composite_reference(path)
+    except CompositeReferenceError as exc:
+        return None, None, str(exc)
+
+    # embedder identity — manifest が一次情報 (build_engine が検証に使うのと
+    # 同一規約)。manifest 無しの直接構成 engine (tests 等) は embedder の
+    # property に fallback。両方無ければ検証不能 → fail-closed。
+    manifest = load_manifest(Path(cfg.data_dir))
+    if manifest is not None:
+        emb_id: str | None = manifest.embedder_id
+        emb_ver: str | None = manifest.embedder_version
+    else:
+        emb_id = getattr(engine.embedder, "embedder_id", None)
+        emb_ver = getattr(engine.embedder, "embedder_version", None)
+    if not emb_id or emb_id != ref.embedder_id:
+        return None, ref.active_count, (
+            f"embedder_id mismatch: artifact={ref.embedder_id!r} runtime={emb_id!r}"
+        )
+    if emb_ver is not None and emb_ver != ref.embedder_version:
+        return None, ref.active_count, (
+            f"embedder_version mismatch: artifact={ref.embedder_version!r} "
+            f"runtime={emb_ver!r}"
+        )
+
+    # cheap count-drift pre-check — corpus が既に drift 済みなら full digest
+    # scan を無駄に払わない。
+    active = len(engine.cache.node_cache)
+    if _count_drift_exceeds(
+        active, ref.active_count, cfg.ambient_composite_count_drift_max,
+    ):
+        return None, ref.active_count, (
+            f"active count drift beyond "
+            f"{cfg.ambient_composite_count_drift_max:.1%} of reference_count="
+            f"{ref.active_count} (re-calibration required)"
+        )
+
+    # full corpus digest — active nodes の (id, sha256(content)) の sha256。
+    contents = await engine.store.get_all_contents()
+    digest, _active_with_content = compute_corpus_digest(
+        contents, engine.cache.node_cache.keys(),
+    )
+    if digest != ref.corpus_digest:
+        return None, ref.active_count, (
+            "corpus digest mismatch — content changed since calibration "
+            "(re-calibration required)"
+        )
+
+    state = _CompositeValidatedState(
+        reference=list(ref.virt_top1_distribution),
+        reference_count=ref.active_count,
+        corpus_digest=digest,
+    )
+    setattr(engine, _COMPOSITE_STATE_ATTR, state)
+    return state.reference, state.reference_count, None
+
+
+async def _composite_gate_eval(
+    engine: GaOTTTEngine,
+    query: str,
+    diag: AmbientGateDiagnostics,
+    items: list[MemoryItem],
+    virt_top1: float | None,
+    bm25_top: float | None,
+) -> CompositeVerdict:
+    """ambient_recall の composite 分岐 (mode="composite" 専用)。
+
+    axes は全て ``expose_score_breakdown`` 非依存: virtual 軸は
+    ``item.raw_score`` (常に populate)、raw 軸は ``_composite_raw_top1``
+    (自前 FAISS 検索)、参照分布は ``_composite_reference_for``。判定は
+    gate decision (純関数) に委任し、結果の axes を diagnostics に書き戻す。
+    """
+    cfg = engine.config
+    virt_median = (
+        statistics.median([it.raw_score for it in items]) if items else None
+    )
+    raw_top1 = _composite_raw_top1(engine, query)
+    reference, _ref_count, _detail = await _composite_reference_for(engine)
+    verdict = composite_gate_decision(
+        bm25_top=bm25_top,
+        bm25_threshold=cfg.ambient_bm25_min_score,
+        virt_top1=virt_top1,
+        virt_median=virt_median,
+        raw_top1=raw_top1,
+        reference=reference,
+        thresholds=CompositeGateThresholds(
+            percentile_min=cfg.ambient_semantic_percentile_min,
+            margin_min=cfg.ambient_margin_min,
+            raw_floor=cfg.ambient_raw_floor_composite,
+        ),
+        pool_size=len(items),
+    )
+    diag.virt_percentile = verdict.virt_percentile
+    diag.margin = verdict.margin
+    diag.raw_top1 = verdict.raw_top1
+    diag.composite_signal = verdict.signal
+    return verdict
 
 
 async def ambient_recall(
@@ -1080,7 +1265,11 @@ async def ambient_recall(
         else bm25_top >= cfg.ambient_bm25_min_score
     )
     diag = AmbientGateDiagnostics(bm25_top_score=bm25_top, bm25_gate=bm25_ok)
-    if bm25_ok is False and not cfg.ambient_gate_or_semantic:
+    # Phase U WP-3 — mode="composite" は gate semantics を差し替える
+    # (``ambient_gate_or_semantic`` より優先)。composite 判定は pool 統計を
+    # 必要とするため BM25 reject による早期 veto は発動しない。
+    composite_mode = cfg.ambient_gate_mode == "composite"
+    if bm25_ok is False and not cfg.ambient_gate_or_semantic and not composite_mode:
         # Legacy veto — return before paying for the recall.
         diag.empty_reason = "bm25_veto"
         return AmbientRecallResponse(
@@ -1144,7 +1333,23 @@ async def ambient_recall(
         )
     )
 
-    if cfg.ambient_gate_or_semantic:
+    if composite_mode:
+        # Phase U WP-3 — composite gate. accept = bm25_strong OR
+        # (virt_percentile >= p_min AND margin >= m_min AND raw_top1 >=
+        # raw_floor)。全軸が breakdown 非依存 (契約は
+        # ``_composite_gate_eval`` docstring 参照)。reject は slot 構成の
+        # 前に return — persona/lensing が direct reject を反転させない
+        # 構造的 fence。
+        verdict = await _composite_gate_eval(
+            engine, query, diag, items, virt_max, bm25_top,
+        )
+        if not verdict.accepted:
+            diag.empty_reason = verdict.reason
+            return AmbientRecallResponse(
+                count=0, gate_diagnostics=diag,
+                expose_breakdown=expose_breakdown,
+            )
+    elif cfg.ambient_gate_or_semantic:
         # Stage 5 OR gate — a BM25 accept short-circuits (early accept,
         # legacy behaviour); a reject OR an unusable gate funnels into the
         # same semantic decision, unifying the legacy ``bm25_ok is None``
@@ -1404,6 +1609,11 @@ async def explore(
     delta_out: dict | None = (
         {} if engine.config.training_delta_enabled and not passive else None
     )
+    # Phase U WP-5 — wave propagation observability (explore header
+    # ``wave: depth=… reached=…``). Populated unconditionally of passive
+    # by the engine side channel; explore never hits the prefetch cache
+    # (gamma_override below), so the stats are always fresh.
+    wave_stats: dict = {}
     raw = await engine.query(
         text=query, top_k=top_k,
         wave_depth=explore_depth, wave_k=explore_k,
@@ -1419,6 +1629,7 @@ async def explore(
         # path inside the engine, so serendipity with diversity=0 is
         # plain recall plus the widened gamma/depth/k above.
         diversity=diversity,
+        out_wave_stats=wave_stats,
     )
 
     items = [_to_memory_item(engine, r) for r in raw]
@@ -1427,6 +1638,8 @@ async def explore(
         items=items, count=len(items), diversity=diversity,
         training_delta=_delta_from_dict(delta_out),
         routing_hint=routing_hint,
+        wave_depth=wave_stats.get("depth"),
+        wave_reached=wave_stats.get("reached"),
     )
 
 

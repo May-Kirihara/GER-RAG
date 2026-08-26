@@ -342,21 +342,37 @@ async def _check_size_consistency(
 
     # BM25
     if engine.bm25_index is not None:
-        bm25_size = engine.bm25_index.size
-        bm25_drift = _drift_fraction(bm25_size, active)
-        if bm25_drift > WARN_DRIFT_FRACTION:
+        # Phase U WP-6b (WP-6c Risk 1): background build 中 (building) や
+        # 失敗直後 (failed)、build 未開始 (idle) の間は size が store 構成に
+        # 届く前なので drift WARN は誤報になる。state != "ready" の間は
+        # INFO (pending) に格下げし、build 完了後の次回 startup で再検査
+        # される。state == "ready" (同期 build / snapshot load 済み) は
+        # 従来どおり WARN/OK を返す。
+        if engine.bm25_build_state != "ready":
             report.add(
-                "tier_b_bm25_size_drift",
-                DiagnosticLevel.WARN,
-                f"bm25.size={bm25_size} vs SQLite active={active} "
-                f"({bm25_drift:.1%} drift > {WARN_DRIFT_FRACTION:.0%}) — restart or compact(rebuild_faiss=True)",
+                "tier_b_bm25_size_pending",
+                DiagnosticLevel.INFO,
+                f"bm25 build state={engine.bm25_build_state} "
+                f"(background build in flight or not yet complete) — size "
+                f"check deferred (bm25.size={engine.bm25_index.size} vs "
+                f"SQLite active={active})",
             )
         else:
-            report.add(
-                "tier_b_bm25_size_ok",
-                DiagnosticLevel.INFO,
-                f"bm25.size={bm25_size} matches SQLite active={active} (drift={bm25_drift:.1%})",
-            )
+            bm25_size = engine.bm25_index.size
+            bm25_drift = _drift_fraction(bm25_size, active)
+            if bm25_drift > WARN_DRIFT_FRACTION:
+                report.add(
+                    "tier_b_bm25_size_drift",
+                    DiagnosticLevel.WARN,
+                    f"bm25.size={bm25_size} vs SQLite active={active} "
+                    f"({bm25_drift:.1%} drift > {WARN_DRIFT_FRACTION:.0%}) — restart or compact(rebuild_faiss=True)",
+                )
+            else:
+                report.add(
+                    "tier_b_bm25_size_ok",
+                    DiagnosticLevel.INFO,
+                    f"bm25.size={bm25_size} matches SQLite active={active} (drift={bm25_drift:.1%})",
+                )
 
     # Virtual FAISS — informational only (it can legitimately lag raw FAISS
     # by the write-behind interval; only flag if it's empty when raw is not).

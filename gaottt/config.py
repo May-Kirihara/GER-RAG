@@ -186,6 +186,15 @@ class GaOTTTConfig:
     supervisor_readiness_timeout: float = 90.0
     # Seconds to wait for a freshly-spawned backend to answer a readiness probe
     # before declaring the spawn failed.
+    route_readiness_timeout_seconds: float = 35.0
+    # GAOTTT_ROUTE_READINESS_TIMEOUT_SECONDS (Phase U WP-6b)。/route が
+    # backend の GET /admin/readiness を poll する deadline (秒)。STARTING
+    # 中はここまで待ち、超過しても error にせず readiness:"starting" 付きで
+    # 応答する (観測可能な状態として返す — proxy/client は接続して
+    # backend 側の bounded wait に委ねられる)。readiness endpoint が無い
+    # 旧 backend (404) は即時 legacy 挙動へ fallback (既定は backend 側
+    # readiness_wait_timeout_seconds=30s より長く取り、SEMANTIC_READY への
+    # 到達を /route 内で完結させる)。
 
     # ---- MV3 supervisor — embedder lazy spawn (WP-1) ------------------------
     # When ``supervisor_spawn_embedder`` is True (default), the supervisor
@@ -315,8 +324,14 @@ class GaOTTTConfig:
     # 限定して bad gradient の自己強化を遮断。maintenance (last_access /
     # evaporation / sim_history+temperature / orbital N-body) は all
     # reached のまま、return_count は all presented のまま。
-    # ★ 両 flag の default False (env opt-in) — plan A3 gate (baseline +
-    # tier test + 本番 dogfooding) を通す前に default ON にしない。
+    # ★ Phase U WP-1 昇格 (2026-08-25): 両 flag とも code default True。
+    # 較正 round (docs/notes/phase-t/calibration-round.md §3-§4 — 12 失敗の
+    # うち 8 は legacy pin の予期失敗、tier3/4/6/7 全 green・latency 回帰
+    # なし) と Phase T WP-E の explain min-gap 修正 (catalog #2) を以て
+    # 昇格判断を通過。rollback は env で:
+    #   GAOTTT_DIRECT_QUALIFICATION_ENABLED=false
+    #   GAOTTT_TTT_QUALIFICATION_ENABLED=false
+    # (multiverse 運用では supervisor allowlist 経由 — Phase U WP-2)。
     # synthetic recall (dream loop) は qualification gate を免除 (learn
     # set = all reached の legacy 契約を維持) — 自己主導の maintenance
     # rehearsal であり user query 由来の bad gradient 経路ではない
@@ -329,14 +344,34 @@ class GaOTTTConfig:
     # Env: GAOTTT_DIRECT_QUALIFICATION_ENABLED /
     #      GAOTTT_DIRECT_RAW_COSINE_MIN / GAOTTT_DIRECT_VIRTUAL_COSINE_MIN /
     #      GAOTTT_DIRECT_BM25_RELATIVE_MIN / GAOTTT_DIRECT_BM25_ABSOLUTE_MIN /
-    #      GAOTTT_DIRECT_BM25_POOL_SIZE / GAOTTT_TTT_QUALIFICATION_ENABLED。
-    direct_qualification_enabled: bool = False  # plan A3: default は較正後確定
+    #      GAOTTT_DIRECT_BM25_POOL_SIZE / GAOTTT_TTT_QUALIFICATION_ENABLED /
+    #      GAOTTT_DIRECT_RESCUE_RAW_RANK (Phase U WP-4b、supervisor
+    #      allowlist 経由でも rollback 可)。
+    direct_qualification_enabled: bool = True   # Phase U WP-1 昇格 (env rollback: GAOTTT_DIRECT_QUALIFICATION_ENABLED=false)
     direct_raw_cosine_min: float = 0.75
     direct_virtual_cosine_min: float = 0.75
     direct_bm25_relative_min: float = 0.40
     direct_bm25_absolute_min: float = 8.0
     direct_bm25_pool_size: int = 50
-    ttt_qualification_enabled: bool = False     # plan A3: default は較正後確定
+    ttt_qualification_enabled: bool = True      # Phase U WP-1 昇格 (env rollback: GAOTTT_TTT_QUALIFICATION_ENABLED=false)
+    # Phase U WP-4b — raw-top rescue (Stage 3 並べ替えの拡張)。qualified な
+    # natural item のうち scored pool 内 raw cosine rank が本値以下の item を
+    # qualified group の先頭 tier に lift し、tier 内は raw cosine 降順で
+    # 並べる。sort key = (rescued, qualified, final_score desc)。
+    # 根拠 (docs/notes/phase-u/wp4-trace-findings.md, target de1b528f):
+    # 生成直後の genesis/priming kick で displacement が raw content 方向
+    # から逸脱した node が、raw FAISS rank 1 (cos 0.8967)・hybrid BM25
+    # rank 1 でも virtual cosine 低迷により final_score 最下位帯 →
+    # top-K から消える病理。raw cosine (観測の土台) による near-exact
+    # match を場の drift が veto するのは「場が順位を育てる」契約の
+    # 範囲外 — rescue は観測を field の drift から守る最小の防腐剤。
+    # forced/injected 経路 (Phase J) には不適用。diversity (MMR) は
+    # rescue 適用後の pool から選択 (rescued item を MMR から豁免しない)。
+    # presentation 専用 (score / physics / breakdown には書き込まない)。
+    # rollback: 0 で無効 (Stage 3 挙動に bit-for-bit 復帰)。direct_
+    # qualification_enabled=False なら rescue も無効 (rescue は
+    # qualified item 上に定義)。
+    direct_rescue_raw_rank: int = 3
 
     # ---- Phase T Stage 6 — explore presentation diversity (MMR) ---------
     # ``engine.query(diversity=d)``: d が None / <= 0.0 / flag OFF のときは
@@ -357,13 +392,19 @@ class GaOTTTConfig:
     #   は MMR 後の presented ids のみ。simulation 系 (last_access /
     #   evaporation / sim_history+temperature / orbital N-body) と
     #   habituation recovery は Stage 4 と同一の all-reached のまま。
-    # ★ default False (plan A3 gate — baseline + tier test + 本番
-    # dogfooding を通す前に default ON にしない)。
+    # ★ Phase U WP-5 昇格 (2026-08-25): code default True。Phase T の
+    # 較正 round (docs/notes/phase-t/calibration-round.md) と WP-1 の
+    # promoted-combination suite (direct+ttt 同時 ON で低関連 lateral
+    # への TTT 更新保護を担保) を以て plan A3 gate を通過。低関連候補
+    # の TTT 更新保護は ttt_qualification_enabled (WP-1 昇格済み) が
+    # 担う。rollback は env で:
+    #   GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=false
+    # (multiverse 運用では supervisor allowlist 経由 — Phase U WP-2)。
     # Env: GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED /
     #      GAOTTT_EXPLORE_COHORT_PENALTY /
     #      GAOTTT_EXPLORE_DIVERSITY_POOL_MULTIPLIER /
     #      GAOTTT_EXPLORE_MIN_SEMANTIC。
-    explore_diversified_presentation_enabled: bool = False  # plan A3: 較正後確定
+    explore_diversified_presentation_enabled: bool = True   # Phase U WP-5 昇格 (env rollback: GAOTTT_EXPLORE_DIVERSIFIED_PRESENTATION_ENABLED=false)
     explore_cohort_penalty: float = 0.05
     explore_diversity_pool_multiplier: int = 4
     explore_min_semantic: float = 0.45   # lateral 候補への最低 relevance floor
@@ -551,6 +592,49 @@ class GaOTTTConfig:
     bm25_score_alpha: float = 0.5               # weighted_sum: BM25 normalized share; ignored for "rrf"
     rrf_k: int = 60                             # RRF rank-fusion constant (Cormack 2009 standard)
     bm25_tokenizer: str = "trigram"             # "trigram" (default) | "sudachi" (optional extra)
+
+    # Phase U WP-6c (R5) — startup の BM25 build を background task 化。
+    # production 実測 (docs/notes/phase-u/startup-timings.md) で bm25_build
+    # 147s = startup 153s の 96% を占めたため、同期 build を startup 経路から
+    # 外して SEMANTIC_READY ≈6s を達成する。機構は「新規 index object への
+    # snapshot build + build 窓内 mutation の journal replay + engine lock
+    # 下での atomic swap」。build 窓内は hybrid seed pool が raw/virtual
+    # 縮退運転し、ambient gate は semantic fallback する (None gate)。
+    # False で同期 build (現行挙動) に bit-for-bit 復帰。
+    # Env: GAOTTT_BM25_BACKGROUND_BUILD_ENABLED=0 (rollback)
+    bm25_background_build_enabled: bool = True
+
+    # Phase U WP-6d (R5) — BM25 index の data_dir/bm25.snapshot への永続化。
+    # build 済みの両 index (hybrid + ambient gate) を content-digest
+    # fingerprint (sorted (id, sha256(content)) の sha256 + active_count)
+    # 付きで保存し、次回 startup で fingerprint が一致すれば build を
+    # skip して load する (実測 147s の build を cold start から除外)。
+    # 保存は build 完了時と graceful shutdown 時 (dirty flag) のみ —
+    # mutation ごとの再保存は write amplification になるため行わない。
+    # fingerprint 不一致 (content 変更・tokenizer/k1/b 変更・cross-universe・
+    # 破損) は通常の WP-6c background build に fallback (fail-open ではなく
+    # 「常に正しい index を保証する」方向の fallback)。
+    # False で永続化も load も無効化 (毎回 build — WP-6c までの挙動)。
+    # Env: GAOTTT_BM25_SNAPSHOT_ENABLED=0 (rollback)
+    bm25_snapshot_enabled: bool = True
+
+    # Phase U WP-6b (R5) — staged readiness protocol。HTTP backend transport
+    # の起動 (Starlette app lifespan) と同時に単一の engine startup task を
+    # 開始し (lazy 初回 tool-call 生成を廃止)、全 MCP handler は共有 task を
+    # readiness_wait_timeout_seconds で bounded wait する。timeout 時は
+    # 構造化 retryable error ("engine starting (state=STARTING, elapsed=..s)
+    # — retry shortly") を返し、task 自体は継続する (次の call で同じ task を
+    # 待つ)。engine の生存期間は transport (app lifespan) に紐づき、
+    # per-session lifespan では tear down しない (warm reconnect で再構築
+    # しない)。状態は GET /admin/readiness が露出する (WP-6b)。
+    # False で legacy lazy 初回生成 (現行挙動) に bit-for-bit 復帰 —
+    # handler の bounded wait も無効化される。
+    # Env: GAOTTT_READINESS_PROTOCOL_ENABLED=0 (rollback)
+    readiness_protocol_enabled: bool = True
+    readiness_wait_timeout_seconds: float = 30.0
+    # MCP handler が共有 startup task を待つ上限 (秒)。超過時は retryable な
+    # 構造化 error (task は cancel しない)。SEMANTIC_READY 実測 ~6s
+    # (WP-6a/6c) に対し、cache load 等の遅延要因を見込んだ余裕を持つ既定値。
 
     # Query as Mass Distribution — Multi-Source Query.
     # A compound prompt pooled into one embedding is a centroid, and the
@@ -829,6 +913,34 @@ class GaOTTTConfig:
     # False = legacy BM25 veto に戻す rollback。
     ambient_gate_or_semantic: bool = True    # False = legacy BM25 veto / True = BM25 OR semantic
     ambient_semantic_raw_min: float = 0.60   # raw cosine 軸の ambient gate 閾値 (baseline: raw p50=0.764)
+    # Phase U WP-3 — ambient composite gate (R3: RURI cosine 狭帯 ~0.70-0.86 では
+    # 絶対閾値で off-topic を拒否できない → 相対軸で分離)。
+    #   ambient_gate_mode = "or" (default, 現行 Phase T Stage 5 の OR gate を
+    #     bit-for-bit 維持) | "composite" (
+    #     accept = bm25_strong OR (virt_percentile >= percentile_min
+    #                              AND top_margin >= margin_min
+    #                              AND raw_top1 >= raw_floor_composite))
+    #   composite の昇格判断は **事前登録 gate** (held-out で negative FP=0 かつ
+    #     positive FN<=10%) を PM が較正結果で判定するまで行わない — default は
+    #     "or" のまま (Plans-Phase-U-Review-Hardening.md §4 WP-3)。
+    #   composite は参照 artifact
+    #     (data_dir/<ambient_composite_reference_filename>, schema v1,
+    #     scripts/calibrate_ambient_gate.py --emit-artifact で生成) の
+    #     fingerprint (embedder id/version + corpus digest + active_count) に
+    #     依存する。欠損・破損・fingerprint 不一致・count drift 超過時は
+    #     **fail-closed**: BM25 のみが accept 経路 (empty_reason=
+    #     "composite_reference_unavailable")。"or" への open fallback はしない。
+    #   3 閾値は較正 (calibration script) が値を提案し PM が確定する。以下は
+    #     provisional な初期値。
+    ambient_gate_mode: str = "or"                          # "or" (default) | "composite"
+    ambient_semantic_percentile_min: float = 85.0          # 参照分布に対する virt top-1 の percentile 下限 [0,100] (provisional)
+    ambient_margin_min: float = 0.02                       # top-1 virtual − pool virtual median の下限 (provisional)
+    ambient_raw_floor_composite: float = 0.80              # breakdown 非依存 raw FAISS top-1 cosine の下限 (provisional)
+    ambient_composite_reference_filename: str = "ambient_composite_reference.json"  # data_dir 基準
+    # runtime staleness guard: |active_count - reference_count| / reference_count
+    # がこの値を超えたら参照は stale とみなし fail-closed (full digest scan は
+    # 初回 composite 使用時のみ; per-call はこの cheap count check)。
+    ambient_composite_count_drift_max: float = 0.05
     ambient_excerpt_chars: int = 240         # per-slot content excerpt length
     ambient_lensing_enabled: bool = True     # ② gravitational-lensing slot on/off
     ambient_lensing_min_score: float = 0.5   # lensing pick noise floor (virtual_cosine)
@@ -1402,6 +1514,15 @@ class GaOTTTConfig:
                 f"{self.semantic_floor!r} (Phase T Stage 2)"
             )
 
+        # Phase U WP-3 — gate mode は enum。typo (`composit` 等) が "or" への
+        # silent degrade になると composite 昇格の rollout 判断を壊すので、
+        # Phase T Stage 2 と同じ「不正な値は明示 reject」規約で落とす。
+        if self.ambient_gate_mode not in ("or", "composite"):
+            raise ValueError(
+                "GaOTTTConfig.ambient_gate_mode must be 'or' or 'composite', "
+                f"got {self.ambient_gate_mode!r} (Phase U WP-3)"
+            )
+
         # M6 — friction multipliers must live in [0, 1] so the runtime
         # ``(1 - friction)`` factor in ``update_velocity`` stays in [0, 1]
         # and cannot invert / amplify velocity. ``update_velocity`` itself
@@ -1456,21 +1577,21 @@ class GaOTTTConfig:
         return raw  # str
 
     @classmethod
-    def from_config_file(cls) -> "GaOTTTConfig":
-        """Create GaOTTTConfig with overrides applied in precedence order.
+    def _resolve_overrides(cls) -> tuple[dict, dict[str, str]]:
+        """Collect config overrides + per-field provenance map.
 
-        H5 — precedence (highest wins): ``GAOTTT_<FIELD>`` env var >
-        ``config.json`` > dataclass default. The env layer lets operators
-        flip a single knob (e.g. the Phase M Stage 2 θ tuning,
-        ``GAOTTT_MASS_BH_THETA=6.0``) without editing the JSON file. Only
-        scalar fields (bool / int / float / str) are env-settable;
-        collection / factory fields (e.g. ``data_dir``, which has its own
-        ``GAOTTT_DATA_DIR`` resolution) are JSON-only. An unparseable
-        override is logged and ignored rather than crashing startup.
+        Shared resolution core for :meth:`from_config_file` and
+        :meth:`resolve_config_with_sources` (Phase U WP-1). Provenance
+        values: ``"env"`` (GAOTTT_* / legacy GER_RAG_* env var won),
+        ``"file"`` (config.json), ``"default"`` (filled in by the caller
+        for fields this method did not touch). Resolution semantics are
+        identical to the pre-refactor ``from_config_file`` body — env
+        beats file, unparseable overrides are logged and dropped.
         """
         file_conf = _load_config_file()
         field_objs = {f.name: f for f in fields(cls)}
         overrides = {k: v for k, v in file_conf.items() if k in field_objs}
+        sources = {k: "file" for k in overrides}
 
         for name, f in field_objs.items():
             # Only plain scalar fields with a concrete default are
@@ -1496,12 +1617,49 @@ class GaOTTTConfig:
                 continue
             try:
                 overrides[name] = cls._coerce_env(raw, target)
+                sources[name] = "env"
             except (ValueError, TypeError):
                 logger.warning(
                     "Ignoring invalid env override %s=%r (expected %s)",
                     env_name, raw, target.__name__,
                 )
+        return overrides, sources
+
+    @classmethod
+    def from_config_file(cls) -> "GaOTTTConfig":
+        """Create GaOTTTConfig with overrides applied in precedence order.
+
+        H5 — precedence (highest wins): ``GAOTTT_<FIELD>`` env var >
+        ``config.json`` > dataclass default. The env layer lets operators
+        flip a single knob (e.g. the Phase M Stage 2 θ tuning,
+        ``GAOTTT_MASS_BH_THETA=6.0``) without editing the JSON file. Only
+        scalar fields (bool / int / float / str) are env-settable;
+        collection / factory fields (e.g. ``data_dir``, which has its own
+        ``GAOTTT_DATA_DIR`` resolution) are JSON-only. An unparseable
+        override is logged and ignored rather than crashing startup.
+        """
+        overrides, _sources = cls._resolve_overrides()
         return cls(**overrides)
+
+    @classmethod
+    def resolve_config_with_sources(
+        cls,
+    ) -> tuple["GaOTTTConfig", dict[str, str]]:
+        """Phase U WP-1 — effective config + per-field source map.
+
+        Same resolution as :meth:`from_config_file` (single pass, so
+        deprecation / invalid-override warnings fire once per call), plus
+        a provenance entry for *every* dataclass field:
+        ``"env" | "file" | "default"``. Read-only diagnostics
+        (``scripts/diag_config.py``) use this to answer "where did this
+        effective value come from?" — heuristic guessing (comparing a
+        resolved config against a fresh default instance) cannot
+        distinguish an env override that happens to equal the default
+        from a true default, so the source is recorded at resolution time.
+        """
+        overrides, sources = cls._resolve_overrides()
+        provenance = {f.name: sources.get(f.name, "default") for f in fields(cls)}
+        return cls(**overrides), provenance
 
     def compute_node_top_k(self, mass: float) -> int:
         """Compute per-node top-k based on mass."""

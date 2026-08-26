@@ -73,6 +73,12 @@ def _make_engine(
     kick_strength: float,
     mass_anchor_threshold: float = 0.0,
     mass_anchor_extra_strength: float = 0.0,
+    # Phase U WP-1 — mass-trajectory pins for the redesigned Stage 3 gate
+    # test. Defaults are the GaOTTTConfig values, so every other test in
+    # this file keeps its original physics bit-for-bit.
+    eta: float = 0.05,
+    gravity_G: float = 0.01,
+    orbital_anchor_strength: float = 0.02,
 ):
     config = GaOTTTConfig(
         data_dir=str(tmp_path),
@@ -97,6 +103,9 @@ def _make_engine(
         dream_enabled=False,
         faiss_save_interval_seconds=0.0,
         flush_interval_seconds=0.05,
+        eta=eta,
+        gravity_G=gravity_G,
+        orbital_anchor_strength=orbital_anchor_strength,
     )
     embedder = StubEmbedder(dim=config.embedding_dim)
     faiss_index = FaissIndex(dimension=config.embedding_dim)
@@ -229,9 +238,32 @@ async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
       θ=3  → Stage 3 (gate≈0.32 at mass=1): damped kick, smaller projection
 
     We measure the *projection* of displacement onto (q - raw) rather than
-    total displacement norm because neighbor gravity (4 other docs) is the
-    dominant force on total norm — only the q-direction component isolates
+    total displacement norm because only the q-direction component isolates
     the query attraction term that Stage 3 gates.
+
+    Phase U WP-1 redesign — mass-trajectory-independent contract comparison
+    (plan approach (a)+(b): pin the mass, compare the kick-term effect
+    directly). The original fixture compared two free-running 20-recall
+    trajectories whose margins (3.6%) flipped sign once the promoted
+    ttt_qualification confidence scaling made the two engines' mass
+    accretion diverge by ~2.7% (calibration-round.md §2). Three pins make
+    the comparison depend on the gate alone:
+      - ``eta=0.0`` — no mass growth in either engine, so both trajectories
+        stay bit-identical at the new-node mass 1.0 (exactly the regime the
+        contract names: "dampens drift on a low-mass node").
+      - ``gravity_G=0.0`` — neighbour N-body gravity off: all stub docs share
+        a base direction, so neighbour pull has a large gate-independent
+        projection onto (q - raw) (measured ratio 0.91 with it on — the
+        common term swamps the kick difference).
+      - ``orbital_anchor_strength=1.0`` — a stiff Hooke anchor keeps the
+        Verlet dynamics in the linear regime where equilibrium displacement
+        ∝ gate. With the soft default (0.02) the exaggerated kick α=0.05+
+        saturates ``orbital_max_velocity`` (0.05) in *both* engines, and the
+        rate limiter — not the gate — sets the drift (measured ratio 1.05,
+        the very inversion this redesign eliminates).
+    Measured outcome (deterministic stub): proj ratio ≈ 0.20 (gate is
+    tanh(1/3) ≈ 0.32; relaxation nonlinearity pushes the ratio lower), so
+    the ratio bound below has ~3x headroom.
 
     This is the engine-level acceptance test for the single-attractor
     pathology fix: Stage 3 prevents new nodes from being one-shot drifted
@@ -241,9 +273,13 @@ async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
         path = tmp_path / subdir
         path.mkdir()
         # Bump kick strength so the gate's effect is measurable above
-        # neighbor-gravity noise within 20 recall steps.
+        # residual noise within 20 recall steps.
         engine = _make_engine(
             path, kick_strength=0.5, mass_anchor_threshold=threshold,
+            # Phase U WP-1 mass-trajectory pins (see docstring)
+            eta=0.0,
+            gravity_G=0.0,
+            orbital_anchor_strength=1.0,
         )
         await engine.startup()
         try:
@@ -251,13 +287,31 @@ async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
                 {"content": f"drift-doc-{i}", "metadata": {"source": "agent"}}
                 for i in range(5)
             ])
-            target_id = (await engine.query(text="drift-doc-0", top_k=1))[0].id
+            # Phase U WP-4b — target は probe query の top-1 から選ぶ。
+            # 旧 fixture は "drift-doc-0" (文書本文と同一) の top-1 を
+            # target にしていたが、raw-top rescue の導入で top-1 は
+            # exact-match doc (probe に対しては unqualified) に変わり、
+            # Stage 4 learn-set が正しく kick を止めるため proj≈0 で
+            # fixture が崩れた。kick を観測するには probe に対して
+            # qualified な node (learn set に入る node) を測るべきなので、
+            # 選択を probe 自身の top-1 に変更する (rescue ON では
+            # raw-top qualified、OFF では qualified-first の head —
+            # いずれも probe-qualified ことが構造上保証される)。
+            target_id = (
+                await engine.query(text="drift-probe-distinct", top_k=1)
+            )[0].id
+            # Mass must actually be pinned for the comparison to be
+            # trajectory-independent — assert the fixture's own contract.
+            assert engine.cache.get_node(target_id).mass == 1.0
             raw_emb = engine.faiss_index.get_vectors([target_id])[target_id].copy()
             q_emb = engine.embedder.encode_query("drift-probe-distinct")[0]
             kick_dir = q_emb - raw_emb
             kick_dir = kick_dir / (float(np.linalg.norm(kick_dir)) + 1e-9)
             for _ in range(20):
                 await engine.query(text="drift-probe-distinct", top_k=5)
+            assert engine.cache.get_node(target_id).mass == 1.0, (
+                "fixture contract violated: mass accreted despite eta=0"
+            )
             disp = engine.cache.get_displacement(target_id)
             if disp is None:
                 return 0.0
@@ -271,11 +325,18 @@ async def test_stage3_gate_dampens_drift_for_new_nodes(tmp_path):
     # Both modes must produce positive drift toward q (kick is active)
     assert proj_stage2 > 0, f"Stage 2 should drift toward q, got proj={proj_stage2}"
     assert proj_stage3 > 0, f"Stage 3 should drift toward q, got proj={proj_stage3}"
-    # Stage 3 gate must dampen the q-direction drift on a low-mass node
+    # Stage 3 gate must dampen the q-direction drift on a low-mass node.
+    # With identical (pinned) mass trajectories the ratio is a direct
+    # observable of the gate factor tanh(1/3) ≈ 0.32 — hold it well below
+    # the ungated 1.0 so a gate regression cannot hide behind noise.
     assert proj_stage3 < proj_stage2, (
         f"Stage 3 gate should reduce q-direction drift on low-mass node — "
-        f"proj_stage2={proj_stage2:.4f}, proj_stage3={proj_stage3:.4f}, "
-        f"expected ratio ≈ tanh(1/3) ≈ 0.32 modulo mass-accretion over 20 steps"
+        f"proj_stage2={proj_stage2:.4f}, proj_stage3={proj_stage3:.4f}"
+    )
+    assert proj_stage3 < 0.6 * proj_stage2, (
+        f"Stage 3 gate should dampen the drift substantially (gate "
+        f"tanh(1/3)≈0.32), got ratio {proj_stage3 / proj_stage2:.3f} — "
+        f"proj_stage2={proj_stage2:.4f}, proj_stage3={proj_stage3:.4f}"
     )
 
 

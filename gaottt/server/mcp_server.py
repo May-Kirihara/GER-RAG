@@ -27,12 +27,14 @@ import json
 import logging
 import os
 import secrets
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
 import numpy as np
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from gaottt.config import GaOTTTConfig
 from gaottt.core.engine import GaOTTTEngine
@@ -51,29 +53,173 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Engine singleton ---
+#
+# Phase U WP-6b — staged readiness protocol:
+#   readiness_protocol_enabled=True (default) のとき、HTTP backend transport
+#   の起動 (Starlette app lifespan) と同時に **単一** の engine
+#   construction+startup task を開始する。全 MCP handler は get_engine() で
+#   その task を bounded wait し、timeout 時は構造化 retryable error を返す。
+#   False (rollback, GAOTTT_READINESS_PROTOCOL_ENABLED=0) は legacy lazy
+#   初回 tool-call 生成に bit-for-bit 復帰する。
 
 _engine: GaOTTTEngine | None = None
 _engine_lock = asyncio.Lock()
 
 
+class _ReadinessState:
+    """staged readiness の module singleton 状態。
+
+    task/error/started_at/finished_at への access はすべて単一 event loop
+    上で行われ、``_ensure_startup_task`` は await を挟まない同期区間なので
+    追加 lock 不要 (check-then-create が loop 内で atomic)。
+    """
+
+    def __init__(self) -> None:
+        # GaOTTTConfig.readiness_protocol_enabled / readiness_wait_timeout_seconds
+        # を main() 起動時に反映する (test は直接差し替える)。
+        self.enabled: bool = True
+        self.wait_timeout: float = 30.0
+        self.task: asyncio.Task[GaOTTTEngine] | None = None
+        # startup task が raise した場合の error 文字列 ("Type: msg")。
+        # FAILED state はこれで判別する (sticky — 再 build はしない)。
+        self.error: str | None = None
+        self.started_at: float | None = None
+        self.finished_at: float | None = None
+        # _install_readiness_protocol 済み印 (HTTP backend のみ True —
+        # engine の生存期間が app lifespan 側にあることを _mcp_lifespan が
+        # 参照する)。
+        self.route_installed: bool = False
+
+    def reset(self) -> None:
+        self.task = None
+        self.error = None
+        self.started_at = None
+        self.finished_at = None
+
+
+_readiness = _ReadinessState()
+
+
+async def _shutdown_engine_bounded(
+    engine: GaOTTTEngine, timeout: float = 10.0,
+) -> None:
+    """部分構築 engine の best-effort 後始末 (bounded)。
+
+    startup 中断/失敗時の cleanup 専用 — 停止しきれない場合でも caller
+    (shutdown 経路) を block しない。timeout は engine.shutdown が内部で
+    cancel する BM25 build 等の上限 (WP-6c と同水準)。
+    """
+    try:
+        await asyncio.wait_for(engine.shutdown(), timeout=timeout)
+    except Exception:  # noqa: BLE001 — best-effort (CancelledError は素通り)
+        logger.exception("Partial-engine shutdown failed (best-effort)")
+
+
+async def _build_and_start_engine() -> GaOTTTEngine:
+    """単一 startup task の本体: build_engine + await startup。
+
+    例外時は engine object が存在する限り best-effort で shutdown してから
+    re-raise する (部分初期化 engine を放流しない)。成功時のみ ``_engine``
+    に代入する。
+    """
+    global _engine
+    engine: GaOTTTEngine | None = None
+    try:
+        config = GaOTTTConfig.from_config_file()
+        logger.info("Initializing GaOTTT engine (staged readiness protocol)...")
+        engine = build_engine(config)
+        await engine.startup()
+    except asyncio.CancelledError:
+        # shutdown 中の cancel — 部分構築 engine のみ片付けて素通りさせる
+        # (状態 reset は _shutdown_readiness_engine 側で行う)。
+        _readiness.error = "startup cancelled (shutdown during startup)"
+        if engine is not None:
+            await _shutdown_engine_bounded(engine)
+        raise
+    except Exception as exc:
+        _readiness.error = f"{type(exc).__name__}: {exc}"
+        logger.exception("GaOTTT engine startup failed (state=FAILED)")
+        if engine is not None:
+            await _shutdown_engine_bounded(engine)
+        raise
+    _engine = engine
+    logger.info(
+        "GaOTTT engine ready (%d nodes, %d vectors)",
+        len(engine.cache.node_cache),
+        engine.faiss_index.size,
+    )
+    return engine
+
+
+def _on_startup_task_done(task: asyncio.Task[GaOTTTEngine]) -> None:
+    """完了時刻の記録 + 例外の回収 ("exception was never retrieved" 抑止)。"""
+    _readiness.finished_at = time.monotonic()
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            "engine startup task finished with: %s: %s",
+            type(task.exception()).__name__, task.exception(),
+        )
+
+
+def _ensure_startup_task() -> asyncio.Task[GaOTTTEngine]:
+    """単一の startup task を保証して返す (loop 内で atomic に create)。"""
+    task = _readiness.task
+    if task is None:
+        _readiness.started_at = time.monotonic()
+        _readiness.finished_at = None
+        task = asyncio.create_task(_build_and_start_engine())
+        task.add_done_callback(_on_startup_task_done)
+        _readiness.task = task
+    return task
+
+
 async def get_engine() -> GaOTTTEngine:
+    """全 tool handler 共通の engine accessor。
+
+    - flag ON: 単一 startup task を ``wait_timeout`` 秒で bounded wait。
+      timeout 時は retryable な構造化 error (task は cancel しない —
+      shield する)。task 失敗時は失敗内容を含む error (sticky)。
+    - flag OFF (rollback): legacy lazy path — 初回呼び出しで build+startup
+      して以降使い回す (bounded wait も task も無い、現行挙動)。
+    """
     global _engine
     if _engine is not None:
         return _engine
-    async with _engine_lock:
-        if _engine is not None:
-            return _engine
-        config = GaOTTTConfig.from_config_file()
-        logger.info("Initializing GaOTTT engine for MCP server...")
-        engine = build_engine(config)
-        await engine.startup()
-        _engine = engine
-        logger.info(
-            "GaOTTT engine ready (%d nodes, %d vectors)",
-            len(engine.cache.node_cache),
-            engine.faiss_index.size,
+    if not _readiness.enabled:
+        async with _engine_lock:
+            if _engine is not None:
+                return _engine
+            config = GaOTTTConfig.from_config_file()
+            logger.info("Initializing GaOTTT engine for MCP server...")
+            engine = build_engine(config)
+            await engine.startup()
+            _engine = engine
+            logger.info(
+                "GaOTTT engine ready (%d nodes, %d vectors)",
+                len(engine.cache.node_cache),
+                engine.faiss_index.size,
+            )
+            return engine
+    task = _ensure_startup_task()
+    try:
+        # shield: caller 側 timeout が共有 task を cancel しないようにする
+        return await asyncio.wait_for(
+            asyncio.shield(task), timeout=_readiness.wait_timeout,
         )
-        return engine
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - (_readiness.started_at or time.monotonic())
+        raise ToolError(
+            f"engine starting (state=STARTING, elapsed={elapsed:.1f}s) "
+            "— retry shortly"
+        ) from None
+    except ToolError:
+        raise
+    except Exception as exc:
+        raise ToolError(
+            "engine startup failed "
+            f"(state=FAILED, error={_readiness.error or exc}) "
+            "— restart the backend"
+        ) from exc
 
 
 # --- MCP Server ---
@@ -81,15 +227,27 @@ async def get_engine() -> GaOTTTEngine:
 
 @asynccontextmanager
 async def _mcp_lifespan(_server: FastMCP[Any]) -> AsyncIterator[None]:
-    """Persist the lazy engine when any MCP transport shuts down."""
+    """Persist the lazy engine when any MCP transport shuts down.
+
+    Phase U WP-6b: FastMCP の user lifespan は **per-session** (streamable-http
+    では接続 client 毎) に走る。readiness_protocol_enabled=True かつ HTTP
+    backend (_install_readiness_protocol 済み) の場合は engine の生存期間は
+    transport (app lifespan) 側が持つため、ここでは何もしない — session close
+    で engine を tear down すると warm reconnect が再構築になってしまう。
+    flag OFF (rollback) と stdio (app lifespan が無い = この lifespan が
+    実質 transport lifespan) は現行どおり teardown する。
+    """
     global _engine
     try:
         yield
     finally:
-        engine = _engine
-        if engine is not None:
-            await engine.shutdown()
-            _engine = None
+        # flag ON + HTTP backend は engine が app lifespan 管轄 — ここでは
+        # 何もしない (finally 内で return すると body 例外を飲むため条件反転)。
+        if not (_readiness.enabled and _readiness.route_installed):
+            engine = _engine
+            if engine is not None:
+                await engine.shutdown()
+                _engine = None
 
 mcp = FastMCP(
     "gaottt",
@@ -1290,6 +1448,171 @@ def _install_token_middleware() -> None:
     logger.info("Backend token middleware installed (GAOTTT_BACKEND_TOKEN set)")
 
 
+# -----------------------------------------------------------------------
+# Phase U WP-6b — staged readiness: GET /admin/readiness + engine の
+# 生存期間の transport (Starlette app lifespan) への紐付け
+# -----------------------------------------------------------------------
+
+def _readiness_payload() -> dict:
+    """GET /admin/readiness の response body (engine 未生成でも可)。
+
+    state mapping (単調遷移のみ — STARTING → SEMANTIC_READY → HYBRID_READY /
+    STARTING → FAILED):
+      STARTING       — engine 未生成 (startup task 実行中 / 未開始)
+      SEMANTIC_READY — startup 完了、BM25 build_state in {"building","idle"}
+      HYBRID_READY   — bm25_build_state == "ready"、または "failed" (検索は
+                       raw/virtual で稼働継続 — bm25:"failed" 印付き)
+      FAILED         — startup task が raise (error 文字列付き、sticky)
+    """
+    engine = _engine
+    started = _readiness.started_at
+    finished = _readiness.finished_at
+    if started is None:
+        elapsed = 0.0
+    elif finished is not None:
+        elapsed = finished - started
+    else:
+        elapsed = time.monotonic() - started
+    payload: dict = {
+        "state": "STARTING",
+        "elapsed_seconds": round(max(0.0, elapsed), 3),
+        "timings": {},
+        "bm25_size": 0,
+        "node_count": 0,
+    }
+    error = _readiness.error
+    if error is not None:
+        payload["state"] = "FAILED"
+        payload["error"] = error
+        return payload
+    if engine is None:
+        return payload
+    payload["timings"] = dict(engine.startup_timings)
+    payload["bm25_size"] = (
+        engine.bm25_index.size if engine.bm25_index is not None else 0
+    )
+    payload["node_count"] = len(engine.cache.node_cache)
+    bm25_state = engine.bm25_build_state
+    if bm25_state == "failed":
+        payload["state"] = "HYBRID_READY"
+        payload["bm25"] = "failed"
+    elif bm25_state == "ready":
+        payload["state"] = "HYBRID_READY"
+    else:  # "building" / "idle"
+        payload["state"] = "SEMANTIC_READY"
+    return payload
+
+
+async def _readiness_endpoint(request: Any):
+    """``GET /admin/readiness`` — token auth 付きの readiness 露出。
+
+    GAOTTT_BACKEND_TOKEN が設定されている場合 (supervisor spawn case) は
+    Bearer 認証を要求する (401 otherwise)。未設定 (standalone dev) は無認証。
+    外側の TokenMiddleware も同じ env を見るが、route 単体 (middleware 未
+    install 構成) でも認証されるようここでも検査する — 二重検査で挙動は同一。
+    """
+    from starlette.responses import JSONResponse
+
+    token = os.environ.get("GAOTTT_BACKEND_TOKEN", "")
+    if token:
+        parts = request.headers.get("authorization", "").split()
+        if (
+            len(parts) != 2
+            or parts[0].lower() != "bearer"
+            or not secrets.compare_digest(parts[1], token)
+        ):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return JSONResponse(_readiness_payload())
+
+
+async def _shutdown_readiness_engine() -> None:
+    """transport (app lifespan) 停止時の後始末 — flag ON のみ作用する。
+
+    - startup task 実行中 → cancel + bounded await (部分構築 engine の
+      best-effort shutdown は task 内部の CancelledError 節が行う)
+    - 生成済み engine → bounded shutdown
+    - 状態 reset (次回起動で新規 task)
+    """
+    global _engine
+    if not _readiness.enabled:
+        return
+    task = _readiness.task
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await asyncio.wait_for(task, timeout=10.0)
+        except asyncio.CancelledError:
+            pass  # cancel の配送自体 (想定内)
+        except Exception:  # noqa: BLE001 — 失敗内容は task 内部で log 済み
+            logger.exception("engine startup task failed during shutdown")
+    engine = _engine
+    _readiness.reset()
+    _engine = None
+    if engine is not None:
+        await _shutdown_engine_bounded(engine)
+
+
+def _install_readiness_protocol() -> None:
+    """readiness 機構の install (HTTP backend 起動時に 1 回)。
+
+    1. ``GET /admin/readiness`` を FastMCP の custom_route seam
+       (``_custom_starlette_routes``) で登録 — streamable_http_app /
+       sse_app 両方が build 時に取り込む (idle watcher と同じ「app 生成時に
+       差し込む」seam のうち、route は FastMCP 自身の公開機構を使う)。
+       **route の登録は ``_readiness.enabled`` (main() が boot config の
+       ``readiness_protocol_enabled`` を install 直前に反映) が True の
+       ときのみ** — flag OFF (rollback) で登録すると eager startup task が
+       無いのに endpoint だけ存在して恒久 STARTING を報し、supervisor /route
+       が毎回 deadline (35s) を poll する退化になる (final review
+       blocking #2)。OFF なら route 無し = 404 → supervisor は即時 legacy
+       経路に fallback する。
+    2. 両 app factory を wrap し、Starlette app の lifespan
+       (``app.router.lifespan_context`` — uvicorn 起動/停止で 1 回だけ走る)
+       を置換する: 起動時に flag ON なら eager に単一 startup task を開始
+       し、停止時に ``_shutdown_readiness_engine`` を呼ぶ。per-session の
+       ``_mcp_lifespan`` は flag ON では engine を触らない
+       (``route_installed`` がこの区別に参照する)。
+    """
+    if _readiness.route_installed:
+        return
+    _readiness.route_installed = True
+
+    if _readiness.enabled:
+        mcp.custom_route("/admin/readiness", methods=["GET"])(_readiness_endpoint)
+
+    def wrap_app_factory(build_app: Any) -> Any:
+        def patched() -> Any:
+            app = build_app()
+            original_lifespan = app.router.lifespan_context
+
+            # Starlette Router は ``self.lifespan_context(app)`` を async CM
+            # として消費する — 呼び出し可能な形で差し戻す。
+            @asynccontextmanager
+            async def lifespan_with_readiness(app_: Any) -> AsyncIterator[None]:
+                if _readiness.enabled:
+                    _ensure_startup_task()
+                try:
+                    async with original_lifespan(app_):
+                        yield
+                finally:
+                    await _shutdown_readiness_engine()
+
+            app.router.lifespan_context = lifespan_with_readiness
+            return app
+
+        return patched
+
+    mcp.streamable_http_app = wrap_app_factory(  # type: ignore[method-assign]
+        mcp.streamable_http_app,
+    )
+    mcp.sse_app = wrap_app_factory(mcp.sse_app)  # type: ignore[method-assign]
+    logger.info(
+        "Readiness protocol installed (GET /admin/readiness route=%s, "
+        "enabled=%s)",
+        _readiness.enabled, _readiness.enabled,
+    )
+
+
 def main():
     import argparse
 
@@ -1406,6 +1729,14 @@ def main():
     # HTTP backend modes — set host/port + install idle watcher, then run.
     mcp.settings.host = args.host
     mcp.settings.port = args.port
+
+    # WP-6b: staged readiness — config の knob を module state に反映して
+    # から readiness 機構を install する (route + app lifespan wrap)。
+    # build は engine 構築時にもう一度走るが、GaOTTTConfig 構築は軽量。
+    _boot_config = GaOTTTConfig.from_config_file()
+    _readiness.enabled = _boot_config.readiness_protocol_enabled
+    _readiness.wait_timeout = _boot_config.readiness_wait_timeout_seconds
+    _install_readiness_protocol()
 
     if args.idle_timeout > 0:
         _install_idle_watcher(args.idle_timeout)

@@ -59,6 +59,11 @@ from gaottt.multiverse.control_client import (
     ControlClient,
 )
 from gaottt.multiverse.registry import TRASH_SUBDIR, UNIVERSES_SUBDIR, MultiverseRegistry
+from gaottt.multiverse.tuning_env import (
+    TuningEnvValidationError,
+    filter_tuning_env,
+    validate_tuning_env,
+)
 from gaottt.store.manifest import MANIFEST_FILENAME, UniverseManifest, write_manifest
 
 logger = logging.getLogger(__name__)
@@ -75,6 +80,75 @@ BACKEND_IDLE_TIMEOUT = 300.0
 PROBE_OK = "ok"
 PROBE_UNAUTHORIZED = "unauthorized"
 PROBE_DOWN = "down"
+
+# Phase U WP-6b — backend readiness (GET /admin/readiness)。transport ready
+# (initialize handshake) と engine ready (SEMANTIC_READY) を区別する。
+READINESS_LEGACY = "legacy"
+# endpoint 無し (旧 backend version) — readiness 待ちせず従来挙動へ即 fallback。
+
+# _await_backend_readiness が poll を打ち切る state (STARTING 以外)。
+_READINESS_DONE_STATES = frozenset({
+    "SEMANTIC_READY", "HYBRID_READY", "FAILED",
+})
+
+
+async def _fetch_backend_readiness(
+    host: str, port: int, token: str, timeout: float = 3.0,
+) -> dict | str | None:
+    """GET ``http://<host>:<port>/admin/readiness`` (Bearer token 付き)。
+
+    Returns:
+        dict — 200 + JSON body (``{"state": ..., ...}``)。
+        READINESS_LEGACY — 404。endpoint が存在しない旧 backend なので
+            readiness 待ちをせず即時 legacy 挙動へ fallback する。
+        None — transient (接続 error / 非 200 / 不正 JSON / shape 不備)。
+            deadline 内の再試行対象であり、単体では失敗扱いにしない。
+
+    既存の initialize-handshake (``_probe_backend_with_token``) とは独立した
+    seam — ここが「何も返さない」でも initialize probe の成否には影響しない。
+    """
+    url = f"http://{host}:{port}/admin/readiness"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, headers=headers)
+    except httpx.HTTPError:
+        return None
+    if resp.status_code == 404:
+        return READINESS_LEGACY
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("state"), str):
+        return None
+    return payload
+
+
+async def _await_backend_readiness(
+    host: str, port: int, token: str, timeout: float,
+) -> dict | str:
+    """backend の readiness state が確定するまで bounded poll する。
+
+    ``timeout`` 秒の deadline 内に SEMANTIC_READY / HYBRID_READY / FAILED
+    が観測できればその payload を返す。STARTING が続く・transient error が
+    続いた場合は deadline 超過として ``{"state": "STARTING"}`` を返す
+    (**error にしない** — 呼び出し側は URL を返しつつ観測可能な状態として
+    付与する)。404 (旧 backend) は即座に :data:`READINESS_LEGACY` を返す。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        payload = await _fetch_backend_readiness(host, port, token)
+        if payload is READINESS_LEGACY:
+            return READINESS_LEGACY
+        if isinstance(payload, dict) and payload.get("state") in _READINESS_DONE_STATES:
+            return payload
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"state": "STARTING"}
+        await asyncio.sleep(min(1.0, remaining))
 
 # B2: how long to wait for a tracked backend to exit after a SIGTERM before
 # escalating to SIGKILL, and the grace after SIGKILL. Liveness is tested via
@@ -390,6 +464,11 @@ class _Supervisor:
         # state leaking into a managed backend) while preserving OS essentials
         # (PATH, HOME, ...) the subprocess needs to run.
         env = {k: v for k, v in os.environ.items() if not k.startswith("GAOTTT_")}
+        # Phase U WP-2: runtime-tuning knob のみ閉じた完全名 allowlist 経由で
+        # 通す (R1 の env rollback 経路)。GAOTTT_CONFIG や identity 系は
+        # allowlist 外なのでここを通れない。identity overlay の前に merge する
+        # ため、仮に衝突しても identity が常に勝つ。
+        env.update(filter_tuning_env(os.environ))
         env.update({
             "GAOTTT_DATA_DIR": str(universe_dir),
             "GAOTTT_EMBEDDER_ENDPOINT": self._config.embedder_endpoint,
@@ -448,6 +527,18 @@ class _Supervisor:
         universe. Returns the PID."""
         uid = universe["universe_id"]
         port = universe["port"]
+        # Phase U WP-2: fail-fast — 不正な runtime-tuning env では backend を
+        # 起動しない。backend 側 ``_coerce_env`` は bool("banana")→False の
+        # ように黙って coerce / drop してしまうため、spawn 時点 (唯一の
+        # _build_spawn_env 呼び出し箇所) で検証して拒否する。例外は
+        # /route handler が 500 + error 明細で観測可能にする。
+        tuning_errors = validate_tuning_env(os.environ)
+        if tuning_errors:
+            logger.error(
+                "refusing to spawn backend for universe %s: invalid "
+                "runtime-tuning env: %s", uid, "; ".join(tuning_errors),
+            )
+            raise TuningEnvValidationError(tuning_errors)
         universe_dir = self._universe_dir(uid)
         universe_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1610,6 +1701,33 @@ def create_supervisor_app(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="universe not available",
             )
+        except TuningEnvValidationError as exc:
+            # Phase U WP-2: spawn 時の tuning env 検証失敗を観測可能にする
+            # (str(exc) は全 validation error の "; " 連結)。
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Invalid runtime tuning env: {exc}",
+            )
+        # Phase U WP-6b: transport ready (initialize handshake) と engine
+        # ready (SEMANTIC_READY) を区別する。STARTING 中は deadline
+        # (route_readiness_timeout_seconds) まで poll し、超過しても error
+        # にせず readiness:"starting" 付きで応答する (観測可能な状態 —
+        # proxy/client は接続して backend 側の bounded wait に委ねられる)。
+        # endpoint 無し (旧 backend, 404) は即時 legacy 挙動へ fallback。
+        readiness = await _await_backend_readiness(
+            HOST, universe["port"], token,
+            config.route_readiness_timeout_seconds,
+        )
+        if readiness is READINESS_LEGACY:
+            pass  # 旧 backend — 従来どおり即応答
+        elif readiness.get("state") == "FAILED":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Backend startup failed: "
+                    f"{readiness.get('error', 'unknown error')}"
+                ),
+            )
         # MV4: record route-resolution activity telemetry AFTER the response
         # is determined but BEFORE returning (Codex non-blocking #6). Naming
         # is ``route_resolution`` (not "operation count") — proxy reconnect
@@ -1621,7 +1739,13 @@ def create_supervisor_app(
             await sup._control.arecord_event(
                 universe_id, ROUTE_RESOLUTION, route_tenant,
             )
-        return {"url": url, "token": token}
+        response = {"url": url, "token": token}
+        if (
+            readiness is not READINESS_LEGACY
+            and readiness.get("state") == "STARTING"
+        ):
+            response["readiness"] = "starting"
+        return response
 
     app.include_router(admin)
     return app

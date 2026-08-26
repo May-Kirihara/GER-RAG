@@ -64,6 +64,17 @@ def make_config(tmp_path, **overrides) -> GaOTTTConfig:
         data_dir=str(tmp_path),
         virtual_faiss_enabled=True,
         hybrid_bm25_enabled=True,
+        # WP-6c: perf suite は startup 直後の index 状態に依存する size /
+        # quality / latency 測定なので同期 build に固定する (背景 task の
+        # 完了待ちが測定に入らないよう determinism 最優先。background
+        # build 自体は tests/integration/test_bm25_background_build.py の
+        # 専用 suite で検証する)。他の knob と同じ pin 規約。
+        bm25_background_build_enabled=False,
+        # WP-6d: 同じ determinism 規約で snapshot 永続化も OFF に固定する
+        # (2 度目以降の boot が load に短路して「build 起点の測定」ではなく
+        # ならないようする。snapshot 機構自体は
+        # tests/integration/test_bm25_snapshot.py の専用 suite で検証する)。
+        bm25_snapshot_enabled=False,
         wave_initial_k=3,
         wave_seed_mass_alpha=0.0,
         wave_dynamic_k_enabled=False,
