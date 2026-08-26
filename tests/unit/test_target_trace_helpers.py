@@ -1,15 +1,17 @@
 """Unit tests for ``scripts/diag_target_trace.py`` (Phase U WP-4 / R4).
 
 Covers the pure helpers (rank search / seed-pool sizing mirror / pool-drop
-diagnosis), the CLI wiring, and one fast integration happy-path on a tiny
-StubEmbedder corpus: the script's ``--json`` output parses and reports the
-target found in the raw pool with a qualification verdict.
+diagnosis / BM25-ready bounded wait), the CLI wiring, and fast integration
+paths on a tiny StubEmbedder corpus: the ``--json`` happy-path, the
+BM25-not-ready WARNING-continue path, and calibrate_ambient_gate.py's
+abort-when-bm25-axis-unavailable wiring (WP-6c empty-window fix).
 
 The heavy paths (real RURI, production copy) are exercised manually by the
 PM per Plans-Phase-U-Review-Hardening §4 WP-4 — not here.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -29,12 +31,13 @@ from gaottt.store.sqlite_store import SqliteStore
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "diag_target_trace.py"
 )
+CALIBRATE_PATH = (
+    Path(__file__).resolve().parents[2] / "scripts" / "calibrate_ambient_gate.py"
+)
 
 
-def _load_module():
-    spec = importlib.util.spec_from_file_location(
-        "diag_target_trace", SCRIPT_PATH,
-    )
+def _load_module_at(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     # dataclass の文字列 annotation 解決は sys.modules 登録を要求する
     sys.modules[spec.name] = module
@@ -43,9 +46,18 @@ def _load_module():
     return module
 
 
+def _load_module():
+    return _load_module_at(SCRIPT_PATH, "diag_target_trace")
+
+
 @pytest.fixture(scope="module")
 def mod():
     return _load_module()
+
+
+@pytest.fixture(scope="module")
+def calib_mod():
+    return _load_module_at(CALIBRATE_PATH, "calibrate_ambient_gate")
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +220,66 @@ def test_diagnosis_to_dict_shape(mod):
     assert payload["wave_reach"] == {"reached": True, "force": 0.5}
     assert payload["missed_sources"] == ["bm25_pool"]
     assert payload["unavailable_sources"] == ["virtual_pool"]
+
+
+# ---------------------------------------------------------------------------
+# wait_for_bm25_ready — WP-6c background build の bounded wait
+# (両 script に同一実装が置いてあるので drift を検出できるよう両方叩く)
+# ---------------------------------------------------------------------------
+
+
+class _StaticStateEngine:
+    """attribute-driven stub — 常に同じ bm25_build_state。"""
+
+    def __init__(self, state: str):
+        self.bm25_build_state = state
+
+
+class _FlipStateEngine:
+    """bm25_build_state を building_reads 回 "building" を返した後
+    final に遷移する stub (poll ごとの状態遷移を模す)。"""
+
+    def __init__(self, final: str, building_reads: int):
+        self._final = final
+        self._building_reads = building_reads
+
+    @property
+    def bm25_build_state(self) -> str:
+        if self._building_reads > 0:
+            self._building_reads -= 1
+            return "building"
+        return self._final
+
+
+async def test_wait_immediate_terminal_states(mod, calib_mod):
+    for m in (mod, calib_mod):
+        for state in ("ready", "failed", "idle"):
+            stub = _StaticStateEngine(state)
+            assert await m.wait_for_bm25_ready(stub, timeout=1.0) == state
+
+
+async def test_wait_building_then_ready(mod, calib_mod):
+    for m in (mod, calib_mod):
+        stub = _FlipStateEngine("ready", building_reads=2)
+        assert await m.wait_for_bm25_ready(
+            stub, timeout=5.0, poll_interval=0.01,
+        ) == "ready"
+
+
+async def test_wait_building_then_failed(mod, calib_mod):
+    for m in (mod, calib_mod):
+        stub = _FlipStateEngine("failed", building_reads=1)
+        assert await m.wait_for_bm25_ready(
+            stub, timeout=5.0, poll_interval=0.01,
+        ) == "failed"
+
+
+async def test_wait_timeout_while_building(mod, calib_mod):
+    for m in (mod, calib_mod):
+        stub = _StaticStateEngine("building")
+        assert await m.wait_for_bm25_ready(
+            stub, timeout=0.03, poll_interval=0.01,
+        ) == "timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -407,3 +479,107 @@ async def test_run_target_not_found_exits_1(tmp_path, monkeypatch, capsys, mod):
     rc = await mod._run(args)
     assert rc == 1
     assert "not found" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# WP-6c — BM25 ready 待ちの script wiring (build 空窓 fix)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_corpus_and_recycle(tmp_path: Path) -> str:
+    """corpus を作って一旦完全 shutdown (script が disk から再 startup する
+    — production copy と同じ lifecycle)。target id を返す。"""
+    eng = _make_stub_engine(tmp_path)
+    await eng.startup()
+    try:
+        ids = await eng.index_documents([
+            {"content": QUERY, "metadata": {"source": "agent"}},
+            {"content": "garden tomatoes harvest season watering"},
+        ])
+    finally:
+        await eng.shutdown()
+    return ids[0]
+
+
+async def test_run_bm25_not_ready_warns_and_continues(
+    tmp_path, monkeypatch, capsys, mod,
+):
+    """build が ready に届かない場合: WARNING (stderr) + notes 入り + 続行。"""
+    target_id = await _seed_corpus_and_recycle(tmp_path)
+    eng = _make_stub_engine(tmp_path)
+    monkeypatch.setattr(mod, "build_engine", lambda _config: eng)
+
+    async def _never_ready(_engine, timeout=None, poll_interval=None):
+        return "timeout"
+
+    monkeypatch.setattr(mod, "wait_for_bm25_ready", _never_ready)
+    args = mod.build_parser().parse_args([
+        "--data-dir", str(tmp_path),
+        "--query", QUERY,
+        "--target-id", target_id,
+        "--top-n", "5",
+        "--json",
+    ])
+    rc = await mod._run(args)
+    assert rc == 0  # trace としては成功 (raw/virtual は有効)
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "raw/virtual ranks are still valid" in captured.err
+    # stdout は JSON のみ — warning は stderr + payload notes の両経路
+    payload = json.loads(captured.out)
+    assert any("did not reach 'ready'" in n for n in payload["notes"])
+
+
+def _calib_args(tmp_path: Path) -> argparse.Namespace:
+    probes = tmp_path / "probes.json"
+    probes.write_text(json.dumps({
+        "positives": [{"query": "zephyr falcon engine failure"}],
+        "negatives": [{"query": "random off topic penguins"}],
+    }), encoding="utf-8")
+    return argparse.Namespace(
+        data_dir=str(tmp_path), probes=str(probes),
+        emit_artifact=None, seed=42,
+    )
+
+
+async def _calib_rc_with_wait_result(
+    tmp_path: Path, monkeypatch, capsys, calib_mod, wait_result: str,
+) -> tuple[int, str]:
+    eng = _make_stub_engine(tmp_path)
+    await eng.startup()
+    await eng.shutdown()
+    monkeypatch.setattr(calib_mod, "build_engine", lambda _config: eng)
+
+    async def _stub_wait(_engine, timeout=None, poll_interval=None):
+        return wait_result
+
+    monkeypatch.setattr(calib_mod, "wait_for_bm25_ready", _stub_wait)
+    rc = await calib_mod._run(_calib_args(tmp_path))
+    return rc, capsys.readouterr().out
+
+
+async def test_calibrate_aborts_when_bm25_not_ready(
+    tmp_path, monkeypatch, capsys, calib_mod,
+):
+    """bm25 軸なしの較正は無効 — exit 1 (v3 VOID 再発防止の契約)。"""
+    rc, out = await _calib_rc_with_wait_result(
+        tmp_path, monkeypatch, capsys, calib_mod, "timeout",
+    )
+    assert rc == 1
+    assert "ERROR" in out
+    assert "axis is unavailable" in out
+    assert "invalid" in out
+
+
+async def test_calibrate_aborts_when_gate_index_unwired(
+    tmp_path, monkeypatch, capsys, calib_mod,
+):
+    """build が ready でも ambient gate index 未配線なら同じ理由で exit 1
+    (bm25-sudachi extra 欠落時に n/a probe を量産しない)。"""
+    rc, out = await _calib_rc_with_wait_result(
+        tmp_path, monkeypatch, capsys, calib_mod, "ready",
+    )
+    assert rc == 1
+    assert "ERROR" in out
+    assert "ambient gate index is not wired" in out

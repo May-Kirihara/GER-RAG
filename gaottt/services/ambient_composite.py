@@ -1,41 +1,39 @@
-"""Phase U WP-3 — ambient composite gate: pure decision primitives.
+"""Phase U §10 R3 follow-up — ambient composite gate: pure decision primitives.
 
 R3 の根因は RURI cosine の狭帯 (production raw cosine が ~0.70-0.86 に集中)
-により **絶対閾値では off-topic を拒否できない** こと。本 module は
-ambient gate の composite 判定
+により **絶対閾値では off-topic を拒否できない** こと。v2 較正
+(``docs/notes/phase-u/ambient-composite-calibration.md``) で positives
+(virt 0.819-0.909) と negatives (0.786-0.848) の重なる狭帯では単一
+semantic 軸 (percentile/margin) で incident query と negative 最高値が
+不可分と判明したため、判定は **3-arm 構造** (plan §10, 2026-08-26
+事前登録) に置換した::
 
-::
+    accept = bm25_strong (bm25_top >= bm25_strong_threshold)
+          OR (virt_top1 >= virt_hi)
+          OR (bm25_top >= bm25_mid AND virt_top1 >= virt_mid)
 
-    accept = bm25_strong
-          OR ( virt_percentile >= percentile_min
-               AND top_margin    >= margin_min
-               AND raw_top1      >= raw_floor )
-
-を **engine に依存しない純関数** として提供する (unit-test 可能にするため。
-runtime glue は ``services.memory``)。3 軸の意味:
-
-- ``virt_percentile`` — 参照分布 (較正 query population の top-1 virtual
-  cosine 分布) に対する empirical CDF percentile。狭帯の正規化 (分布を
-  [0,100] に写像) であり、判別は labeled 閾値選定で担保する。
-- ``top_margin`` — pool top-1 virtual − pool virtual median。pool 全体が
-  同じ高い帯に張り付く off-topic (penguin 事例の virt 0.835 vs 狭帯) を
-  拒否するための相対軸。
-- ``raw_top1`` — engine 自身の raw FAISS 検索による top-1 cosine。
-  ``expose_score_breakdown`` に **非依存** (Phase T の「raw 軸欠損」問題
-  の再発防止契約)。
+軸ごとに強みが異なる query (incident は bm25 中堅、言い換え positive は
+virt 高位) を別々の arm で拾う。本 module はこの判定を **engine に依存
+しない純関数** として提供する (unit-test 可能にするため。runtime glue は
+``services.memory``)。
 
 fail-closed 契約: 参照 artifact 欠損・破損・fingerprint 不一致・count drift
 時は BM25 のみが accept 経路になる (既知 false-positive 経路の "or" への
-open fallback は禁止)。理由は ``composite_signal`` /
-``empty_reason`` に離散値で現れる:
+open fallback は禁止)。参照分布は 3-arm の判定には **使われない** が、
+較正 provenance と corpus drift 検出のため artifact 機構は維持する。
+理由は ``composite_signal`` / ``empty_reason`` に離散値で現れる:
 
-- ``composite_reject``             — semantic composite を評価したが閾値未達
-- ``composite_pool_too_small``     — pool < 2 で margin が未定義
+- ``composite_reject``             — 3-arm すべて閾値未達
+- ``composite_pool_too_small``     — pool < 2 (pool 統計を信頼しない契約)
 - ``composite_reference_unavailable`` — 参照 artifact が使えない (fail-closed)
 
-しきい値の実行時の権威は **config** (``ambient_semantic_percentile_min`` 等)。
-artifact 内の ``thresholds`` は較正時の推奨値の echo (provenance 専用) で
-あり、runtime は参照しない — tuning は常に一本道 (env / config) に保つ。
+accept 時の ``composite_signal`` は発火した arm 名 (``bm25_strong`` /
+``virt_hi`` / ``bm25_virt_mid``) — diagnostics が accept 経路を読める。
+
+しきい値の実行時の権威は **config** (``ambient_composite_virt_hi`` 等)。
+artifact 内の ``thresholds`` は較正時の推奨値の echo (provenance 専用)
+であり、runtime は参照しない — tuning は常に一本道 (env / config) に
+保つ。
 """
 from __future__ import annotations
 
@@ -51,13 +49,18 @@ from typing import Any, Iterable
 
 # Artifact schema contract。format 名の改名は既存 artifact の孤立 (= 全
 # composite fail-closed) を意味するため、定数を pin して test で守る。
+# schema_version は plan §10 の指示どおり維持 (v2 旧 percentile/margin/
+# raw_floor echo の artifact は thresholds echo key 検証で fail-closed
+# になる = 再較正要求)。
 COMPOSITE_ARTIFACT_FORMAT = "gaottt-ambient-composite-reference"
 COMPOSITE_ARTIFACT_SCHEMA_VERSION = 1
 
 # discrete accept/reject signals (AmbientGateDiagnostics.composite_signal
-# および empty_reason の新値としてそのまま使う)
+# および empty_reason の新値としてそのまま使う)。accept 側は 3-arm の
+# どの arm が発火したかを示す。
 SIGNAL_BM25_STRONG = "bm25_strong"
-SIGNAL_SEMANTIC_COMPOSITE = "semantic_composite"
+SIGNAL_VIRT_HI = "virt_hi"
+SIGNAL_BM25_VIRT_MID = "bm25_virt_mid"
 SIGNAL_COMPOSITE_REJECT = "composite_reject"
 SIGNAL_COMPOSITE_POOL_TOO_SMALL = "composite_pool_too_small"
 SIGNAL_COMPOSITE_REFERENCE_UNAVAILABLE = "composite_reference_unavailable"
@@ -74,33 +77,34 @@ class CompositeReferenceError(ValueError):
 
 @dataclass(frozen=True)
 class CompositeGateThresholds:
-    """composite 判定の 3 閾値 (config 由来)。
+    """3-arm 判定の閾値 (config 由来)。
 
-    ``percentile_min`` は [0, 100]。``margin_min`` / ``raw_floor`` は
-    cosine スケール。
+    ``virt_hi`` / ``virt_mid`` は virtual cosine スケール、``bm25_mid``
+    は gate index の BM25 score スケール (arm1 の bm25_strong_threshold
+    (= ``ambient_bm25_min_score``) とは別値)。
     """
 
-    percentile_min: float
-    margin_min: float
-    raw_floor: float
+    virt_hi: float
+    bm25_mid: float
+    virt_mid: float
 
 
 @dataclass(frozen=True)
 class CompositeVerdict:
     """composite gate の判定結果。
 
-    ``signal`` は accept なら ``bm25_strong`` / ``semantic_composite``、
-    reject なら拒否理由 (empty_reason と同じ離散値)。``virt_percentile``
-    / ``margin`` / ``raw_top1`` は拒否時も **計算可能な限り** 埋まる
-    (silence triage 用 — なぜ落ちたかを axes から読めるように)。
+    ``signal`` は accept なら発火 arm (``bm25_strong`` / ``virt_hi`` /
+    ``bm25_virt_mid``)、reject なら拒否理由 (empty_reason と同じ離散値)。
+    ``virt_top1`` / ``bm25_top`` は判定入力の echo で、拒否時も
+    **計算可能な限り** 埋まる (silence triage 用 — なぜ落ちたかを
+    軸から読めるように)。
     """
 
     accepted: bool
     signal: str
     reason: str | None = None          # empty_reason 値 (reject のときのみ)
-    virt_percentile: float | None = None
-    margin: float | None = None
-    raw_top1: float | None = None
+    virt_top1: float | None = None
+    bm25_top: float | None = None
     detail: str | None = None          # human-readable triage 補足
 
 
@@ -117,22 +121,6 @@ class CompositeReference:
     # provenance 専用の echo。runtime の閾値権威は config 側。
     thresholds_echo: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
-
-
-def percentile_of(value: float, reference: list[float]) -> float:
-    """Empirical-CDF percentile of ``value`` in [0, 100] with midrank ties.
-
-    ``P = 100 · (#{r < v} + 0.5·#{r == v}) / n`` — 同順位は中央順位に
-    割り振る (標準的な midrank)。empty reference は呼び出し側バグ
-    (decision は empty を unavailable として先に弾く) なので ValueError。
-    """
-    if not reference:
-        raise ValueError("percentile_of: reference distribution is empty")
-    if not math.isfinite(value):
-        raise ValueError("percentile_of: value must be finite")
-    below = sum(1 for r in reference if r < value)
-    tied = sum(1 for r in reference if r == value)
-    return 100.0 * (below + 0.5 * tied) / len(reference)
 
 
 def compute_corpus_digest(
@@ -163,13 +151,11 @@ def composite_gate_decision(
     bm25_top: float | None,
     bm25_threshold: float,
     virt_top1: float | None,
-    virt_median: float | None,
-    raw_top1: float | None,
-    reference: list[float] | None,
+    reference_available: bool,
     thresholds: CompositeGateThresholds,
     pool_size: int,
 ) -> CompositeVerdict:
-    """Pure composite judgment — 評価順序は契約の一部。
+    """Pure 3-arm judgment — 評価順序は契約の一部。
 
     1. 非有限入力 (NaN/Inf) は全て reject — ``inf`` が閾値を貫くのを
        数値比較より先に断つ (fail-closed)。
@@ -177,30 +163,31 @@ def composite_gate_decision(
        (fail-closed 時の唯一の accept 経路として機能するよう、参照
        チェックより前に置く)。
     3. 参照なし → ``composite_reference_unavailable`` (fail-closed)。
-    4. pool < 2 → margin 未定義 → ``composite_pool_too_small``。
-    5. raw 軸欠損 (None) → reject (breakdown 非依存の自前検索でも
-       FAISS 空なら欠ける)。
-    6. 3 軸 (percentile / margin / raw_floor) 全て ``>=`` で通れば
-       ``semantic_composite`` accept。
+       3-arm 自体は参照分布の値を使わないが、較正 provenance /
+       corpus drift 検出の契約として semantic arm 2/3 は参照が有効な
+       場合にのみ発火する。
+    4. pool < 2 → ``composite_pool_too_small`` (pool 統計を信頼しない
+       edge-case 契約、plan §10 で維持)。
+    5. virtual 軸欠損 (None) → reject (両 semantic arm の前提)。
+    6. arm 2 (``virt_hi``) → arm 3 (``bm25_virt_mid``) の順に判定し、
+       先に発火した arm を signal として報告 (両方発火時はより強い
+       semantic-only arm = ``virt_hi`` 優先)。
     """
     def _reject(
-        signal: str, *, pct: float | None = None, margin: float | None = None,
-        raw: float | None = None, detail: str | None = None,
+        signal: str, *, detail: str | None = None,
     ) -> CompositeVerdict:
         return CompositeVerdict(
             accepted=False, signal=signal, reason=signal,
-            virt_percentile=pct, margin=margin, raw_top1=raw, detail=detail,
+            virt_top1=virt_top1, bm25_top=bm25_top, detail=detail,
         )
 
     # (1) finiteness — provided inputs only (None axes are handled below).
     named: list[tuple[str, float | None]] = [
         ("bm25_top", bm25_top),
         ("virt_top1", virt_top1),
-        ("virt_median", virt_median),
-        ("raw_top1", raw_top1),
-        ("thresholds.percentile_min", thresholds.percentile_min),
-        ("thresholds.margin_min", thresholds.margin_min),
-        ("thresholds.raw_floor", thresholds.raw_floor),
+        ("thresholds.virt_hi", thresholds.virt_hi),
+        ("thresholds.bm25_mid", thresholds.bm25_mid),
+        ("thresholds.virt_mid", thresholds.virt_mid),
         ("bm25_threshold", bm25_threshold),
     ]
     for name, v in named:
@@ -209,74 +196,75 @@ def composite_gate_decision(
                 SIGNAL_COMPOSITE_REJECT, detail=f"non-finite input: {name}",
             )
 
-    # triage axes — computed when the inputs allow, regardless of verdict.
-    pct: float | None = None
-    margin: float | None = None
-    if virt_top1 is not None and virt_median is not None:
-        margin = virt_top1 - virt_median
-    if reference and virt_top1 is not None:
-        pct = percentile_of(virt_top1, reference)
-
-    # (2) BM25 arm — independent of the reference (fail-closed anchor).
+    # (2) arm 1 — BM25 strong, independent of the reference (fail-closed
+    # anchor). >= semantics.
     if bm25_top is not None and bm25_top >= bm25_threshold:
         return CompositeVerdict(
             accepted=True, signal=SIGNAL_BM25_STRONG,
-            virt_percentile=pct, margin=margin, raw_top1=raw_top1,
+            virt_top1=virt_top1, bm25_top=bm25_top,
         )
 
     # (3) fail-closed: no usable reference → BM25 was the only accept path.
-    if not reference:
+    if not reference_available:
         return _reject(
-            SIGNAL_COMPOSITE_REFERENCE_UNAVAILABLE, pct=pct, margin=margin,
-            raw=raw_top1, detail="reference artifact unavailable/invalid",
+            SIGNAL_COMPOSITE_REFERENCE_UNAVAILABLE,
+            detail="reference artifact unavailable/invalid",
         )
 
-    # (4) margin is undefined on a pool smaller than 2.
+    # (4) a pool smaller than 2 is not trusted for the semantic arms.
     if pool_size < 2:
         return _reject(
-            SIGNAL_COMPOSITE_POOL_TOO_SMALL, pct=pct, margin=margin,
-            raw=raw_top1, detail=f"pool_size={pool_size}",
+            SIGNAL_COMPOSITE_POOL_TOO_SMALL, detail=f"pool_size={pool_size}",
         )
 
-    if virt_top1 is None or virt_median is None:
+    # (5) virtual axis missing — precondition of both semantic arms.
+    if virt_top1 is None:
         return _reject(
-            SIGNAL_COMPOSITE_REJECT, pct=pct, margin=margin, raw=raw_top1,
-            detail="virtual axis missing",
+            SIGNAL_COMPOSITE_REJECT, detail="virtual axis missing",
         )
 
-    # (5) raw axis — breakdown-independent own FAISS search; None = unusable.
-    if raw_top1 is None:
-        return _reject(
-            SIGNAL_COMPOSITE_REJECT, pct=pct, margin=margin, raw=None,
-            detail="raw axis unavailable (empty FAISS index)",
+    # (6) semantic arms, stronger-first (>= semantics on every threshold).
+    if virt_top1 >= thresholds.virt_hi:
+        return CompositeVerdict(
+            accepted=True, signal=SIGNAL_VIRT_HI,
+            virt_top1=virt_top1, bm25_top=bm25_top,
         )
-
-    # (6) semantic composite — all three axes must clear (>= semantics).
+    if (
+        bm25_top is not None
+        and bm25_top >= thresholds.bm25_mid
+        and virt_top1 >= thresholds.virt_mid
+    ):
+        return CompositeVerdict(
+            accepted=True, signal=SIGNAL_BM25_VIRT_MID,
+            virt_top1=virt_top1, bm25_top=bm25_top,
+        )
     failed: list[str] = []
-    if pct < thresholds.percentile_min:
-        failed.append(f"pct {pct:.1f} < {thresholds.percentile_min:.1f}")
-    if margin < thresholds.margin_min:
-        failed.append(f"margin {margin:.4f} < {thresholds.margin_min:.4f}")
-    if raw_top1 < thresholds.raw_floor:
-        failed.append(f"raw {raw_top1:.4f} < {thresholds.raw_floor:.4f}")
-    if failed:
-        return _reject(
-            SIGNAL_COMPOSITE_REJECT, pct=pct, margin=margin, raw=raw_top1,
-            detail="; ".join(failed),
+    if virt_top1 < thresholds.virt_hi:
+        failed.append(
+            f"virt {virt_top1:.4f} < virt_hi {thresholds.virt_hi:.4f}"
         )
-    return CompositeVerdict(
-        accepted=True, signal=SIGNAL_SEMANTIC_COMPOSITE,
-        virt_percentile=pct, margin=margin, raw_top1=raw_top1,
-    )
+    if bm25_top is None or bm25_top < thresholds.bm25_mid:
+        bm25_repr = "n/a" if bm25_top is None else f"{bm25_top:.1f}"
+        failed.append(
+            f"bm25 {bm25_repr} < bm25_mid {thresholds.bm25_mid:.1f}"
+        )
+    elif virt_top1 < thresholds.virt_mid:
+        failed.append(
+            f"virt {virt_top1:.4f} < virt_mid {thresholds.virt_mid:.4f}"
+        )
+    return _reject(SIGNAL_COMPOSITE_REJECT, detail="; ".join(failed))
 
 
 # --- Reference artifact (schema v1) ---------------------------------------------
 
+# thresholds echo に必須の key (3-arm + arm1 の固定閾値)。v2 旧
+# percentile/margin/raw_floor echo の artifact はここで検証 fail →
+# fail-closed (再較正要求)。
 _THRESHOLD_ECHO_KEYS = (
     "ambient_bm25_min_score",
-    "ambient_semantic_percentile_min",
-    "ambient_margin_min",
-    "ambient_raw_floor_composite",
+    "ambient_composite_virt_hi",
+    "ambient_composite_bm25_mid",
+    "ambient_composite_virt_mid",
 )
 
 
@@ -295,6 +283,8 @@ def build_artifact_payload(
 
     ``thresholds`` は **推奨値の echo** (provenance)。runtime の閾値権威は
     config 側なので、loader は key の存在のみ検証する。
+    ``virt_top1_distribution`` は 3-arm 判定には使われないが、再較正時の
+    分布 provenance として保持する (plan §10)。
     """
     return {
         "format": COMPOSITE_ARTIFACT_FORMAT,

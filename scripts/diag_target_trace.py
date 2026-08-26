@@ -133,6 +133,34 @@ def mirror_seed_pool_size(
     return initial_k
 
 
+# WP-6c: BM25 build は background task — startup 返却直後の "building" 窓内に
+# trace すると hybrid/ambient bm25 rank が n/a になる。production 実測
+# 147s (startup-timings) + 余裕。
+BM25_WAIT_TIMEOUT_SECONDS = 300.0
+
+
+async def wait_for_bm25_ready(
+    engine: GaOTTTEngine,
+    timeout: float = BM25_WAIT_TIMEOUT_SECONDS,
+    poll_interval: float = 1.0,
+) -> str:
+    """``engine.bm25_build_state`` が終状態へ着くまで bounded wait する。
+
+    戻り値は到達した結果: ``"ready"`` / ``"failed"`` / ``"idle"``
+    (index 未配線 — build は一度も始まらない) / ``"timeout"``。
+    呼び出し側が継続可否を判断する (本 script は WARNING して続行、
+    calibrate_ambient_gate.py は ERROR で exit 1)。
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        state = engine.bm25_build_state
+        if state != "building":
+            return state
+        if time.monotonic() >= deadline:
+            return "timeout"
+        await asyncio.sleep(poll_interval)
+
+
 @dataclass
 class PoolDiagnosis:
     """(g) pool diagnosis — 候補生成各段階の target membership。
@@ -310,6 +338,25 @@ async def _run(args: argparse.Namespace) -> int:
     engine = build_engine(config)
     await engine.startup()
     try:
+        # WP-6c: build 完了前の空窓に trace しない — ready を bounded wait
+        # してから trace する。ready に届かなくても raw/virtual rank は
+        # 有用なので WARNING して続行する (bm25 軸は n/a 表示)。
+        if engine.bm25_build_state == "building":
+            print(
+                "waiting for BM25 background build "
+                f"(timeout {BM25_WAIT_TIMEOUT_SECONDS:.0f}s)...",
+                file=sys.stderr,
+            )
+        bm25_state = await wait_for_bm25_ready(engine)
+        if bm25_state != "ready":
+            warn = (
+                f"BM25 build did not reach 'ready' (wait result: "
+                f"{bm25_state!r}) — hybrid/ambient BM25 ranks and the "
+                "lexical qualification axis will show n/a; raw/virtual "
+                "ranks are still valid."
+            )
+            print(f"WARNING: {warn}", file=sys.stderr)
+            notes.append(warn)
         return await _trace(engine, args, notes)
     finally:
         await engine.shutdown()

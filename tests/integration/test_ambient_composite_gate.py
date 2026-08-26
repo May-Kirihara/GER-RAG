@@ -1,24 +1,32 @@
-"""Phase U WP-3 — ambient composite gate (integration).
+"""Phase U §10 R3 follow-up — ambient composite gate 3-arm (integration).
 
 ``ambient_gate_mode="composite"`` end-to-end through a real engine
 (deterministic TokenEmbedder). Corpus shape is crafted to exercise each
-composite outcome:
+3-arm outcome (measured virtual top-1 values in brackets):
 
 - docs = FILLER8 + COMMON2 + 2 distinctive tokens — every doc shares a
   10-token backbone, so any backbone-only query lands in a *high-but-flat*
   cosine band (the RURI narrow-band pathology in miniature: the penguin
-  profile).
+  profile [N_FLAT ≈ 0.889]).
 - ``P`` (incident-style positive) = backbone + doc_3's distinctive pair →
-  top-1 ≈ 1.0 vs pool median ≈ band → large margin, high percentile.
-- ``N_FLAT`` (penguin-profile negative) = backbone + 1 absent token →
-  high raw cosine band, tiny margin → rejected on the relative axes.
+  token-identical to doc_3 [≈ 1.0] → clears the semantic-only ``virt_hi``
+  arm with BM25 weak.
+- ``MID`` (paraphrase-grade positive) = backbone + doc_3's single
+  distinctive token [≈ 0.961] — below ``virt_hi`` (0.98) but above
+  ``virt_mid`` (0.92) → needs the ``bm25_virt_mid`` conjunction arm.
+- ``N_FLAT`` (penguin-profile negative) = backbone + 1 absent token
+  [≈ 0.889] → below both semantic thresholds → rejected even though the
+  band is high.
 - The synthesized reference artifact is built from the *live* engine
   (manifest identity + real corpus digest), so fingerprint validation is
   exercised for real, then broken deliberately for the fail-closed tests.
+  The 3-arm decision does not read the distribution values — the artifact
+  is the fail-closed/provenance contract — so the fixture distribution is
+  inert by design.
 
-BM25 gate inputs are forced via ``_bm25_gate_top`` monkeypatch (threshold
-stays the 32.0 default) so verdicts don't depend on trigram scores —
-same convention as ``test_ambient_or_gate.py``.
+BM25 gate inputs are forced via ``_bm25_gate_top`` monkeypatch (arm1
+threshold stays the 32.0 default) so verdicts don't depend on trigram
+scores — same convention as ``test_ambient_or_gate.py``.
 """
 from __future__ import annotations
 
@@ -43,8 +51,9 @@ from gaottt.store.sqlite_store import SqliteStore
 from tests.integration.test_engine_ambient_recall import TokenEmbedder
 
 SENTINEL = "(関連する記憶なし)"
-BM25_REJECT = 5.0     # < 32.0 default threshold → weak
-BM25_ACCEPT = 40.0    # ≥ 32.0 → strong
+BM25_REJECT = 5.0     # < 20.0 fixture bm25_mid → arm3 dead too
+BM25_MID = 25.0       # ≥ 20.0 (arm3) but < 32.0 (arm1) → mid band
+BM25_ACCEPT = 40.0    # ≥ 32.0 → arm1 (bm25_strong)
 
 FILLER = " ".join(f"filler{i}" for i in range(8))   # shared backbone (8)
 COMMON = "comA comB"                                # shared backbone (2)
@@ -55,17 +64,28 @@ def _doc(i: int) -> str:
     return f"{FILLER} {COMMON} omega{i} uniq{i}"
 
 
-# incident-style positive: backbone + doc_3's distinctive pair
+# incident-style positive: backbone + doc_3's distinctive pair (virt ≈ 1.0)
 P_QUERY = f"{FILLER} {COMMON} omega3 uniq3"
+# paraphrase-grade positive: backbone + doc_3's single distinctive token
+# (virt ≈ 0.961 — below virt_hi, above virt_mid)
+MID_QUERY = f"{FILLER} {COMMON} omega3"
 # penguin-profile negative: backbone + one absent token → flat high band
+# (virt ≈ 0.889 — below both semantic thresholds)
 N_FLAT_QUERY = f"{FILLER} {COMMON} absentQ"
 # weak-band negative (shares only part of the backbone)
 N_LOW_QUERY = " ".join(f"filler{i}" for i in range(4)) + " zeta9"
 
-# Reference distribution shaped like the calibration population: the flat
-# band the corpus produces for backbone-heavy queries, plus a couple of
-# paraphrase-grade hits. P (≈1.0) sits at the 100th percentile; backbone
-# negatives land inside the band below the 85th.
+# Fixture thresholds — deterministic separation of the measured bands
+# (1.0000 / 0.9607 / 0.8886): virt_hi sits between P and MID, virt_mid
+# between MID and N_FLAT, bm25_mid inside the forced-BM25 mid band.
+VIRT_HI = 0.98
+BM25_MID = 20.0
+VIRT_MID = 0.92
+
+# Reference distribution shaped like the calibration population. The 3-arm
+# decision never reads it (artifact = fail-closed/provenance contract), so
+# these values are inert; they ride the artifact for recalibration
+# provenance exactly as production artifacts will.
 REFERENCE_DISTRIBUTION = [0.83, 0.85, 0.86, 0.87, 0.87, 0.88, 0.88, 0.89]
 
 
@@ -80,11 +100,11 @@ def _make_engine(tmp_path, **overrides) -> GaOTTTEngine:
         faiss_save_interval_seconds=0.0,
         flush_interval_seconds=999.0,
         ambient_gate_mode="composite",
-        # provisional composite thresholds — fixture-tuned (margin floor sits
-        # well below P's ~0.15 margin and above the flat band's jitter).
-        ambient_semantic_percentile_min=85.0,
-        ambient_margin_min=0.05,
-        ambient_raw_floor_composite=0.80,
+        # 3-arm thresholds — fixture-tuned to the measured virtual bands
+        # (see VIRT_HI / BM25_MID / VIRT_MID above).
+        ambient_composite_virt_hi=VIRT_HI,
+        ambient_composite_bm25_mid=BM25_MID,
+        ambient_composite_virt_mid=VIRT_MID,
     )
     base_kwargs.update(overrides)
     config = GaOTTTConfig(**base_kwargs)
@@ -120,9 +140,9 @@ async def _write_valid_artifact(engine: GaOTTTEngine) -> None:
         virt_top1_distribution=list(REFERENCE_DISTRIBUTION),
         thresholds={
             "ambient_bm25_min_score": engine.config.ambient_bm25_min_score,
-            "ambient_semantic_percentile_min": engine.config.ambient_semantic_percentile_min,
-            "ambient_margin_min": engine.config.ambient_margin_min,
-            "ambient_raw_floor_composite": engine.config.ambient_raw_floor_composite,
+            "ambient_composite_virt_hi": engine.config.ambient_composite_virt_hi,
+            "ambient_composite_bm25_mid": engine.config.ambient_composite_bm25_mid,
+            "ambient_composite_virt_mid": engine.config.ambient_composite_virt_mid,
         },
         provenance={"script": "tests/integration/test_ambient_composite_gate.py"},
     )
@@ -153,32 +173,88 @@ def _force_bm25(monkeypatch, value: float | None):
     )
 
 
-# ① incident-style positive: semantic composite accept with BM25 weak ----------
+# ① arm 2 (virt_hi) — incident-style positive with BM25 weak ---------------------
 
 
 @pytest.mark.asyncio
-async def test_composite_semantic_accept_incident_style(tmp_path, monkeypatch):
+async def test_composite_virt_hi_accepts_incident_style(tmp_path, monkeypatch):
     engine = await _start_seeded(tmp_path)
     try:
         _force_bm25(monkeypatch, BM25_REJECT)
         resp = await memory_service.ambient_recall(engine, P_QUERY, direct_k=2)
-        assert resp.count >= 1, "semantic composite should accept the incident-style query"
+        assert resp.count >= 1, "virt_hi arm should accept the incident-style query"
         diag = resp.gate_diagnostics
         assert diag is not None
         assert diag.bm25_gate is False
-        assert diag.composite_signal == "semantic_composite"
+        assert diag.composite_signal == "virt_hi"
         assert diag.empty_reason is None
-        assert diag.virt_percentile is not None and diag.virt_percentile >= 85.0
-        assert diag.margin is not None and diag.margin >= 0.05
-        assert diag.raw_top1 is not None and diag.raw_top1 >= 0.80
-        # P is token-identical to doc_3 → the virtual axis top-1 sits near 1.0,
-        # well clear of the flat backbone band (~0.85)
-        assert diag.semantic_max_virtual >= 0.90
+        assert diag.virt_top1 is not None and diag.virt_top1 >= VIRT_HI
+        assert diag.bm25_top == BM25_REJECT
+        # P is token-identical to doc_3 → the virtual axis top-1 sits at 1.0,
+        # well clear of the flat backbone band (~0.889)
+        assert diag.semantic_max_virtual >= 0.99
     finally:
         await engine.shutdown()
 
 
-# ② penguin-profile negative: high-but-flat band rejected -----------------------
+# ①b arm 3 (bm25_virt_mid) — paraphrase-grade positive ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_composite_bm25_virt_mid_accepts_paraphrase_style(tmp_path, monkeypatch):
+    """MID (virt ≈ 0.961) is below virt_hi (0.98) — only the conjunction
+    arm (bm25 ≥ 20 ∧ virt ≥ 0.92) can accept it, with BM25 in the mid
+    band (25 < 32 strong threshold)."""
+    engine = await _start_seeded(tmp_path)
+    try:
+        _force_bm25(monkeypatch, BM25_MID)
+        resp = await memory_service.ambient_recall(engine, MID_QUERY, direct_k=2)
+        assert resp.count >= 1, "bm25_virt_mid arm should accept the paraphrase query"
+        diag = resp.gate_diagnostics
+        assert diag.composite_signal == "bm25_virt_mid"
+        assert diag.empty_reason is None
+        assert diag.virt_top1 is not None and VIRT_MID <= diag.virt_top1 < VIRT_HI
+        assert diag.bm25_top == BM25_MID
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_composite_arm3_requires_bm25_mid(tmp_path, monkeypatch):
+    """Arm-3 conjunction boundary: same MID query, BM25 dropped below
+    bm25_mid (5 < 20) → arm3 cannot fire and virt (0.961) is below
+    virt_hi → reject."""
+    engine = await _start_seeded(tmp_path)
+    try:
+        _force_bm25(monkeypatch, BM25_REJECT)
+        resp = await memory_service.ambient_recall(engine, MID_QUERY, direct_k=2)
+        assert resp.count == 0
+        diag = resp.gate_diagnostics
+        assert diag.empty_reason == "composite_reject"
+        assert diag.composite_signal == "composite_reject"
+    finally:
+        await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_composite_arm3_requires_virt_mid(tmp_path, monkeypatch):
+    """Arm-3 conjunction boundary (other side): mid-band BM25 (25 ≥ 20)
+    with a virt below virt_mid (N_FLAT ≈ 0.889 < 0.92) → still reject —
+    a decent BM25 score alone must not accept off-topic."""
+    engine = await _start_seeded(tmp_path)
+    try:
+        _force_bm25(monkeypatch, BM25_MID)
+        resp = await memory_service.ambient_recall(engine, N_FLAT_QUERY, direct_k=2)
+        assert resp.count == 0
+        diag = resp.gate_diagnostics
+        assert diag.empty_reason == "composite_reject"
+        assert diag.composite_signal == "composite_reject"
+        assert diag.virt_top1 is not None and diag.virt_top1 < VIRT_MID
+    finally:
+        await engine.shutdown()
+
+
+# ② off-topic rejection ----------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -191,10 +267,10 @@ async def test_composite_rejects_flat_band_off_topic(tmp_path, monkeypatch):
         diag = resp.gate_diagnostics
         assert diag.empty_reason == "composite_reject"
         assert diag.composite_signal == "composite_reject"
-        # the raw axis sits in the *high* band (penguin profile) — the
-        # relative axes (percentile/margin) are what reject it
-        assert diag.raw_top1 is not None and diag.raw_top1 >= 0.80
-        assert diag.margin is not None and diag.margin < 0.05
+        # the virtual axis sits in the *high* band (penguin profile) —
+        # the absolute virt thresholds are what reject it
+        assert diag.virt_top1 is not None and diag.virt_top1 >= 0.88
+        assert diag.virt_top1 < VIRT_HI
         assert formatters.format_ambient(resp, config=engine.config) == SENTINEL
     finally:
         await engine.shutdown()
@@ -202,7 +278,7 @@ async def test_composite_rejects_flat_band_off_topic(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_composite_rejects_weak_band_off_topic(tmp_path, monkeypatch):
-    """Partial-backbone negative: below the raw floor AND the percentile —
+    """Partial-backbone negative: below every semantic threshold —
     rejects through the same composite_reject reason."""
     engine = await _start_seeded(tmp_path)
     try:
@@ -216,7 +292,7 @@ async def test_composite_rejects_weak_band_off_topic(tmp_path, monkeypatch):
         await engine.shutdown()
 
 
-# ③ BM25 arm --------------------------------------------------------------------
+# ③ arm 1 (bm25_strong) ---------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -251,9 +327,10 @@ async def test_composite_fail_closed_missing_artifact(tmp_path, monkeypatch):
         diag = resp.gate_diagnostics
         assert diag.empty_reason == "composite_reference_unavailable"
         assert diag.composite_signal == "composite_reference_unavailable"
-        # axes that don't need the reference still surface for triage
-        assert diag.margin is not None
-        assert diag.virt_percentile is None  # percentile needs the reference
+        # the decision axes still surface for triage — the reference only
+        # gates whether the semantic arms may fire
+        assert diag.virt_top1 is not None and diag.virt_top1 >= VIRT_HI
+        assert diag.bm25_top == BM25_REJECT
     finally:
         await engine.shutdown()
 
@@ -317,14 +394,48 @@ async def test_composite_fail_closed_embedder_identity_mismatch(tmp_path, monkey
         await engine.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_composite_fail_closed_v2_style_artifact_rejected(tmp_path, monkeypatch):
+    """An artifact echoing the dropped v2 threshold knobs (percentile /
+    margin / raw_floor) fails the 3-arm echo validation → fail-closed.
+    Old-calibration artifacts must demand re-calibration, not silently
+    ride along."""
+    engine = _make_engine(tmp_path)
+    await engine.startup()
+    try:
+        await _seed_docs(engine)
+        await _write_valid_artifact(engine)
+        _corrupt_artifact(
+            engine,
+            lambda d: d.__setitem__(
+                "thresholds",
+                {
+                    "ambient_bm25_min_score": 32.0,
+                    "ambient_semantic_percentile_min": 85.0,
+                    "ambient_margin_min": 0.02,
+                    "ambient_raw_floor_composite": 0.80,
+                },
+            ),
+        )
+        _force_bm25(monkeypatch, BM25_REJECT)
+        resp = await memory_service.ambient_recall(engine, P_QUERY, direct_k=2)
+        assert resp.count == 0
+        assert resp.gate_diagnostics.empty_reason == "composite_reference_unavailable"
+    finally:
+        await engine.shutdown()
+
+
 # ⑤ breakdown 非依存 -------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_composite_breakdown_independence(tmp_path, monkeypatch):
     """``expose_score_breakdown`` must not change the composite decision or
-    its axes — the raw axis comes from the gate's OWN FAISS search, not from
-    per-item breakdowns (Phase T 'raw axis missing' regression fence)."""
+    its axes — the 3-arm reads virt_top1 from ``item.raw_score`` (always
+    populated) and bm25_top from the gate index, never from per-item
+    breakdowns (Phase T 'raw axis missing' regression fence, now true by
+    construction — the old own-FAISS raw axis was removed with the
+    raw-floor arm)."""
     engine = await _start_seeded(tmp_path)
     try:
         _force_bm25(monkeypatch, BM25_REJECT)
@@ -342,9 +453,8 @@ async def test_composite_breakdown_independence(tmp_path, monkeypatch):
             else:
                 assert off.count == 0
             assert d_on.composite_signal == d_off.composite_signal
-            assert d_on.raw_top1 == d_off.raw_top1
-            assert d_on.virt_percentile == d_off.virt_percentile
-            assert d_on.margin == d_off.margin
+            assert d_on.virt_top1 == d_off.virt_top1
+            assert d_on.bm25_top == d_off.bm25_top
             # breakdowns truly absent in the off-run, present in the on-run
             if off.direct:
                 assert off.direct[0].breakdown is None
@@ -386,13 +496,13 @@ async def test_composite_persona_cannot_flip_rejection(tmp_path, monkeypatch):
         await engine.shutdown()
 
 
-# ⑦ pool < 2 → margin 未定義 -----------------------------------------------------
+# ⑦ pool < 2 → pool 統計を信頼しない ----------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_composite_pool_too_small(tmp_path, monkeypatch):
-    """Tag-exclusion whittles the pool to a single item → margin undefined →
-    ``composite_pool_too_small`` (BM25 weak)."""
+    """Tag-exclusion whittles the pool to a single item → the semantic
+    arms are not trusted → ``composite_pool_too_small`` (BM25 weak)."""
     engine = _make_engine(tmp_path)
     await engine.startup()
     try:
@@ -430,10 +540,13 @@ async def test_composite_gate_line_segments(tmp_path, monkeypatch):
         out = formatters.format_ambient(resp, config=engine.config)
         gate_line = next(ln for ln in out.splitlines() if ln.startswith("gate:"))
         assert "gate: passed (" in gate_line
-        assert "sig=semantic_composite" in gate_line
-        assert "pct=" in gate_line
-        assert "margin=" in gate_line
-        assert "raw=" in gate_line
+        assert "sig=virt_hi" in gate_line
+        assert "virt=" in gate_line
+        assert "bm25=" in gate_line
+        # dropped v1 segments must not reappear
+        assert "pct=" not in gate_line
+        assert "margin=" not in gate_line
+        assert "raw=" not in gate_line
         # existing segments survive
         assert "candidates=" in gate_line
         assert "virt_max=" in gate_line
@@ -466,9 +579,8 @@ async def test_or_mode_line_has_no_composite_segments(tmp_path, monkeypatch):
         assert resp.count >= 1  # OR-gate semantics accept via virtual axis
         diag = resp.gate_diagnostics
         assert diag.composite_signal is None
-        assert diag.virt_percentile is None
-        assert diag.margin is None
-        assert diag.raw_top1 is None
+        assert diag.virt_top1 is None
+        assert diag.bm25_top is None
         out = formatters.format_ambient(resp, config=engine.config)
         assert "sig=" not in out
         assert "pct=" not in out
@@ -478,13 +590,14 @@ async def test_or_mode_line_has_no_composite_segments(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_or_mode_default_value_is_rollback():
-    """WP-3 acceptance: the shipped default is "or" (promotion to composite
-    is a PM decision gated on pre-registered calibration criteria)."""
+    """WP acceptance: the shipped default is "or" (promotion to composite
+    is a PM decision gated on the v3 pre-registered calibration criteria).
+    The 3-arm provisional defaults echo the v2 exploratory analysis."""
     cfg = GaOTTTConfig(embedding_dim=32)
     assert cfg.ambient_gate_mode == "or"
-    assert cfg.ambient_semantic_percentile_min == 85.0
-    assert cfg.ambient_margin_min == 0.02
-    assert cfg.ambient_raw_floor_composite == 0.80
+    assert cfg.ambient_composite_virt_hi == 0.85
+    assert cfg.ambient_composite_bm25_mid == 22.0
+    assert cfg.ambient_composite_virt_mid == 0.845
     assert cfg.ambient_composite_reference_filename == (
         "ambient_composite_reference.json"
     )
@@ -504,7 +617,7 @@ async def test_composite_ignores_or_semantic_flag(tmp_path, monkeypatch):
             "legacy veto must not fire in composite mode even with "
             "ambient_gate_or_semantic=False"
         )
-        assert resp.gate_diagnostics.composite_signal == "semantic_composite"
+        assert resp.gate_diagnostics.composite_signal == "virt_hi"
     finally:
         await engine.shutdown()
 

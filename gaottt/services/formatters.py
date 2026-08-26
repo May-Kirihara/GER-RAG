@@ -437,18 +437,16 @@ def _ambient_gate_line(diag, config=None) -> str:
     if diag.semantic_max_raw is not None:
         parts.append(f"raw_max={diag.semantic_max_raw:.3f}")
     parts.append(f"candidates={diag.candidates_generated}")
-    # Phase U WP-3 — composite segments. Additive only: gated on
-    # ``composite_signal`` (set iff mode="composite" ran the composite
-    # judgment), so mode="or" lines stay byte-identical. Axes are appended
-    # when present; rejects still show whichever axes were computable so
+    # Phase U §10 R3 follow-up — composite segments. Additive only: gated
+    # on ``composite_signal`` (set iff mode="composite" ran the 3-arm
+    # judgment), so mode="or" lines stay byte-identical. The axes echo the
+    # decision inputs; rejects still show whichever axes were computable so
     # silence triage can read *why* the gate closed.
     if getattr(diag, "composite_signal", None):
-        if diag.virt_percentile is not None:
-            parts.append(f"pct={diag.virt_percentile:.1f}")
-        if diag.margin is not None:
-            parts.append(f"margin={diag.margin:.3f}")
-        if diag.raw_top1 is not None:
-            parts.append(f"raw={diag.raw_top1:.3f}")
+        if diag.virt_top1 is not None:
+            parts.append(f"virt={diag.virt_top1:.3f}")
+        if diag.bm25_top is not None:
+            parts.append(f"bm25={diag.bm25_top:.1f}")
         parts.append(f"sig={diag.composite_signal}")
     return f"gate: {diag.empty_reason or 'passed'} ({', '.join(parts)})"
 

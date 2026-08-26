@@ -913,29 +913,36 @@ class GaOTTTConfig:
     # False = legacy BM25 veto に戻す rollback。
     ambient_gate_or_semantic: bool = True    # False = legacy BM25 veto / True = BM25 OR semantic
     ambient_semantic_raw_min: float = 0.60   # raw cosine 軸の ambient gate 閾値 (baseline: raw p50=0.764)
-    # Phase U WP-3 — ambient composite gate (R3: RURI cosine 狭帯 ~0.70-0.86 では
-    # 絶対閾値で off-topic を拒否できない → 相対軸で分離)。
+    # Phase U §10 R3 follow-up — ambient composite gate 3-arm (2026-08-26 事前登録)。
+    # R3: RURI cosine 狭帯 ~0.70-0.86 では絶対閾値で off-topic を拒否できない。
+    # v2 較正 (docs/notes/phase-u/ambient-composite-calibration.md) で positives
+    # (virt 0.819-0.909) と negatives (0.786-0.848) の重なる狭帯では旧 単一
+    # semantic arm (percentile ∧ margin ∧ raw_floor) で incident query (0.8466) と
+    # negative 最高値 (0.8480) が不可分と判明 → virt と bm25 の組合せで分離する
+    # 3-arm へ置換 (旧 percentile/margin/raw_floor knob は未 release につき廃止):
     #   ambient_gate_mode = "or" (default, 現行 Phase T Stage 5 の OR gate を
     #     bit-for-bit 維持) | "composite" (
-    #     accept = bm25_strong OR (virt_percentile >= percentile_min
-    #                              AND top_margin >= margin_min
-    #                              AND raw_top1 >= raw_floor_composite))
-    #   composite の昇格判断は **事前登録 gate** (held-out で negative FP=0 かつ
-    #     positive FN<=10%) を PM が較正結果で判定するまで行わない — default は
-    #     "or" のまま (Plans-Phase-U-Review-Hardening.md §4 WP-3)。
+    #     accept = bm25_strong (>= ambient_bm25_min_score)
+    #           OR (virt_top1 >= ambient_composite_virt_hi)
+    #           OR (bm25_top >= ambient_composite_bm25_mid
+    #               AND virt_top1 >= ambient_composite_virt_mid))
+    #   composite の昇格判断は **事前登録 gate** (v3 新規 probe set の held-out で
+    #     negative FP=0 かつ positive FN<=10%) を PM が較正結果で判定するまで
+    #     行わない — default は "or" のまま (Plans-Phase-U-Review-Hardening.md §10)。
     #   composite は参照 artifact
     #     (data_dir/<ambient_composite_reference_filename>, schema v1,
     #     scripts/calibrate_ambient_gate.py --emit-artifact で生成) の
-    #     fingerprint (embedder id/version + corpus digest + active_count) に
-    #     依存する。欠損・破損・fingerprint 不一致・count drift 超過時は
-    #     **fail-closed**: BM25 のみが accept 経路 (empty_reason=
-    #     "composite_reference_unavailable")。"or" への open fallback はしない。
-    #   3 閾値は較正 (calibration script) が値を提案し PM が確定する。以下は
-    #     provisional な初期値。
+    #     fingerprint (embedder id/version + corpus digest + active_count) が
+    #     有効な場合のみ semantic arm を評価する。欠損・破損・fingerprint 不一致・
+    #     count drift 超過時は **fail-closed**: BM25 のみが accept 経路
+    #     (empty_reason="composite_reference_unavailable")。"or" への open
+    #     fallback はしない。
+    #   3 閾値の暫定値は v2 探索的解析 (FN 6.25% / FP 0 の 3-arm) 由来 —
+    #     最終値は v3 再較正が提案し PM が確定する。
     ambient_gate_mode: str = "or"                          # "or" (default) | "composite"
-    ambient_semantic_percentile_min: float = 85.0          # 参照分布に対する virt top-1 の percentile 下限 [0,100] (provisional)
-    ambient_margin_min: float = 0.02                       # top-1 virtual − pool virtual median の下限 (provisional)
-    ambient_raw_floor_composite: float = 0.80              # breakdown 非依存 raw FAISS top-1 cosine の下限 (provisional)
+    ambient_composite_virt_hi: float = 0.85                # arm2: semantic-only 閾値 (virt_top1 ≥ これで単独 accept、provisional)
+    ambient_composite_bm25_mid: float = 22.0               # arm3: 中堅 BM25 score 閾値 (arm1 の 32.0 とは別値、provisional)
+    ambient_composite_virt_mid: float = 0.845              # arm3: 中堅 virtual cosine 閾値 (virt_hi ≤ となるよう選ぶ、provisional)
     ambient_composite_reference_filename: str = "ambient_composite_reference.json"  # data_dir 基準
     # runtime staleness guard: |active_count - reference_count| / reference_count
     # がこの値を超えたら参照は stale とみなし fail-closed (full digest scan は

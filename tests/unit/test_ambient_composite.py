@@ -1,16 +1,27 @@
-"""Phase U WP-3 — pure composite-gate primitives (unit).
+"""Phase U §10 R3 follow-up — 3-arm composite-gate primitives (unit).
 
 ``gaottt.services.ambient_composite`` is deliberately engine-free: the
-decision function, the midrank percentile, the corpus digest, and the
-reference-artifact (load/build) round-trip are all pure so they can be
-unit-tested without an engine. The runtime glue (raw FAISS axis, artifact
-validation against the live engine) lives in ``services.memory`` and is
-covered by ``tests/integration/test_ambient_composite_gate.py``.
+3-arm decision function, the corpus digest, and the reference-artifact
+(load/build) round-trip are all pure so they can be unit-tested without
+an engine. The runtime glue (artifact validation against the live
+engine) lives in ``services.memory`` and is covered by
+``tests/integration/test_ambient_composite_gate.py``.
+
+3-arm contract (Plans-Phase-U-Review-Hardening.md §10)::
+
+    accept = bm25_strong (>= ambient_bm25_min_score)
+          OR (virt_top1 >= ambient_composite_virt_hi)
+          OR (bm25_top >= ambient_composite_bm25_mid
+              AND virt_top1 >= ambient_composite_virt_mid)
+
+The reference distribution no longer feeds the decision (percentile /
+margin axes were dropped with the v2 evidence — the narrow band made
+them inseparable); the artifact still fail-closes the two semantic arms
+via ``reference_available``.
 """
 from __future__ import annotations
 
 import json
-import math
 
 import pytest
 
@@ -24,71 +35,24 @@ from gaottt.services.ambient_composite import (
     composite_gate_decision,
     compute_corpus_digest,
     load_composite_reference,
-    percentile_of,
 )
 
 
-# --- percentile_of (midrank empirical CDF) --------------------------------------
-
-
-def test_percentile_midrank_with_ties():
-    """ref=[1,2,2,3]: value=2 → #{<2}=1, #{==2}=2 → (1+0.5·2)/4·100 = 50."""
-    assert percentile_of(2.0, [1.0, 2.0, 2.0, 3.0]) == pytest.approx(50.0)
-
-
-def test_percentile_boundaries():
-    ref = [0.1, 0.2, 0.3, 0.4]
-    assert percentile_of(0.05, ref) == pytest.approx(0.0)
-    assert percentile_of(0.5, ref) == pytest.approx(100.0)
-    # equals the minimum → midrank below 50%
-    assert percentile_of(0.1, ref) == pytest.approx(100.0 * 0.5 / 4)
-    # equals the maximum → midrank above 50%
-    assert percentile_of(0.4, ref) == pytest.approx(100.0 * 3.5 / 4)
-
-
-def test_percentile_monotone_non_decreasing():
-    ref = [0.5, 0.6, 0.7, 0.8, 0.9]
-    vals = [percentile_of(v, ref) for v in (0.55, 0.65, 0.75, 0.85)]
-    assert vals == sorted(vals)
-
-
-def test_percentile_all_tied():
-    """Every reference value equal → any tie lands at exactly 50."""
-    assert percentile_of(0.7, [0.7] * 5) == pytest.approx(50.0)
-    # strictly below / above a fully-tied reference
-    assert percentile_of(0.69, [0.7] * 5) == pytest.approx(0.0)
-    assert percentile_of(0.71, [0.7] * 5) == pytest.approx(100.0)
-
-
-def test_percentile_empty_reference_raises():
-    with pytest.raises(ValueError):
-        percentile_of(0.5, [])
-
-
-def test_percentile_nonfinite_value_raises():
-    with pytest.raises(ValueError):
-        percentile_of(float("nan"), [0.1, 0.2])
-    with pytest.raises(ValueError):
-        percentile_of(float("inf"), [0.1, 0.2])
-
-
-# --- composite_gate_decision -----------------------------------------------------
+# --- composite_gate_decision (3-arm) ---------------------------------------------
 
 
 def _thresholds(**kw) -> CompositeGateThresholds:
-    base = dict(percentile_min=85.0, margin_min=0.02, raw_floor=0.80)
+    base = dict(virt_hi=0.85, bm25_mid=22.0, virt_mid=0.845)
     base.update(kw)
     return CompositeGateThresholds(**base)
 
 
 def _decision(**kw) -> CompositeVerdict:
     base = dict(
-        bm25_top=5.0,                 # weak (threshold 32.0 below)
+        bm25_top=5.0,                 # weak (threshold 32.0 above)
         bm25_threshold=32.0,
-        virt_top1=0.95,
-        virt_median=0.70,
-        raw_top1=0.86,
-        reference=[0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.82, 0.84, 0.86, 0.88],
+        virt_top1=0.90,
+        reference_available=True,
         thresholds=_thresholds(),
         pool_size=10,
     )
@@ -96,52 +60,120 @@ def _decision(**kw) -> CompositeVerdict:
     return composite_gate_decision(**base)
 
 
+# arm 1 — bm25_strong -----------------------------------------------------------
+
+
 def test_bm25_strong_accepts_even_without_reference():
-    v = _decision(bm25_top=40.0, reference=None)
+    v = _decision(bm25_top=40.0, reference_available=False)
     assert v.accepted is True
     assert v.signal == "bm25_strong"
     assert v.reason is None
 
 
-def test_semantic_composite_accept():
-    # virt_top1=0.95 sits above the 85th percentile of the reference;
-    # margin 0.25 >= 0.02; raw 0.86 >= 0.80 → all three axes pass.
+def test_bm25_strong_at_threshold_accepts():
+    # >= semantics: bm25_top exactly at ambient_bm25_min_score passes.
+    v = _decision(bm25_top=32.0)
+    assert v.accepted is True
+    assert v.signal == "bm25_strong"
+
+
+def test_pool_too_small_does_not_override_bm25_strong():
+    v = _decision(bm25_top=40.0, pool_size=1)
+    assert v.accepted is True
+    assert v.signal == "bm25_strong"
+
+
+# arm 2 — virt_hi ---------------------------------------------------------------
+
+
+def test_virt_hi_arm_accepts_with_weak_bm25():
+    # virt_top1=0.90 >= 0.85 clears the semantic-only arm; bm25 stays weak.
     v = _decision()
     assert v.accepted is True
-    assert v.signal == "semantic_composite"
+    assert v.signal == "virt_hi"
     assert v.reason is None
-    assert v.virt_percentile == pytest.approx(100.0)
-    assert v.margin == pytest.approx(0.25)
-    assert v.raw_top1 == pytest.approx(0.86)
+    assert v.virt_top1 == pytest.approx(0.90)
+    assert v.bm25_top == pytest.approx(5.0)
 
 
-def test_semantic_reject_below_percentile():
-    # virt_top1 inside the reference band → percentile below 85 → reject.
-    v = _decision(virt_top1=0.78, virt_median=0.70)
+def test_virt_hi_boundary_accepts():
+    # >= semantics: virt_top1 exactly at virt_hi passes.
+    v = _decision(virt_top1=0.85)
+    assert v.accepted is True
+    assert v.signal == "virt_hi"
+
+
+def test_virt_hi_just_below_rejects_when_arm3_dead():
+    # 0.8499 < virt_hi AND bm25 5.0 < bm25_mid → both semantic arms miss.
+    v = _decision(virt_top1=0.8499)
     assert v.accepted is False
     assert v.signal == "composite_reject"
     assert v.reason == "composite_reject"
-    assert v.virt_percentile is not None and v.virt_percentile < 85.0
 
 
-def test_semantic_reject_flat_margin():
-    # penguin-profile shape: high top-1 but flat pool → margin below floor.
-    v = _decision(virt_top1=0.84, virt_median=0.835)
-    assert v.accepted is False
-    assert v.reason == "composite_reject"
-    assert v.margin == pytest.approx(0.005)
-
-
-def test_semantic_reject_raw_below_floor():
-    v = _decision(raw_top1=0.75)
-    assert v.accepted is False
-    assert v.reason == "composite_reject"
-
-
-def test_margin_exactly_at_threshold_accepts():
-    # >= semantics: margin exactly margin_min passes (with other axes clear).
-    v = _decision(virt_top1=0.90, virt_median=0.88, thresholds=_thresholds(margin_min=0.02))
+def test_bm25_unusable_still_allows_virt_hi():
+    # bm25_top None (gate index absent) → arm1/arm3 cannot fire, but the
+    # semantic-only arm decides on its own — not a reject.
+    v = _decision(bm25_top=None)
     assert v.accepted is True
+    assert v.signal == "virt_hi"
+
+
+# arm 3 — bm25_virt_mid ---------------------------------------------------------
+
+
+def test_bm25_virt_mid_arm_accepts():
+    # virt below virt_hi but at/above virt_mid, bm25 mid-strong but below
+    # the bm25_strong threshold → the conjunction arm fires.
+    v = _decision(bm25_top=25.0, virt_top1=0.846)
+    assert v.accepted is True
+    assert v.signal == "bm25_virt_mid"
+    assert v.reason is None
+
+
+def test_bm25_virt_mid_boundaries_accept():
+    # >= semantics on BOTH axes of the conjunction.
+    v = _decision(bm25_top=22.0, virt_top1=0.845)
+    assert v.accepted is True
+    assert v.signal == "bm25_virt_mid"
+
+
+def test_bm25_virt_mid_requires_both_axes():
+    # bm25 just below bm25_mid → conjunction fails even with virt mid-band.
+    v = _decision(bm25_top=21.9, virt_top1=0.846)
+    assert v.accepted is False
+    assert v.reason == "composite_reject"
+    # virt just below virt_mid → conjunction fails even with bm25 mid-strong.
+    v = _decision(bm25_top=25.0, virt_top1=0.8449)
+    assert v.accepted is False
+    assert v.reason == "composite_reject"
+
+
+def test_virt_hi_takes_precedence_over_mid_arm():
+    # both semantic arms fire → the stronger semantic-only arm is reported.
+    v = _decision(bm25_top=25.0, virt_top1=0.90)
+    assert v.accepted is True
+    assert v.signal == "virt_hi"
+
+
+def test_bm25_missing_blocks_arm3_but_not_reject_overall():
+    # bm25 None + virt below virt_hi → arm3 cannot verify bm25_mid → reject
+    # (a missing axis never clears a threshold).
+    v = _decision(bm25_top=None, virt_top1=0.846)
+    assert v.accepted is False
+    assert v.reason == "composite_reject"
+
+
+# reject reasons (edge-case contract) --------------------------------------------
+
+
+def test_reference_unavailable_rejects_semantic_arms():
+    # fail-closed: no usable reference artifact → BM25 is the only accept
+    # path, even for a virt_top1 that would clear virt_hi.
+    v = _decision(reference_available=False, virt_top1=0.95)
+    assert v.accepted is False
+    assert v.signal == "composite_reference_unavailable"
+    assert v.reason == "composite_reference_unavailable"
 
 
 def test_pool_too_small_rejects():
@@ -151,32 +183,12 @@ def test_pool_too_small_rejects():
     assert v.reason == "composite_pool_too_small"
 
 
-def test_pool_too_small_does_not_override_bm25_strong():
-    v = _decision(bm25_top=40.0, pool_size=1)
-    assert v.accepted is True
-    assert v.signal == "bm25_strong"
-
-
-def test_missing_raw_axis_rejects():
-    v = _decision(raw_top1=None)
+def test_missing_virt_axis_rejects():
+    v = _decision(virt_top1=None)
     assert v.accepted is False
     assert v.signal == "composite_reject"
     assert v.reason == "composite_reject"
-    assert "raw" in (v.detail or "")
-
-
-def test_reference_unavailable_rejects_semantic_arm():
-    # fail-closed: no reference → BM25 is the only accept path.
-    v = _decision(reference=None)
-    assert v.accepted is False
-    assert v.signal == "composite_reference_unavailable"
-    assert v.reason == "composite_reference_unavailable"
-
-
-def test_empty_reference_is_unavailable():
-    v = _decision(reference=[])
-    assert v.accepted is False
-    assert v.reason == "composite_reference_unavailable"
+    assert "virtual" in (v.detail or "")
 
 
 def test_nonfinite_inputs_reject():
@@ -184,25 +196,27 @@ def test_nonfinite_inputs_reject():
     assert v.accepted is False and v.reason == "composite_reject"
     v = _decision(bm25_top=float("inf"))
     assert v.accepted is False and v.reason == "composite_reject"
-    v = _decision(raw_top1=float("-inf"))
+    v = _decision(thresholds=_thresholds(virt_hi=float("nan")))
     assert v.accepted is False and v.reason == "composite_reject"
-    v = _decision(thresholds=_thresholds(percentile_min=float("nan")))
+    v = _decision(thresholds=_thresholds(bm25_mid=float("-inf")))
     assert v.accepted is False and v.reason == "composite_reject"
-
-
-def test_bm25_unusable_falls_to_semantic_arm():
-    # bm25_top None (gate index absent) → semantic arm decides, not a reject.
-    v = _decision(bm25_top=None)
-    assert v.accepted is True
-    assert v.signal == "semantic_composite"
+    v = _decision(thresholds=_thresholds(virt_mid=float("nan")))
+    assert v.accepted is False and v.reason == "composite_reject"
+    v = _decision(bm25_threshold=float("nan"))
+    assert v.accepted is False and v.reason == "composite_reject"
 
 
 def test_diagnostics_axes_populated_on_reject():
-    # margin / percentile still surface for triage on a semantic reject.
-    v = _decision(virt_top1=0.78, virt_median=0.70)
-    assert v.virt_percentile is not None
-    assert v.margin == pytest.approx(0.08)
-    assert v.raw_top1 == pytest.approx(0.86)
+    # virt/bm25 echoes still surface for triage on a semantic reject.
+    v = _decision(virt_top1=0.8499)
+    assert v.virt_top1 == pytest.approx(0.8499)
+    assert v.bm25_top == pytest.approx(5.0)
+
+
+def test_verdict_is_immutable():
+    v = _decision()
+    with pytest.raises(Exception):
+        v.accepted = False  # type: ignore[misc]
 
 
 # --- compute_corpus_digest -------------------------------------------------------
@@ -246,9 +260,9 @@ def _payload(**kw) -> dict:
         virt_top1_distribution=[0.70, 0.72, 0.75, 0.78, 0.81],
         thresholds={
             "ambient_bm25_min_score": 32.0,
-            "ambient_semantic_percentile_min": 85.0,
-            "ambient_margin_min": 0.02,
-            "ambient_raw_floor_composite": 0.80,
+            "ambient_composite_virt_hi": 0.85,
+            "ambient_composite_bm25_mid": 22.0,
+            "ambient_composite_virt_mid": 0.845,
         },
         provenance={"script": "tests"},
     )
@@ -265,8 +279,20 @@ def test_artifact_build_load_roundtrip(tmp_path):
     assert ref.corpus_digest == "0" * 64
     assert ref.active_count == 20
     assert ref.virt_top1_distribution == [0.70, 0.72, 0.75, 0.78, 0.81]
-    assert ref.thresholds_echo["ambient_margin_min"] == 0.02
+    assert ref.thresholds_echo["ambient_composite_virt_hi"] == 0.85
+    assert ref.thresholds_echo["ambient_composite_virt_mid"] == 0.845
     assert ref.schema_version == COMPOSITE_ARTIFACT_SCHEMA_VERSION
+
+
+def test_artifact_missing_3arm_threshold_echo_raises(tmp_path):
+    """thresholds echo は 3-arm key 一式を要求 — v2 旧 schema (percentile /
+    margin / raw_floor echo) の artifact は load 時点で fail-closed。"""
+    payload = _payload()
+    del payload["thresholds"]["ambient_composite_virt_mid"]
+    path = tmp_path / "old_echo.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(CompositeReferenceError):
+        load_composite_reference(path)
 
 
 def test_artifact_missing_file_raises(tmp_path):
@@ -339,15 +365,3 @@ def test_artifact_format_constant():
     # The format tag is part of the schema contract — a rename would orphan
     # every production artifact, so pin it.
     assert COMPOSITE_ARTIFACT_FORMAT == "gaottt-ambient-composite-reference"
-
-
-def test_verdict_is_immutable():
-    v = _decision()
-    with pytest.raises(Exception):
-        v.accepted = False  # type: ignore[misc]
-
-
-def test_percentile_matches_math_isfinite_guard():
-    # sanity: percentile_of never emits NaN for finite inputs
-    v = percentile_of(0.5, [0.4, 0.5, 0.6])
-    assert math.isfinite(v)

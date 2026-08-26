@@ -511,25 +511,24 @@ class AmbientGateDiagnostics(BaseModel):
     bm25_gate: bool | None = None     # True/False/None (None = gate index unusable)
     semantic_max_virtual: float | None = None
     semantic_max_raw: float | None = None
-    # Phase U WP-3 — composite gate axes (mode="composite" のみ populated)。
-    # raw 軸は ``expose_score_breakdown`` に非依存 (ambient_recall が自前の
-    # raw FAISS 検索で算出) — breakdown が off でもこれらは埋まる。
-    # ``virt_percentile`` は参照分布 (較正 artifact) に対する [0,100] の
-    # empirical percentile、``margin`` は pool top-1 virtual − pool virtual
-    # median、``raw_top1`` は engine 自身の raw FAISS top-1 cosine。
-    # ``composite_signal`` は accept ("bm25_strong" / "semantic_composite")
-    # または拒否理由 ("composite_reject" / "composite_pool_too_small" /
-    # "composite_reference_unavailable")。mode="or" では全て None のまま。
-    virt_percentile: float | None = None
-    margin: float | None = None
-    raw_top1: float | None = None
+    # Phase U §10 R3 follow-up — composite gate axes (mode="composite" のみ
+    # populated)。3-arm 判定の入力軸の echo: ``virt_top1`` は pool top-1
+    # virtual cosine (item.raw_score — 常に populate、breakdown 非依存)、
+    # ``bm25_top`` は ambient gate index の top BM25 score。判定は参照分布の
+    # 値を使わない (artifact は fail-closed/provenance 専用)。
+    # ``composite_signal`` は発火 arm ("bm25_strong" / "virt_hi" /
+    # "bm25_virt_mid") または拒否理由 ("composite_reject" /
+    # "composite_pool_too_small" / "composite_reference_unavailable")。
+    # mode="or" では全て None のまま。
+    virt_top1: float | None = None
+    bm25_top: float | None = None
     composite_signal: str | None = None
     # discrete, unique empty reason — None means the response is not empty.
     # "bm25_veto" (legacy flag off, bm25 reject → immediate empty) /
     # "bm25_and_semantic_below_threshold" / "no_candidates" (recall 0 件) /
     # "all_tag_excluded" / "all_dump_filtered" /
-    # Phase U WP-3 (mode="composite"): "composite_reject" (semantic 軸 未達) /
-    # "composite_pool_too_small" (pool < 2 で margin 未定義) /
+    # Phase U (mode="composite"): "composite_reject" (3-arm 全て閾値未達) /
+    # "composite_pool_too_small" (pool < 2 — pool 統計を信頼しない契約) /
     # "composite_reference_unavailable" (参照 artifact 欠損・破損・
     # fingerprint 不一致・count drift 超過 — fail-closed)。
     empty_reason: str | None = None

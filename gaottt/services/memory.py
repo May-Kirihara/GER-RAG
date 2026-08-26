@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import random
 import re
-import statistics
 import time
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -1028,10 +1027,12 @@ def _bm25_gate(engine: GaOTTTEngine, query: str) -> bool | None:
     return top >= engine.config.ambient_bm25_min_score
 
 
-# --- Phase U WP-3 — ambient composite gate (runtime glue) ----------------------
-# 純関数 (判定・percentile・digest・artifact loader) は services.ambient_composite。
-# ここは engine を扱う runtime 部分: raw FAISS 軸の自前計算と、参照 artifact の
-# lazy load + fingerprint 検証 + per-engine cache。
+# --- Phase U §10 R3 follow-up — ambient composite gate (runtime glue) -----------
+# 純関数 (3-arm 判定・digest・artifact loader) は services.ambient_composite。
+# ここは engine を扱う runtime 部分: 参照 artifact の lazy load +
+# fingerprint 検証 + per-engine cache。判定軸 (virt_top1 / bm25_top) は
+# ambient_recall が既に計算している値のみ — per-call の追加検索は無い
+# (旧 raw-floor arm 専用の自前 raw FAISS 検索は 3-arm 化で削除した)。
 
 @dataclass
 class _CompositeValidatedState:
@@ -1048,22 +1049,6 @@ class _CompositeValidatedState:
 
 
 _COMPOSITE_STATE_ATTR = "_ambient_composite_state"
-
-
-def _composite_raw_top1(engine: GaOTTTEngine, query: str) -> float | None:
-    """Breakdown 非依存の raw cosine 軸 — engine 自身の raw FAISS 検索。
-
-    Phase T の「raw 軸は breakdown populate 時のみ存在する」制約を回避する
-    ため、composite gate は ``expose_score_breakdown`` とは無関係に自前で
-    top-1 raw cosine を計算する (WP-3 契約)。空 index / 空ヒットは None
-    (決定関数が reject する)。追加 1 回の ``encode_query`` は許容コスト
-    (embedder 側 cache があればさらに安い)。
-    """
-    if engine.faiss_index.size == 0:
-        return None
-    vec = engine.embedder.encode_query(query)
-    hits = engine.faiss_index.search(vec, 1)
-    return hits[0][1] if hits else None
 
 
 def _count_drift_exceeds(current: int, reference_count: int, max_drift: float) -> bool:
@@ -1161,42 +1146,37 @@ async def _composite_reference_for(
 
 async def _composite_gate_eval(
     engine: GaOTTTEngine,
-    query: str,
     diag: AmbientGateDiagnostics,
-    items: list[MemoryItem],
     virt_top1: float | None,
     bm25_top: float | None,
+    pool_size: int,
 ) -> CompositeVerdict:
-    """ambient_recall の composite 分岐 (mode="composite" 専用)。
+    """ambient_recall の composite 分岐 (mode="composite" 専用、3-arm)。
 
-    axes は全て ``expose_score_breakdown`` 非依存: virtual 軸は
-    ``item.raw_score`` (常に populate)、raw 軸は ``_composite_raw_top1``
-    (自前 FAISS 検索)、参照分布は ``_composite_reference_for``。判定は
-    gate decision (純関数) に委任し、結果の axes を diagnostics に書き戻す。
+    判定軸は ambient_recall が既に計算した値のみ — ``virt_top1`` は pool
+    top-1 の ``item.raw_score`` (常に populate)、``bm25_top`` は gate index
+    の top score。``expose_score_breakdown`` 非依存は構成上保証 (旧
+    raw-floor arm 用の自前 raw FAISS 検索は削除済み)。参照分布は判定に
+    使わないが、fail-closed 契約のため artifact が有効な場合のみ semantic
+    arm を評価する (``_composite_reference_for``)。判定は gate decision
+    (純関数) に委任し、結果の軸を diagnostics に書き戻す。
     """
     cfg = engine.config
-    virt_median = (
-        statistics.median([it.raw_score for it in items]) if items else None
-    )
-    raw_top1 = _composite_raw_top1(engine, query)
     reference, _ref_count, _detail = await _composite_reference_for(engine)
     verdict = composite_gate_decision(
         bm25_top=bm25_top,
         bm25_threshold=cfg.ambient_bm25_min_score,
         virt_top1=virt_top1,
-        virt_median=virt_median,
-        raw_top1=raw_top1,
-        reference=reference,
+        reference_available=reference is not None,
         thresholds=CompositeGateThresholds(
-            percentile_min=cfg.ambient_semantic_percentile_min,
-            margin_min=cfg.ambient_margin_min,
-            raw_floor=cfg.ambient_raw_floor_composite,
+            virt_hi=cfg.ambient_composite_virt_hi,
+            bm25_mid=cfg.ambient_composite_bm25_mid,
+            virt_mid=cfg.ambient_composite_virt_mid,
         ),
-        pool_size=len(items),
+        pool_size=pool_size,
     )
-    diag.virt_percentile = verdict.virt_percentile
-    diag.margin = verdict.margin
-    diag.raw_top1 = verdict.raw_top1
+    diag.virt_top1 = verdict.virt_top1
+    diag.bm25_top = verdict.bm25_top
     diag.composite_signal = verdict.signal
     return verdict
 
@@ -1265,7 +1245,7 @@ async def ambient_recall(
         else bm25_top >= cfg.ambient_bm25_min_score
     )
     diag = AmbientGateDiagnostics(bm25_top_score=bm25_top, bm25_gate=bm25_ok)
-    # Phase U WP-3 — mode="composite" は gate semantics を差し替える
+    # Phase U §10 R3 follow-up — mode="composite" は gate semantics を差し替える
     # (``ambient_gate_or_semantic`` より優先)。composite 判定は pool 統計を
     # 必要とするため BM25 reject による早期 veto は発動しない。
     composite_mode = cfg.ambient_gate_mode == "composite"
@@ -1334,14 +1314,14 @@ async def ambient_recall(
     )
 
     if composite_mode:
-        # Phase U WP-3 — composite gate. accept = bm25_strong OR
-        # (virt_percentile >= p_min AND margin >= m_min AND raw_top1 >=
-        # raw_floor)。全軸が breakdown 非依存 (契約は
-        # ``_composite_gate_eval`` docstring 参照)。reject は slot 構成の
-        # 前に return — persona/lensing が direct reject を反転させない
-        # 構造的 fence。
+        # Phase U §10 R3 follow-up — 3-arm composite gate. accept =
+        # bm25_strong OR (virt_top1 >= virt_hi) OR (bm25_top >= bm25_mid
+        # AND virt_top1 >= virt_mid)。軸は breakdown 非依存 (virt_top1 =
+        # pool top-1 の raw_score、bm25_top = gate index)。reject は slot
+        # 構成の前に return — persona/lensing が direct reject を反転
+        # させない構造的 fence。
         verdict = await _composite_gate_eval(
-            engine, query, diag, items, virt_max, bm25_top,
+            engine, diag, virt_max, bm25_top, len(items),
         )
         if not verdict.accepted:
             diag.empty_reason = verdict.reason

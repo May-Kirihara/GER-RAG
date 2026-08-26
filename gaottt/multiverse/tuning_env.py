@@ -66,15 +66,15 @@ RUNTIME_TUNING_ENV_ALLOWLIST: frozenset[str] = frozenset({
     "GAOTTT_AMBIENT_BM25_MIN_SCORE",
     "GAOTTT_AMBIENT_MIN_SCORE",
     "GAOTTT_AMBIENT_GATE_USE_BM25",
-    # Phase U WP-3 — ambient composite gate (WP-8 で追加)。しきい値系 4 件
-    # は tuning 対象。GAOTTT_AMBIENT_COMPOSITE_REFERENCE_FILENAME は **意図
-    # 的に含めない** — 参照 artifact の置き場所は deployment の構造選択
-    # (universe data_dir と紐づく) なので env 経由の runtime 変更は想定せ
-    # ず、config-file only とする。
+    # Phase U §10 R3 follow-up — ambient composite gate 3-arm。しきい値系
+    # 4 件は tuning 対象。GAOTTT_AMBIENT_COMPOSITE_REFERENCE_FILENAME は
+    # **意図的に含めない** — 参照 artifact の置き場所は deployment の構造
+    # 選択 (universe data_dir と紐づく) なので env 経由の runtime 変更は
+    # 想定せず、config-file only とする。
     "GAOTTT_AMBIENT_GATE_MODE",
-    "GAOTTT_AMBIENT_SEMANTIC_PERCENTILE_MIN",
-    "GAOTTT_AMBIENT_MARGIN_MIN",
-    "GAOTTT_AMBIENT_RAW_FLOOR_COMPOSITE",
+    "GAOTTT_AMBIENT_COMPOSITE_VIRT_HI",
+    "GAOTTT_AMBIENT_COMPOSITE_BM25_MID",
+    "GAOTTT_AMBIENT_COMPOSITE_VIRT_MID",
     "GAOTTT_AMBIENT_COMPOSITE_COUNT_DRIFT_MAX",
     # Phase U WP-6b/6c/6d — staged readiness / BM25 background build /
     # snapshot (R5 cold-start 対策の rollback 経路)

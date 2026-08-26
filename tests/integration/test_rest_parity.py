@@ -360,19 +360,19 @@ async def test_ambient_recall_gate_diagnostics_roundtrip(rest_client):
     assert diag["direct_selected"] == len(body["direct"])
     assert diag["empty_reason"] is None
     assert body["expose_breakdown"] is False
-    # Phase U WP-3 — composite axes exist on the wire (None in "or" mode)
-    assert diag["virt_percentile"] is None
-    assert diag["margin"] is None
-    assert diag["raw_top1"] is None
+    # Phase U §10 R3 follow-up — 3-arm composite axes exist on the wire
+    # (None in "or" mode)
+    assert diag["virt_top1"] is None
+    assert diag["bm25_top"] is None
     assert diag["composite_signal"] is None
 
 
-# ---------- ambient composite gate diagnostics (Phase U WP-3) ----------
+# ---------- ambient composite gate diagnostics (Phase U §10 R3 follow-up) ----------
 
 async def test_ambient_composite_gate_diagnostics_rest_roundtrip(tmp_path, monkeypatch):
-    """mode="composite": the four new ``gate_diagnostics`` fields must
+    """mode="composite": the composite ``gate_diagnostics`` fields must
     round-trip through POST /ambient_recall with real values on both an
-    accepted (semantic_composite) and a rejected (composite_reject) call.
+    accepted (virt_hi arm) and a rejected (composite_reject) call.
     Reuses the crafted corpus/artifact fixture from the composite gate
     integration tests (backbone-band corpus + live-fingerprint artifact)."""
     from tests.integration.test_ambient_composite_gate import (
@@ -383,6 +383,7 @@ async def test_ambient_composite_gate_diagnostics_rest_roundtrip(tmp_path, monke
         _write_valid_artifact,
         N_FLAT_QUERY,
         P_QUERY,
+        VIRT_HI,
     )
 
     eng = _make_engine(tmp_path / "composite")
@@ -403,11 +404,10 @@ async def test_ambient_composite_gate_diagnostics_rest_roundtrip(tmp_path, monke
             body = accepted.json()
             assert body["count"] >= 1
             diag = body["gate_diagnostics"]
-            assert diag["composite_signal"] == "semantic_composite"
+            assert diag["composite_signal"] == "virt_hi"
             assert diag["empty_reason"] is None
-            assert diag["virt_percentile"] >= 85.0
-            assert diag["margin"] >= 0.05
-            assert diag["raw_top1"] >= 0.80
+            assert diag["virt_top1"] >= VIRT_HI
+            assert diag["bm25_top"] == WEAK_BM25
 
             rejected = await client.post(
                 "/ambient_recall", json={"query": N_FLAT_QUERY, "direct_k": 2},
@@ -418,7 +418,7 @@ async def test_ambient_composite_gate_diagnostics_rest_roundtrip(tmp_path, monke
             rdiag = rbody["gate_diagnostics"]
             assert rdiag["composite_signal"] == "composite_reject"
             assert rdiag["empty_reason"] == "composite_reject"
-            assert rdiag["raw_top1"] is not None  # triage axes survive the reject
+            assert rdiag["virt_top1"] is not None  # triage axes survive the reject
     finally:
         await eng.shutdown()
 

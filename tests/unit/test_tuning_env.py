@@ -91,12 +91,13 @@ def test_expected_knobs_are_in_allowlist():
         "GAOTTT_AMBIENT_BM25_MIN_SCORE",
         "GAOTTT_AMBIENT_MIN_SCORE",
         "GAOTTT_AMBIENT_GATE_USE_BM25",
-        # Phase U WP-3 — ambient composite gate (reference filename は
-        # deployment 構造選択なので allowlist 外 = config-file only)
+        # Phase U §10 R3 follow-up — ambient composite gate 3-arm
+        # (reference filename は deployment 構造選択なので allowlist 外 =
+        # config-file only)
         "GAOTTT_AMBIENT_GATE_MODE",
-        "GAOTTT_AMBIENT_SEMANTIC_PERCENTILE_MIN",
-        "GAOTTT_AMBIENT_MARGIN_MIN",
-        "GAOTTT_AMBIENT_RAW_FLOOR_COMPOSITE",
+        "GAOTTT_AMBIENT_COMPOSITE_VIRT_HI",
+        "GAOTTT_AMBIENT_COMPOSITE_BM25_MID",
+        "GAOTTT_AMBIENT_COMPOSITE_VIRT_MID",
         "GAOTTT_AMBIENT_COMPOSITE_COUNT_DRIFT_MAX",
         # Phase U WP-6b/6c/6d (staged readiness / BM25 build / snapshot)
         "GAOTTT_READINESS_PROTOCOL_ENABLED",
