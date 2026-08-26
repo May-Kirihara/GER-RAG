@@ -2,7 +2,7 @@
 
 ## ステータス
 
-- 状態: **implemented + production rollout 検証済み + final review (WP-8) 3 blocker 解消 — R3 のみ user 判断待ち (partial)**
+- 状態: **implemented + production rollout 検証済み + final review (WP-8) 3 blocker 解消。R3 は user 指示① (3-arm 再較正) を実施し v3 新規 probe で gate 不達 → "or" 維持確定・既知制約として close (§10 追記参照、done-with-notes)**
 - 日付: 2026-08-26
 - 起点レビュー: [2026-08-25-post-recovery-retrieval-quality.md](2026-08-25-post-recovery-retrieval-quality.md) §改善実装後の実MCP再検証 (490 行以降、Codex 実測)
 - 最終レビュー: Codex final review (verdict reject → WP-8 で 3 blocking + 2 non-blocking 対応、下記「WP-8 — final review fixes」節)
@@ -24,6 +24,7 @@
 | 6d | BM25 snapshot 永続化 — `data_dir/bm25.snapshot` (checksum + **trusted-file policy**、tmp write (0o600) → fsync → atomic rename → dir fsync)。fingerprint = content digest (sorted (id, sha256(content)) の sha256) + tokenizer identity + k1/b + format version + universe id。一致 → build skip、不一致 → rebuild。保存は build 完了時と graceful shutdown 時のみ。初回本番 boot 390MB。**unpickle 前に所有権・権限検査 (WP-8): checksum は偶然の破損検出のみ、真正性は euid 一致 + group/world-writable 拒否 (data_dir 含む) で担保** | **True** | `GAOTTT_BM25_SNAPSHOT_ENABLED=0` (毎回 build) |
 | 7 | docs 一式 (Tuning / Troubleshooting / MCP-Reference ×2 / REST / Architecture / Roadmap / Sidebar / CLAUDE.md / SKILL.md / 本 handoff) + production backend restart + 固定 probe set 実行 | — | — |
 | 8 | **final review fixes (Codex reject 3 blocker + 2 alignment)** — (1) proxy shim `/route` timeout を 3 config bound から derive した `PROXY_ROUTE_TIMEOUT_SECONDS=230s` に拡大 (embedder lazy-spawn readiness 90s + backend spawn probe 90s + engine readiness poll 35s + transport margin 15s。round-2 review で旧 130s (=90+35+margin、embedder 段を見落とし) から改訂 — 定数は `dataclasses.fields` 経由で定義 site から導出し硬結合を排除、auto-spawn 経路は supervisor 起動 poll と /route を別 budget に分離。`tests/unit/test_proxy_route_timeout.py` が fence)、(2) `readiness_protocol_enabled=False` で `/admin/readiness` route 自体を登録しない (= 404 → supervisor 即時 legacy、35s poll 退化解消)、(3) BM25 snapshot unpickle 前 trusted-file policy + snapshot write の dir fsync + tmp file の `fchmod(0o600)` 強制 (round-2: umask で owner bit が削られる環境対策)、(4) allowlist に composite 5 knob 追加 (23→28) + `GAOTTT_AMBIENT_GATE_MODE` enum 検査、(5) 本 handoff の記述整合 (SKILL.md 済み・known issue 解消) | (常時有効) | — (各機構の既存 rollback env 変更なし) |
+| 9 | **R3 follow-up (§10、user 指示①)** — composite 判定を 3-arm (`bm25_strong OR virt≥virt_hi OR (bm25≥bm25_mid ∧ virt≥virt_mid)`) に置換 (旧 percentile/margin/raw 軸と 3 knob は廃止、diagnostics は `virt_top1`/`bm25_top` に、gate 行 segment は `virt=/bm25=/sig=` に、per-call の raw FAISS 検索を削除し純改善)。較正 script に 3-arm grid + **BM25 background build 完了待ち** (v3 run 1 が空窓計測で VOID になった欠陥を修理、`diag_target_trace.py` にも同 wait)。新規 probe v3 (16/14) で再較正 → **held-out FP=14.3% で gate 不達 → `"or"` 維持確定・R3 close**。3-arm は opt-in 実験機構として残存 (knob 暫定値は未検証と明記) | `"or"` (不変) | — (composite は未昇格のため無効) |
 
 ## 変更理由 (review 5 課題との対応)
 
@@ -31,7 +32,7 @@
 |---|---|---|---|
 | R1 (P0) | Stage 3/4 qualification が production で無効 — multiverse supervisor が `GAOTTT_*` env を strip するため env opt-in が届かない。breakdown に `q/d/f/gap` なし | WP-1 (code default 昇格) + WP-2 (allowlist で rollback 経路を確保) | 解消 — production breakdown に `q/d/f/gap` 表示 (probe 2 PASS) |
 | R2 (P1) | explore diversity が結果に反映されない (Stage 6 も default OFF + env 不達)。active explore で低関連 node に mass/displacement 更新 | WP-5 (MMR 昇格) + WP-1 (ttt qualification で低関連 TTT 更新保護) | 解消 — Jaccard@5 < 1.0 (probe 3 PASS) |
-| R3 (P0) | ambient OR gate が off-topic を通す (ペンギン潜水艇 query が gate passed、RURI cosine が狭帯 0.8 前後に集中し絶対閾値で拒否できない) | WP-3 (composite gate + 較正) | **未解決 — 事前登録 gate を満たさず "or" 維持、user 判断待ち** (probe 5 FAIL as known) |
+| R3 (P0) | ambient OR gate が off-topic を通す (ペンギン潜水艇 query が gate passed、RURI cosine が狭帯 0.8 前後に集中し絶対閾値で拒否できない) | WP-3 + §10 R3 follow-up (単一 arm → 3-arm、2 度の較正) | **close (既知制約)** — v2/v3 とも gate 不達。corpus 隣接 absent topic (中世写本の顔料: bm25 20.09/virt 0.8794) が positive 領域内部に位置し bm25/virt 2 軸では分離不能。再挑戦は別判別軸 (LLM relevance 等) 待ち |
 | R4 (P1) | 既知障害 node `de1b528f` が近同語彙 query で top-5 外 | WP-4/4b (trace + raw-top rescue) | 解消 — top-1 到達 (probe 6 PASS) |
 | R5 (P0) | cold start 129s — 最初の `reflect(summary)` が約 129 秒 | WP-6a-d (計装 → readiness + background build + snapshot) | 解消 — cold SEMANTIC_READY **7.3s**、warm 再利用 (probe 1 PASS) |
 
@@ -99,14 +100,14 @@ ruff check gaottt/ tests/
 | 2. recall 設計思想 query (passive, full) | GaOTTT 設計記録が複数 + breakdown に `q/d/f/gap` | ✅ PASS — `q/d/f/gap` default 表示 (WP-1 昇格が multiverse 経由で効いている) |
 | 3. explore diversity=0.8 | probe 2 と完全一致せず、低関連候補を更新しない | ✅ PASS — Jaccard@5 < 1.0、低関連候補への TTT 更新なし (learn set gate) |
 | 4. ambient 障害 query (expose_breakdown) | gate 通過し障害・Phase T 記録を返す | ✅ PASS — gate passed、障害/運用系記録を surface |
-| 5. ambient ペンギン潜水艇 query | `empty_reason` 付きで空返し | ❌ **FAIL (既知・R3)** — `"or"` mode では off-topic が semantic 軸を通過。composite gate は未昇格 (較正が事前登録 gate 未達)。**user 判断待ち** |
+| 5. ambient ペンギン潜水艇 query | `empty_reason` 付きで空返し | ❌ **FAIL (既知・R3 closed)** — `"or"` mode では off-topic が semantic 軸を通過。composite は v2/v3 両較正で gate 不達のため未昇格 (既知制約として close) |
 | 6. recall 近同文 query (passive) | `de1b528f-f95a-46e8-a28d-7a4fbd580806` が top-5 | ✅ PASS — raw-top rescue により **top-1** 到達 (trace 予測どおり) |
 
 **集計: 5/6 PASS、1 FAIL (probe 5 = R3 の既知挙動)**。
 
 ## 既知の問題
 
-1. **R3 未解決 (user 判断待ち)**: ambient `"or"` gate はペンギン系 off-topic を通す。選択肢は (a) 3-arm 構造 (bm25_strong OR virt1≥~0.850 OR (bm25≥~22 ∧ virt1≥~0.845)、post-hoc で FN=1/16・FP=0/14) を plan 改訂の上で再事前登録 → 新規 probe set で再検証 → PASS なら composite 昇格、(b) `"or"` 維持 (probe 5 は未達として記録)。virt1 分布は displacement drift で日々動くため 0.0014 差のような閾値は脆弱、という較正の注意も参照
+1. ~~R3 (user 判断待ち)~~ → **対応済み (2026-08-26 深夜)**: user 指示① により plan §10 で 3-arm を事前登録 → 新規 probe v3 (16/14) で再較正 → **held-out FP=14.3% で gate 不達、`"or"` 維持確定・R3 close**。詳細は較正記録 v3 round + plan §10 結果節。再挑戦には別判別軸が必要 (将来 phase)
 2. ~~flag-OFF 時の `/route` 35s 退化~~ **WP-8 で解消** — `readiness_protocol_enabled=False` では `/admin/readiness` route 自体を登録しない (= 404)。supervisor `_fetch_backend_readiness` は 404 を `READINESS_LEGACY` と読んで即時 legacy 挙動に fallback するため、poll deadline を一切消費しない (`test_route_returns_promptly_against_readiness_disabled_backend` が実 HTTP で fence)
 3. ~~shim 10s vs supervisor 35s~~ **WP-8 + round-2 で解消** — proxy shim の `/route` timeout は完全 cold route の 3 stage (embedder lazy-spawn 90s + backend spawn probe 90s + readiness poll 35s = 215s) を cover するよう config field default から derive された `PROXY_ROUTE_TIMEOUT_SECONDS` (現行 230s = 215s + margin 15s、round-2 review で 130s から改訂)。auto-spawn (`--spawn-supervisor`) 経路も supervisor 起動 poll (`DEFAULT_SUPERVISOR_READINESS_TIMEOUT=200s`、起動専用 budget) と /route 本体 (full 230s) の 2 budget に分離 — 起動に時間が掛かっても /route の timeout が短縮されない。cold client は shim 側で timeout する代わりに deadline 内の `readiness:"starting"` 応答 (または ready 応答) を観測する。`tests/unit/test_proxy_route_timeout.py` が「3 bound の和以上」および「起動後の /route が full bound を使う」ことを fence
 4. **supervisor test slowdown**: readiness 待ちを入れた supervisor 系 test が poll sleep 分遅い (CI 時間増)

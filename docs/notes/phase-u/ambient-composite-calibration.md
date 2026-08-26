@@ -38,3 +38,30 @@ bm25_strong OR (virt1 ≥ ~0.850) OR (bm25 ≥ ~22 ∧ virt1 ≥ ~0.845) の 3-a
 3. LLM 側 (hook caller) での relevance check 等、別設計 (将来)
 
 いずれの場合も composite 実装・較正基盤・fail-closed は本番に乗っており、`ambient_gate_mode=composite` への切替は config 一つ (artifact は `--emit-artifact` で生成済み手順)。
+
+---
+
+# v3 round (2026-08-26 深夜、user 指示 ① により実施)
+
+- plan §10 で 3-arm 構造 (bm25_strong OR virt≥virt_hi OR (bm25≥bm25_mid ∧ virt≥virt_mid)) を事前登録 → R3-impl で実装 (旧 percentile/margin/raw_floor arm は廃止)
+- probe set v3: **新規 16 positive / 14 negative** (v2 と非重複。`ambient-probes-v3.json`)
+- **run 1 (VOID)**: 全 probe `bm25= n/a` — WP-6c の background build 化により較正 script が BM25 構築完了前の空 window で計測していた (測定器欠陥。`wait_for_bm25_ready` を両 script に追加して修理。probe/grid/gate は不変)
+- **run 2 (有効評価): 事前登録 gate FAIL** — held-out **FP=14.3%** (1/7) / FN=0%。grid は FP_cal=0 を達成する最緩角 (0.83/16/0.83) を推奷したが、held-out の「中世の写本に使われた顔料の作り方」が突破。
+
+## 分離不能性の分析 (run 2 実測軸)
+
+| 集団 | bm25_top 範囲 | virt_top1 範囲 |
+|---|---|---|
+| positives (16) | 14.5-34.3 | 0.8315-0.8874 |
+| negatives (14) | 12.6-22.1 | 0.8013-0.8794 |
+
+- **「中世の写本の顔料」(neg): bm25=20.09 / virt=0.8794** — 「復元したデータベースで検索が壊れた」(pos: bm25=20.05 / virt=0.8411) と bm25 軸が **0.04 で交錯**、virt は positive 帯中央より上。arm2 を 0.8794 超えに上げると今度は「夢ループとは何か」(pos: virt 0.8825) との間の **0.003 幅の窓** しか残らない (v2 で警告した脆弱閾値病理)。
+- 結論: **本 corpus (個人記憶 + 技術/創作混合) では、文化・工芸に隣接する absent topic が bm25/virt 両軸で positive 領域内に現れる**。3-arm でも 2 軸特徴空間の分離限界。v2 で 3-arm が分離したのは negative が偶然遠い話題だったため (選択運)。
+
+## 判定 (plan §10 事前登録に従う)
+
+**FAIL → `ambient_gate_mode="or"` 維持を確定、R3 は Phase U の既知制約として close。threshold fishing 不実施。**
+
+- composite mode (3-arm) は opt-in 実装として残存 (将来の再挑戦用機構。default `"or"` 不変)。
+- 再挑戦に必要なのは閾値ではなく**別の判別軸** (例: LLM relevance 判断、corpus topic model による既知トピック集合との一致) — 別 phase の課題。
+- 暫定 default (virt_hi=0.85 / bm25_mid=22.0 / virt_mid=0.845) は**未検証**である旨を Tuning に明記。

@@ -299,9 +299,8 @@ ReDoc: http://localhost:8000/redoc
     "bm25_gate": true,
     "semantic_max_virtual": 0.812,
     "semantic_max_raw": 0.774,
-    "virt_percentile": null,
-    "margin": null,
-    "raw_top1": null,
+    "virt_top1": null,
+    "bm25_top": null,
     "composite_signal": null,
     "empty_reason": null
   },
@@ -309,7 +308,7 @@ ReDoc: http://localhost:8000/redoc
 }
 ```
 
-`empty_reason` は離散一意: `bm25_veto` (legacy flag OFF で BM25 reject 即空) / `bm25_and_semantic_below_threshold` / `no_candidates` / `all_tag_excluded` / `all_dump_filtered`、および **`ambient_gate_mode="composite"` (Phase U WP-3) のときのみ** `composite_reject` (semantic 軸 未達) / `composite_pool_too_small` (pool < 2 で margin 未定義) / `composite_reference_unavailable` (参照 artifact 欠損・破損・fingerprint 不一致・count drift 超過 — **fail-closed**、BM25 のみ accept 経路)。`bm25_gate`/`bm25_top_score` は gate index 利用不可時 `null`、`semantic_max_raw` は breakdown が populate されていない場合 `null` (raw cosine 軸はその場合判定から外れる)。**composite 軸 (Phase U WP-3、`ambient_gate_mode="composite"` で判定した場合のみ populate、それ以外は `null`)**: `virt_percentile` (参照分布に対する [0,100] の empirical percentile) / `margin` (pool top-1 virtual − pool virtual median) / `raw_top1` (ambient_recall 内部の独自 raw FAISS 検索による top-1 cosine、`expose_score_breakdown` 非依存) / `composite_signal` (`bm25_strong` / `semantic_composite` = accept、拒否理由は `empty_reason` と同値)。composite mode は実装済みだが default は `"or"` (昇格 gate を較正が満たさず)。triage 表は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
+`empty_reason` は離散一意: `bm25_veto` (legacy flag OFF で BM25 reject 即空) / `bm25_and_semantic_below_threshold` / `no_candidates` / `all_tag_excluded` / `all_dump_filtered`、および **`ambient_gate_mode="composite"` (Phase U WP-3) のときのみ** `composite_reject` (3-arm すべて未達) / `composite_pool_too_small` (pool < 2) / `composite_reference_unavailable` (参照 artifact 欠損・破損・fingerprint 不一致・count drift 超過 — **fail-closed**、BM25 のみ accept 経路)。`bm25_gate`/`bm25_top_score` は gate index 利用不可時 `null`、`semantic_max_raw` は breakdown が populate されていない場合 `null` (raw cosine 軸はその場合判定から外れる)。**composite 軸 (Phase U WP-3 §10、`ambient_gate_mode="composite"` で判定した場合のみ populate、それ以外は `null`)**: `virt_top1` (pool top-1 virtual cosine) / `bm25_top` (word-BM25 top score) / `composite_signal` (`bm25_strong` / `virt_hi` / `bm25_virt_mid` = accept した arm、拒否理由は `empty_reason` と同値)。composite mode は実装済みだが default は `"or"` (v2/v3 両較正で昇格 gate 不達 — R3 は既知制約として close)。triage 表は [Operations — Troubleshooting](Operations-Troubleshooting.md)。
 
 > **★ Breaking change (2026-05-25, Stage 3)**: `lensing` field は `AmbientMemory | null` → `list[AmbientMemory]` に変更されました。旧 client は `data["lensing"]` を `None`/object として読んでいた箇所を `data["lensing"]` が常に list (空の場合 `[]`) であることに合わせて update してください。Stage 3 以前のロジックを保持したい場合は `config.ambient_lensing_max_k=1` で「1 picks 上限」になり、`data["lensing"][0] if data["lensing"] else None` が旧 shape 等価。
 

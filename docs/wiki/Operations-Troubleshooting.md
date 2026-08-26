@@ -121,7 +121,7 @@ STARTING → FAILED                           (startup task が raise)
 | `no_candidates` | passive recall pool が 0 件 | corpus 側の問題 (DB 空 / FAISS 不整合)。下の「FAISS と SQLite のカウントが合わない」へ |
 | `all_tag_excluded` | 候補はあったが `exclude_tags` で全滅 | `GAOTTT_AMBIENT_EXCLUDE_TAGS` の substring が広すぎないか |
 | `all_dump_filtered` | 候補はあったが dump-shape gate (`ambient_dump_symbol_ratio`) で全滅 | corpus がコード / state-dump 中心でないか、`gate_diagnostics.after_dump_filter` と `after_tag_exclusion` の差分で |
-| `composite_reject` | **Phase U WP-3・`ambient_gate_mode="composite"` のみ**: semantic composite 軸 (percentile / margin / raw) を評価したが閾値未達 | `gate_diagnostics` の `virt_percentile` / `margin` / `raw_top1` と 3 閾値 (`ambient_semantic_percentile_min` / `ambient_margin_min` / `ambient_raw_floor_composite`) の比較。下の「ambient composite gate」節 |
+| `composite_reject` | **Phase U WP-3・`ambient_gate_mode="composite"` のみ**: 3-arm (bm25_strong / virt_hi / bm25∧virt_mid) すべて未達 | `gate_diagnostics` の `virt_top1` / `bm25_top` と 3 閾値 (`ambient_composite_virt_hi` / `ambient_composite_bm25_mid` / `ambient_composite_virt_mid`) の比較。下の「ambient composite gate」節 |
 | `composite_pool_too_small` | composite mode で pool < 2 件 (margin が未定義) | corpus / query 側の候補不足。`candidates_generated` を確認 |
 | `composite_reference_unavailable` | composite mode の参照 artifact が欠損・破損・fingerprint 不一致・count drift 超過 (**fail-closed** — BM25 のみが accept 経路) | 下の「ambient composite gate」節の再較正手順。意図せず出ているなら artifact が消えていないか `data_dir/ambient_composite_reference.json` を確認 |
 
@@ -129,20 +129,20 @@ STARTING → FAILED                           (startup task が raise)
 
 ## ambient composite gate (Phase U WP-3) — off-topic 通過と fail-closed
 
-**背景 (R3)**: RURI cosine は大規模 corpus で 0.70-0.86 の狭帯に集中するため、**絶対閾値では off-topic を拒否できない** (ペンギン潜水艇 query が virt 0.835 / raw 0.805 で gate passed した実測)。Phase U は相対軸 (percentile / margin) を組み合わせた `ambient_gate_mode="composite"` を実装したが、**事前登録昇格 gate (held-out で negative FP=0 かつ positive FN≤10%) を較正が満たさなかった**ため default は `"or"` のまま ([較正記録](../notes/phase-u/ambient-composite-calibration.md) — R3 は user 判断待ち)。
+**背景 (R3)**: RURI cosine は大規模 corpus で 0.70-0.86 の狭帯に集中するため、**絶対閾値では off-topic を拒否できない** (ペンギン潜水艇 query が virt 0.835 / raw 0.805 で gate passed した実測)。Phase U は相対軸 (percentile/margin) 案 → 3-arm 案 (§10 R3 follow-up) と 2 度の較正を実施したが、**いずれも事前登録昇格 gate (held-out で negative FP=0 かつ positive FN≤10%) を満たさなかった**ため default は `"or"` で確定、R3 は既知制約として close ([較正記録](../notes/phase-u/ambient-composite-calibration.md))。根拠: corpus に**文化的・技術的に隣接する absent topic** (例: 中世写本の顔料) が bm25/virt 両軸で positive 領域内部に現れ、2 軸特徴空間では分離不能。再挑戦には別判別軸 (LLM relevance 判断等) が必要。
 
-**composite 判定** (`ambient_gate_mode="composite"` のみ発動):
+**composite 判定** (`ambient_gate_mode="composite"` のみ発動、3-arm):
 
 ```text
 accept = bm25_strong (word-BM25 ≥ ambient_bm25_min_score)
-      OR ( virt_percentile ≥ ambient_semantic_percentile_min    (参照分布に対する [0,100])
-           AND top_margin    ≥ ambient_margin_min               (top-1 virtual − pool virtual median)
-           AND raw_top1      ≥ ambient_raw_floor_composite )    (独自 raw FAISS 検索、breakdown 非依存)
+      OR ( virt_top1  ≥ ambient_composite_virt_hi )                 (arm2: 高い semantic 近接)
+      OR ( bm25_top   ≥ ambient_composite_bm25_mid                  (arm3: 中程度の語彙一致
+           AND virt_top1 ≥ ambient_composite_virt_mid ) )              ∧ 中程度の semantic 近接)
 ```
 
 **fail-closed 契約**: 参照 artifact (`data_dir/ambient_composite_reference.json`) の欠損・破損・fingerprint 不一致 (embedder 変更 / corpus digest 変更)・count drift 超過 (`ambient_composite_count_drift_max=0.05`) のいずれでも **BM25 のみが accept 経路になる** (`empty_reason="composite_reference_unavailable"`)。既知の false-positive 経路である `"or"` への open fallback は **しない** — ambient が沈黙しすぎたら `composite_reference_unavailable` で即座に気づける設計。
 
-**diagnostics**: composite mode で評価した場合、`gate_diagnostics` に `virt_percentile` / `margin` / `raw_top1` / `composite_signal` (accept: `bm25_strong` / `semantic_composite`、reject: `composite_reject` / `composite_pool_too_small` / `composite_reference_unavailable`) が populate される。`expose_breakdown=True` の gate 行は `pct=… margin=… raw=… sig=…` segment が追記される (mode="or" の行は byte-identical)。
+**diagnostics**: composite mode で評価した場合、`gate_diagnostics` に `virt_top1` / `bm25_top` / `composite_signal` (accept: `bm25_strong` / `virt_hi` / `bm25_virt_mid`、reject: `composite_reject` / `composite_pool_too_small` / `composite_reference_unavailable`) が populate される。`expose_breakdown=True` の gate 行は `virt=… bm25=… sig=…` segment が追記される (mode="or" の行は byte-identical)。
 
 **再較正手順** (corpus 大幅変更後 / artifact fingerprint 不一致が続く場合):
 

@@ -187,3 +187,34 @@ high-risk のため並列化なし。iteration budget: test 修正 loop 3 round 
 
 - composite gate の default 昇格は held-out 較正結果で判断 (判断根拠を docs/notes/phase-u/ に残す)。
 - WP-6a の結果が 30s 目標不達成を示す場合のみ user に descope 判断を相談する。
+
+## 10. R3 follow-up — 3-arm composite gate (2026-08-26 承認、user 指示 ①)
+
+user は「3-arm 構造で plan 改訂 → 新規 probe set で再較正 → PASS なら昇格」を選択。**本節は較正実施前の事前登録** である (v2 データを見た後の改訂であり、v3 新規 probe での検証を以て昇格判断する — 選定と検証の分離は v3 が担う)。
+
+### 改訂内容
+
+- composite 判定を 3-arm に置換:
+  ```
+  accept_direct = bm25_strong (≥ ambient_bm25_min_score)
+               OR (virt_top1 ≥ ambient_composite_virt_hi)
+               OR (bm25_top ≥ ambient_composite_bm25_mid AND virt_top1 ≥ ambient_composite_virt_mid)
+  ```
+  - 根拠 (v2 較正, `ambient-composite-calibration.md`): 単一 semantic arm では positives (virt 0.819-0.909) と negatives (0.786-0.848) の重なり帯で incident query (0.8466) が negative 最高値 (0.8480) に僅差で負ける。bm25 と virt の **組合せ** なら分離する (探索的: FN 6.25% / FP 0)。
+  - 旧 percentile/margin/raw_floor arm と knob (`ambient_semantic_percentile_min` / `ambient_margin_min` / `ambient_raw_floor_composite`) は **廃止** (未 release。Phase U commit 直後のため置換でよい)。reference artifact 機構 (fingerprint + count-drift fail-closed) は **維持** — 較正 provenance と corpus drift 検出のため。
+  - 新 knob: `ambient_composite_virt_hi` / `ambient_composite_bm25_mid` / `ambient_composite_virt_mid` (初期値は較正で決定)。
+  - edge case 契約 (pool<2 → `composite_pool_too_small`、artifact 欠損/不一致 → `composite_reference_unavailable` で BM25 のみ accept) は従来どおり。
+- 較正 grid: 3-arm パラメータ空間 (virt_hi × bm25_mid × virt_mid; arm1 閾値は既存 `ambient_bm25_min_score` 固定) を script が探索。決定規約は v2 と同じ (FP_cal=0 → min FN_cal → laxer)。
+
+### 事前登録 gate (v3 新規 probe set で評価)
+
+- **positive ≈16 / negative ≈14、v2 と重複しない query 群** (positives は記憶に実在する障害/運用/設計トピックの言い換えを含む、negatives は「記憶に存在しない話題」操作化を維持)。
+- **昇格条件: held-out FP=0 ∧ FN≤10%** (v2 と同一基準)。
+- PASS の場合: `ambient_gate_mode` default を `"composite"` に昇格 + 較正 artifact を本番 universe data_dir に配置 + 本番 backend 再起動 + **実 MCP probe で (a) ペンギン query 空返し (b) 障害 query 通過 (c) 言い換え query 通過 を確認** (R3 acceptance)。
+- FAIL の場合: `"or"` 維持を確定し、R3 は Phase U の既知制約として close (再挑戦は別 phase)。threshold fishing はしない。
+
+### 結果 (2026-08-26 深夜): FAIL → R3 close
+
+- run 1 は測定器欠陥で VOID (較正 script が BM25 background build 完了前に計測、全 probe `bm25= n/a` — `wait_for_bm25_ready` を追加して修理)
+- run 2 (有効評価): held-out **FP=14.3% / FN=0%** で gate FAIL。「中世の写本の顔料」(absent topic) が bm25 20.09 / virt 0.8794 で positive 領域内部に位置し、**bm25/virt 2 軸では分離不能** (bm25 交錯 0.04、virt 有効窓 0.003)。詳細分析は `ambient-composite-calibration.md` v3 round。
+- **`ambient_gate_mode="or"` 維持確定。R3 (ペンギン off-topic 通過) は Phase U の既知制約として close。** composite (3-arm) は opt-in 機構として残存。再挑戦には別判別軸 (LLM relevance 判断等) が必要 — 別 phase。
